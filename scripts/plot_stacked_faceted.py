@@ -13,7 +13,7 @@ def main():
     analysis_dir = sys.argv[1]
     output_dir = sys.argv[2] if len(sys.argv) > 2 else analysis_dir
     exp_dir = sys.argv[3] if len(sys.argv) > 3 else None
-    output_filename = sys.argv[4] if len(sys.argv) > 4 else "node_metrics_stacked_faceted.png"
+    output_filename = sys.argv[4] if len(sys.argv) > 4 else "node_metrics_stacked_faceted.pdf"
     
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -341,7 +341,12 @@ def main():
 
     plt.tight_layout()
     output_path = os.path.join(output_dir, output_filename)
-    plt.savefig(output_path)
+    plt.savefig(
+        output_path,
+        format="pdf",
+        bbox_inches="tight"
+    )
+
     plt.close()
     print(f"Saved stacked faceted plot to {output_path}")
 

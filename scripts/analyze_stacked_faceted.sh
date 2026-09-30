@@ -6,7 +6,7 @@ set -e
 
 EXP_DIR=$1
 OUTPUT_DIR_ARG=$2
-OUTPUT_FILENAME=${3:-"node_metrics_stacked_faceted.png"}
+OUTPUT_FILENAME=${3:-"node_metrics_stacked_faceted.pdf"}
 
 if [ -z "$EXP_DIR" ]; then
     echo "Usage: $0 <experiment_dir> [output_dir] [output_filename]"
