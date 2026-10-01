@@ -17,9 +17,12 @@ target/
 .idea/
 hive/workspace
 workspace
+workspace2
+workspace3
 results/
 /results/
 /.venv/
 /experiments/
 /results1/
 /results1_faceted/
+/MA/
