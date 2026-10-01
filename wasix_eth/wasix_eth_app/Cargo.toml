@@ -21,7 +21,7 @@ wasix_eth_execution = {workspace = true}
 wasix_eth_p2p = {workspace = true}
 wasix_eth_rpc = {workspace = true}
 
-tokio = { workspace = true, features = ["rt-multi-thread", "rt", "macros", "sync", "time", "io-util", "net" , "signal"]}
+tokio = { workspace = true}
 clap = {workspace = true}
 serde_json = {workspace = true}
 jsonrpsee = { workspace = true}
@@ -40,7 +40,7 @@ alloy-rlp = {workspace = true}
 alloy-json-rpc = {workspace = true}
 reqwest = { workspace = true }
 prometheus = { workspace = true }
-hyper = { version = "0.14", features = ["full"] }
+hyper = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
-tempfile = "3.10"
+tempfile = { workspace = true }

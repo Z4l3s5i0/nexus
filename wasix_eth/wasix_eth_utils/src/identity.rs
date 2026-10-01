@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use k256::ecdsa::SigningKey;
 use k256::SecretKey;
 use wasix_eth_types::hex;
-use ecies::utils::generate_keypair;
+use k256::elliptic_curve::rand_core::OsRng;
 
 #[derive(Clone)]
 pub struct Identity {
@@ -29,22 +29,21 @@ impl Identity {
                     SigningKey::from_slice(&bytes)
                         .map_err(|_| anyhow::anyhow!("Invalid key bytes"))?
                 } else {
-                    let (sk, _) = generate_keypair();
-                    let secret = SigningKey::from_slice(&sk.serialize())
-                        .expect("32 bytes is valid secret key length");
-                    
-                    let hex_key = hex::encode(secret.to_bytes());
+                    let signing_key = SigningKey::random(&mut OsRng);
+
+                    let hex_key = hex::encode(signing_key.to_bytes());
+
                     if let Some(parent) = key_path.parent() {
                         fs::create_dir_all(parent)?;
                     }
+
                     fs::write(&key_path, hex_key)?;
-                    secret
+
+                    signing_key
                 }
             }
             None => {
-                let (sk, _) = generate_keypair();
-                SigningKey::from_slice(&sk.serialize())
-                    .expect("32 bytes is valid secret key length")
+                SigningKey::random(&mut OsRng)
             }
         };
 

@@ -24,7 +24,5 @@ serde_json = {workspace = true}
 
 alloy-rlp = {workspace = true}
 
-
-[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
-tempfile = "3.10"
+tempfile = { workspace = true }
 anyhow = {workspace = true}
