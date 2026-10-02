@@ -1,7 +1,9 @@
 use jsonrpsee::proc_macros::rpc;
 use alloy_primitives::{Address, Bytes, B256, U256};
-use alloy_rpc_types::{TransactionReceipt as RpcTransactionReceipt};
-use crate::{Filter, Log, SyncStatus, TransactionRequest, RpcTransaction, RpcBlock};
+use crate::rpc::{RpcBlock, RpcReceipt as RpcTransactionReceipt, RpcTransaction};
+pub use alloy_rpc_types::eth::Header as RpcHeader;
+use crate::{Filter, SyncStatus, TransactionRequest};
+use alloy_primitives::Log;
 use crate::error::RpcResult;
 
 #[rpc(server)]

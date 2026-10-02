@@ -1,5 +1,8 @@
 use async_trait::async_trait;
-use wasix_eth_types::{Address, BlockId, Bytes, Filter, Log, RpcBlock, RpcTransaction, RpcTransactionReceipt, SyncStatus, TransactionRequest, B256, U256};
+use wasix_eth_types::{
+    rpc::{RpcBlock, RpcReceipt as RpcTransactionReceipt, RpcTransaction},
+    Address, BlockId, Bytes, Filter, Log, SyncStatus, TransactionRequest, B256, U256,
+};
 use wasix_eth_types::error::{parse_loose_hash, RpcError, RpcResult};
 use wasix_eth_types::eth::EthRpcServer;
 use wasix_eth_utils::debug;

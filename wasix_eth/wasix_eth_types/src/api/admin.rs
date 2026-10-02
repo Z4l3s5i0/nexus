@@ -44,3 +44,25 @@ pub trait AdminApi {
     #[method(name = "admin_peers")]
     async fn peers(&self) -> RpcResult<Vec<PeerInfo>>;
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct PeerEntry {
+    pub peer_id: String,
+    pub discovery_addr: std::net::SocketAddr,
+    pub p2p_addr: std::net::SocketAddr,
+}
+
+#[derive(Clone)]
+pub struct PeerInfoDetailed {
+    pub discovery_addr: std::net::SocketAddr,
+    pub p2p_addr: std::net::SocketAddr,
+    pub discovery_url: String,
+    pub p2p_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HelloResponse {
+    pub peer_id: String,
+    pub discovery_addr: String,
+    pub p2p_addr: String,
+}

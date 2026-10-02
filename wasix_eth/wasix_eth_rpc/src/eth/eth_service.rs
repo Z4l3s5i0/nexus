@@ -1,18 +1,9 @@
 use std::sync::Arc;
 use wasix_eth_core::engine::api::RPCEngine;
-use wasix_eth_types::Address;
-use wasix_eth_types::BlockId;
-use wasix_eth_types::Bytes;
-use wasix_eth_types::Filter;
-use wasix_eth_types::Log;
-use wasix_eth_types::RpcBlock;
-use wasix_eth_types::RpcTransaction;
-use wasix_eth_types::RpcTransactionReceipt;
-use wasix_eth_types::Signature;
-use wasix_eth_types::SyncStatus;
-use wasix_eth_types::TransactionRequest;
-use wasix_eth_types::B256;
-use wasix_eth_types::U256;
+use wasix_eth_types::{
+    rpc::{RpcBlock, RpcReceipt as RpcTransactionReceipt, RpcTransaction},
+    Address, BlockId, Bytes, Filter, Log, Signature, SyncStatus, TransactionRequest, B256, U256,
+};
 use wasix_eth_utils::block_mapper::BlockMapper;
 use wasix_eth_utils::transaction_mapper::TransactionMapper;
 use wasix_eth_utils::debug;
@@ -126,7 +117,7 @@ impl EthService {
             let header = self.engine.read_storage.header(BlockId::hash(block_hash)).ok().flatten();
             let base_fee = header.as_ref().and_then(|h| h.base_fee_per_gas);
             let excess_blob_gas = header.as_ref().and_then(|h| h.excess_blob_gas);
-            let blob_gas_price = excess_blob_gas.map(wasix_eth_types::eip4844::calc_blob_gasprice);
+            let blob_gas_price = excess_blob_gas.map(wasix_eth_types::calc_blob_gasprice);
 
             let gas_used = if index == 0 {
                 r.receipt.cumulative_gas_used as u64

@@ -1,4 +1,4 @@
-use wasix_eth_types::{Block, BlockBody, BlockId, Bytes, Filter, Header, Log, PayloadId, Receipt, ReceiptMeta, Transaction, TrieAccount, B256, U256, BlobsBundleV1};
+use wasix_eth_types::{Block, BlockBody, BlockId, Bytes, Filter, Header, Log, PayloadId, Receipt, ReceiptMeta, TxEnvelope, TrieAccount, B256, U256, BlobsBundleV1};
 use wasix_eth_types::{Address, PeerEntry};
 use crate::trie::MyTrieNode;
 
@@ -20,21 +20,21 @@ pub trait HeaderProvider: Send + Sync {
 /// Trait for reading block-related information from the database.
 pub trait BlockProvider: HeaderProvider + Send + Sync {
     /// Retrieves a full block by its number.
-    fn block(&self, id: BlockId) -> anyhow::Result<Option<Block<Transaction>>>;
+    fn block(&self, id: BlockId) -> anyhow::Result<Option<Block<TxEnvelope>>>;
     /// Retrieves the hash of a block by its number.
     fn block_hash(&self, number: u64) -> anyhow::Result<Option<B256>>;
     /// Retrieves the number of a block by its hash.
     fn block_number(&self, hash: B256) -> anyhow::Result<Option<u64>>;
     /// Retrieves a block body by block number.
-    fn block_body(&self, number: u64) -> anyhow::Result<Option<BlockBody<Transaction>>>;
+    fn block_body(&self, number: u64) -> anyhow::Result<Option<BlockBody<TxEnvelope>>>;
     /// Retrieves a block body by its hash.
-    fn block_body_by_hash(&self, hash: B256) -> anyhow::Result<Option<BlockBody<Transaction>>>;
+    fn block_body_by_hash(&self, hash: B256) -> anyhow::Result<Option<BlockBody<TxEnvelope>>>;
     /// Retrieves a block by its hash.
-    fn block_by_hash(&self, hash: B256) -> anyhow::Result<Option<Block<Transaction>>>;
+    fn block_by_hash(&self, hash: B256) -> anyhow::Result<Option<Block<TxEnvelope>>>;
     /// Retrieves a payload by its ID.
-    fn get_payload(&self, payload_id: &PayloadId) -> Option<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1)>;
+    fn get_payload(&self, payload_id: &PayloadId) -> Option<(Block<TxEnvelope>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1)>;
     /// Retrieves a payload by its block hash.
-    fn get_payload_by_block_hash(&self, hash: B256) -> Option<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1)>;
+    fn get_payload_by_block_hash(&self, hash: B256) -> Option<(Block<TxEnvelope>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1)>;
     fn all_payload_ids(&self) -> Vec<PayloadId>;
     /// Retrieves the latest block number.
     fn latest_block_number(&self) -> anyhow::Result<Option<u64>>;
@@ -49,7 +49,7 @@ pub trait BlockProvider: HeaderProvider + Send + Sync {
 /// Trait for reading transaction-related information from the database.
 pub trait TransactionProvider {
     /// Retrieves a transaction by its hash.
-    fn transaction(&self, hash: B256) -> anyhow::Result<Option<Transaction>>;
+    fn transaction(&self, hash: B256) -> anyhow::Result<Option<TxEnvelope>>;
     /// Retrieves a transaction receipt by its hash.
     fn transaction_receipt(&self, hash: B256) -> anyhow::Result<Option<Receipt>>;
     /// Retrieves a transaction receipt by block hash and index.

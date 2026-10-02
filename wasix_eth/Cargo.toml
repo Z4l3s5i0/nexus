@@ -37,8 +37,9 @@ wasix_eth_core = { path = "wasix_eth_core", version = "0.1.0" }
 
 
 alloy-rlp = { version = "=0.3.16" }
-alloy-consensus = { version = "=2.5.0" }
+alloy-consensus = { version = "=2.5.0", features = ["k256"] }
 alloy-network = { version = "=2.5.0" }
+alloy-network-primitives = { version = "=2.5.0" }
 alloy-rpc-types = { version = "=2.5.0", default-features = true, features = ["engine", "eth", "admin", "txpool"]}
 alloy-signer = { version = "=2.5.0" }
 alloy-signer-local = { version = "=2.5.0" }

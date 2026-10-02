@@ -1,7 +1,7 @@
-pub use crate::{async_trait, SyncStatus, Result, B256, PeerEntry};
+pub use crate::{async_trait, SyncStatus, Result, B256, PeerEntry, TxEnvelope};
 use std::sync::Arc;
 use alloy_consensus::Block;
-use crate::Transaction;
+
 use crate::p2p::{
     GetBlockHeaders, BlockHeaders, GetBlockBodies, BlockBodies, 
     GetPooledTransactions, PooledTransactions, GetReceipts, Receipts,
@@ -14,10 +14,10 @@ pub trait SyncProvider: Send + Sync {
     async fn status(&self) -> SyncStatus;
     async fn trigger_sync(&self) -> Result<()>;
     async fn has_block(&self, hash: B256) -> bool;
-    async fn get_block_by_hash(&self, hash: B256) -> Result<Option<Block<Transaction>>>;
-    async fn process_gossip_block(&self, block: Block<Transaction>, td: alloy_primitives::U256) -> Result<()>;
-    async fn process_gossip_transactions(&self, txs: Vec<Transaction>) -> Result<()>;
-    async fn process_pooled_transactions(&self, txs: Vec<crate::TxPooledEnvelope>) -> Result<()>;
+    async fn get_block_by_hash(&self, hash: B256) -> Result<Option<Block<TxEnvelope>>>;
+    async fn process_gossip_block(&self, block: Block<TxEnvelope>, td: alloy_primitives::U256) -> Result<()>;
+    async fn process_gossip_transactions(&self, txs: Vec<TxEnvelope>) -> Result<()>;
+    async fn process_pooled_transactions(&self, txs: Vec<TxEnvelope>) -> Result<()>;
     async fn handle_announced_pooled_transactions(&self, peer_id: String, hashes: Vec<B256>) -> Result<()>;
     async fn handle_announced_block_hashes(&self, peer_id: String, hashes: Vec<crate::p2p::BlockHashAndNumber>) -> Result<()>;
 }
@@ -69,16 +69,16 @@ impl SyncProvider for NoopSync {
     async fn has_block(&self, _hash: B256) -> bool {
         false
     }
-    async fn get_block_by_hash(&self, _hash: B256) -> Result<Option<Block<Transaction>>> {
+    async fn get_block_by_hash(&self, _hash: B256) -> Result<Option<Block<TxEnvelope>>> {
         Ok(None)
     }
-    async fn process_gossip_block(&self, _block: Block<Transaction>, _td: alloy_primitives::U256) -> Result<()> {
+    async fn process_gossip_block(&self, _block: Block<TxEnvelope>, _td: alloy_primitives::U256) -> Result<()> {
         Ok(())
     }
-    async fn process_gossip_transactions(&self, _txs: Vec<Transaction>) -> Result<()> {
+    async fn process_gossip_transactions(&self, _txs: Vec<TxEnvelope>) -> Result<()> {
         Ok(())
     }
-    async fn process_pooled_transactions(&self, _txs: Vec<crate::TxPooledEnvelope>) -> Result<()> {
+    async fn process_pooled_transactions(&self, _txs: Vec<TxEnvelope>) -> Result<()> {
         Ok(())
     }
     async fn handle_announced_pooled_transactions(&self, _peer_id: String, _hashes: Vec<B256>) -> Result<()> {

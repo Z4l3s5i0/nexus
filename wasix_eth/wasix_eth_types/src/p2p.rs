@@ -397,7 +397,7 @@ impl alloy_rlp::Decodable for NewBlockHashes {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Transactions(pub Vec<crate::Transaction>);
+pub struct Transactions(pub Vec<alloy_consensus::TxEnvelope>);
 
 impl alloy_rlp::Encodable for Transactions {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
@@ -704,7 +704,7 @@ impl alloy_rlp::Decodable for GetBlockBodies {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct BlockBodies(pub Vec<crate::BlockBody<crate::Transaction>>);
+pub struct BlockBodies(pub Vec<crate::BlockBody<crate::TxEnvelope>>);
 
 impl alloy_rlp::Encodable for BlockBodies {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
@@ -740,7 +740,7 @@ impl alloy_rlp::Decodable for GetPooledTransactions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct PooledTransactions(pub Vec<crate::TxPooledEnvelope>);
+pub struct PooledTransactions(pub Vec<alloy_consensus::TxEnvelope>);
 
 impl alloy_rlp::Encodable for PooledTransactions {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
@@ -753,7 +753,7 @@ impl alloy_rlp::Encodable for PooledTransactions {
 
 impl alloy_rlp::Decodable for PooledTransactions {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        Ok(Self(Decodable::decode(buf)?))
+        Ok(Self(Vec::<alloy_consensus::TxEnvelope>::decode(buf)?))
     }
 }
 
@@ -776,7 +776,7 @@ impl alloy_rlp::Decodable for GetReceipts {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Receipts(pub Vec<Vec<crate::Receipt>>);
+pub struct Receipts(pub Vec<Vec<crate::consensus::Receipt>>);
 
 impl alloy_rlp::Encodable for Receipts {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
@@ -789,7 +789,7 @@ impl alloy_rlp::Encodable for Receipts {
 
 impl alloy_rlp::Decodable for Receipts {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        Ok(Self(Decodable::decode(buf)?))
+        Ok(Self(Vec::<Vec<crate::consensus::Receipt>>::decode(buf)?))
     }
 }
 
@@ -838,7 +838,7 @@ pub struct BlockRangeUpdate {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NewBlock {
-    pub block: crate::Block<crate::Transaction>,
+    pub block: alloy_consensus::Block<alloy_consensus::TxEnvelope>,
     pub total_difficulty: alloy_primitives::U256,
 }
 
@@ -867,7 +867,7 @@ impl alloy_rlp::Decodable for NewBlock {
         if !header.list {
             return Err(alloy_rlp::Error::UnexpectedString);
         }
-        let block = crate::Block::decode(buf)?;
+        let block = alloy_consensus::Block::decode(buf)?;
         let total_difficulty = alloy_primitives::U256::decode(buf)?;
         Ok(Self {
             block,

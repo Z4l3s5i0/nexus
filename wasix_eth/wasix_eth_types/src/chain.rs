@@ -1,4 +1,4 @@
-use crate::{async_trait, Result, SyncStatus, Transaction};
+use crate::{async_trait, Result, SyncStatus, TxEnvelope};
 use alloy_consensus::Block;
 use alloy_primitives::{B256, U256};
 
@@ -13,7 +13,7 @@ pub enum InvalidationReason {
 #[derive(Debug, Clone)]
 pub struct ReorgContext {
     pub common_ancestor_hash: B256,
-    pub new_canonical_blocks: Vec<Block<Transaction>>,
+    pub new_canonical_blocks: Vec<Block<TxEnvelope>>,
     pub is_reorg: bool,
 }
 
@@ -62,5 +62,5 @@ pub trait ChainManager: Send + Sync {
     async fn resolve_reorg(&self, old_head: B256, new_head: B256) -> Result<ReorgContext>;
 
     /// Marks a branch as canonical in storage.
-    async fn mark_branch_canonical(&self, blocks: &Vec<Block<Transaction>>) -> Result<()>;
+    async fn mark_branch_canonical(&self, blocks: &Vec<Block<TxEnvelope>>) -> Result<()>;
 }

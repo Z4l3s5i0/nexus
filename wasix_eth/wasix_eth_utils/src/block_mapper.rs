@@ -1,60 +1,49 @@
-use alloy_rlp::Encodable;
-use wasix_eth_types::{RpcBlock, RpcHeader, U256, Transaction, BlockTransactions, Block};
-use crate::transaction_mapper::TransactionMapper;
-
+use wasix_eth_types::rpc::{RpcBlock, RpcTransaction};
+use wasix_eth_types::{Block, ChainConfig, TxEnvelope, U256};
 pub struct BlockMapper;
 
-impl BlockMapper {
-    pub fn to_rpc_block(block: Block<Transaction>, full: bool, chain_config: &wasix_eth_types::ChainConfig, total_difficulty: Option<U256>) -> RpcBlock {
-        let fork = wasix_eth_types::Hardfork::get_active_fork_with_total_difficulty(chain_config, block.header.number, block.header.timestamp, total_difficulty);
-        let hash = block.header.hash_slow();
-        let td = if fork >= wasix_eth_types::Hardfork::London || total_difficulty.is_none() { None } else { total_difficulty };
+use alloy_consensus::transaction::SignerRecoverable;
+use alloy_primitives::Sealed;
 
-        let header = RpcHeader {
-            hash: Some(hash),
-            parent_hash: block.header.parent_hash,
-            ommers_hash: block.header.ommers_hash,
-            beneficiary: block.header.beneficiary,
-            state_root: block.header.state_root,
-            transactions_root: block.header.transactions_root,
-            receipts_root: block.header.receipts_root,
-            logs_bloom: block.header.logs_bloom,
-            difficulty: block.header.difficulty,
-            number: block.header.number,
-            gas_limit: block.header.gas_limit,
-            gas_used: block.header.gas_used,
-            timestamp: block.header.timestamp,
-            extra_data: block.header.extra_data.clone(),
-            mix_hash: block.header.mix_hash,
-            nonce: block.header.nonce,
-            total_difficulty: td,
-            size: Some(U256::from(block.length())),
-            base_fee_per_gas: if fork >= wasix_eth_types::Hardfork::London { block.header.base_fee_per_gas } else { None },
-            withdrawals_root: if fork >= wasix_eth_types::Hardfork::Shanghai { block.header.withdrawals_root } else { None },
-            blob_gas_used: if fork >= wasix_eth_types::Hardfork::Cancun { block.header.blob_gas_used } else { None },
-            excess_blob_gas: if fork >= wasix_eth_types::Hardfork::Cancun { block.header.excess_blob_gas } else { None },
-            parent_beacon_block_root: if fork >= wasix_eth_types::Hardfork::Cancun { block.header.parent_beacon_block_root } else { None },
-            requests_hash: if fork >= wasix_eth_types::Hardfork::Prague { block.header.requests_hash } else { None },
-        };
+impl BlockMapper {
+    pub fn to_rpc_block(
+        block: Block<TxEnvelope>,
+        full: bool,
+        _chain_config: &ChainConfig,
+        total_difficulty: Option<U256>
+    ) -> RpcBlock {
+        let block_hash = block.header.hash_slow();
+        let block_number = block.header.number;
+
+        let header = block.header.clone();
+        let body = block.body;
 
         let transactions = if full {
-            // Mapping full transactions
-            BlockTransactions::Full(block.body.transactions.iter().enumerate().map(|(i, tx)| {
-                TransactionMapper::to_rpc_transaction(
-                    tx.clone(), 
-                    Some((block.header.number, hash, i as u64)),
-                    Some(block.header.clone())
-                )
-            }).collect())
+            alloy_rpc_types::eth::BlockTransactions::Full(
+                body.transactions.into_iter().enumerate().map(|(idx, tx)| {
+                    let signer = tx.recover_signer().unwrap_or_default();
+                    let recovered = alloy_consensus::transaction::Recovered::new_unchecked(tx, signer);
+                    RpcTransaction::from_transaction(recovered, alloy_rpc_types::eth::TransactionInfo {
+                        block_hash: Some(block_hash),
+                        block_number: Some(block_number),
+                        index: Some(idx as u64),
+                        ..Default::default()
+                    })
+                }).collect()
+            )
         } else {
-            BlockTransactions::Hashes(block.body.transactions.iter().map(|tx| *tx.hash()).collect())
+            alloy_rpc_types::eth::BlockTransactions::Hashes(
+                body.transactions.iter().map(|tx| *tx.hash()).collect()
+            )
         };
 
+        let sealed_header = Sealed::new(header);
+
         RpcBlock {
-            header,
+            header: alloy_rpc_types::eth::Header::from_consensus(sealed_header, total_difficulty, Some(block_hash.into())),
             transactions,
-            uncles: block.body.ommers.iter().map(|h| h.hash_slow()).collect(),
-            withdrawals: if fork >= wasix_eth_types::Hardfork::Shanghai { block.body.withdrawals.clone() } else { None },
+            uncles: Vec::new(),
+            withdrawals: body.withdrawals,
         }
     }
 }

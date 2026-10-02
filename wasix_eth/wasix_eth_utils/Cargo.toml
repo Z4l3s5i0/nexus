@@ -19,6 +19,10 @@ prometheus = {workspace = true}
 
 alloy-rpc-types = {workspace = true}
 alloy-rlp = {workspace = true}
+alloy-primitives = {workspace = true}
+alloy-network = {workspace = true}
+alloy-network-primitives = {workspace = true}
+alloy-consensus = {workspace = true}
 k256 = {workspace = true}
 anyhow = {workspace = true}
 serde_json = {workspace = true}

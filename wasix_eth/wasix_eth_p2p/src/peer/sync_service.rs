@@ -14,7 +14,7 @@ use wasix_eth_types::p2p::{
     GossipMessage, RequestPair, GetBlockHeaders, BlockHeaders, GetBlockBodies, BlockBodies,
     GetPooledTransactions, PooledTransactions, GetReceipts, Receipts, GetNodeData, NodeData
 };
-use wasix_eth_types::{async_trait, Block, BlockId, GossipProvider, Transaction, B256, TxPooledEnvelope, BlobTransactionSidecar, Signed, TxEip4844Variant, BlobTransactionSidecarVariant};
+use wasix_eth_types::{async_trait, Block, BlockId, GossipProvider, Transaction, B256, TxEnvelope, TxPooledEnvelope, BlobTransactionSidecar, Signed, TxEip4844Variant, BlobTransactionSidecarVariant};
 use wasix_eth_utils::metrics::GOSSIP_MESSAGES_RECEIVED;
 use wasix_eth_utils::{debug, error, info};
 
@@ -446,7 +446,7 @@ impl SyncService {
         sync.trigger_sync().await
     }
 
-    pub async fn get_block(&self, id: BlockId) -> Result<Option<Block<Transaction>>> {
+    pub async fn get_block(&self, id: BlockId) -> Result<Option<Block<TxEnvelope>>> {
         self.read_provider.block(id)
     }
 
@@ -454,7 +454,7 @@ impl SyncService {
         self.read_provider.block_hash(number)
     }
 
-    pub async fn get_block_by_hash(&self, hash: B256) -> Result<Option<Block<Transaction>>> {
+    pub async fn get_block_by_hash(&self, hash: B256) -> Result<Option<Block<TxEnvelope>>> {
         if let Ok(Some(block)) = self.read_provider.block_by_hash(hash) {
             return Ok(Some(block));
         }
@@ -478,11 +478,11 @@ impl GossipProvider for SyncService {
         // Not used anymore as we have structured gossip
     }
 
-    async fn broadcast_transaction(&self, tx: &Transaction) {
+    async fn broadcast_transaction(&self, tx: &TxEnvelope) {
         self.broadcast_new_pooled_transaction_hashes(vec![tx.clone()]).await;
     }
 
-    async fn broadcast_new_pooled_transaction_hashes(&self, txs: Vec<Transaction>) {
+    async fn broadcast_new_pooled_transaction_hashes(&self, txs: Vec<TxEnvelope>) {
         let sessions = self.peer_manager.registry.get_all_sessions().await;
         if sessions.is_empty() { return; }
 
@@ -565,7 +565,7 @@ impl GossipProvider for SyncService {
         }
     }
 
-    async fn broadcast_block(&self, block: &Block<Transaction>) {
+    async fn broadcast_block(&self, block: &Block<TxEnvelope>) {
         let sessions = self.peer_manager.registry.get_all_sessions().await;
         if sessions.is_empty() { return; }
 

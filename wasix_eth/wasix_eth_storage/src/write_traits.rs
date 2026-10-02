@@ -1,4 +1,4 @@
-use wasix_eth_types::{Address, Block, BlockBody, Bytes, Header, PayloadId, PeerEntry, Transaction, TrieAccount, B256, U256, Receipt, ReceiptMeta, BlobsBundleV1};
+use wasix_eth_types::{Address, Block, BlockBody, Bytes, Header, PayloadId, PeerEntry, TxEnvelope, TrieAccount, B256, U256, Receipt, ReceiptMeta, BlobsBundleV1};
 
 /// Trait for managing the active peers table.
 pub trait PeerDiscoveryWriter: Send + Sync {
@@ -27,21 +27,21 @@ pub trait BlockWriter {
     /// Removes a canonical block hash for a given block number.
     fn remove_canonical(&self, number: u64) -> anyhow::Result<()>;
     /// Inserts a block body for a given block number and hash.
-    fn insert_block_body(&self, hash: B256, number: u64, body: BlockBody<Transaction>) -> anyhow::Result<()>;
+    fn insert_block_body(&self, hash: B256, number: u64, body: BlockBody<TxEnvelope>) -> anyhow::Result<()>;
     /// Updates the forkchoice state.
     fn update_forkchoice(&self, head: B256, safe: Option<B256>, finalized: Option<B256>) -> anyhow::Result<()>;
     /// Adds a new payload to the database.
-    fn add_payload(&self, id: PayloadId, block: Block<Transaction>, receipts: Vec<Receipt>, metas: Vec<ReceiptMeta>, bundle: BlobsBundleV1) -> anyhow::Result<()>;
+    fn add_payload(&self, id: PayloadId, block: Block<TxEnvelope>, receipts: Vec<Receipt>, metas: Vec<ReceiptMeta>, bundle: BlobsBundleV1) -> anyhow::Result<()>;
     /// Removes a payload from the database by its block hash.
     fn remove_payload_by_block_hash(&self, hash: B256) -> anyhow::Result<()>;
     /// Inserts a full block into the database and marks it as canonical.
-    fn insert_block(&self, block: Block<Transaction>, receipts: Vec<Receipt>, metas: Vec<ReceiptMeta>) -> anyhow::Result<()>;
+    fn insert_block(&self, block: Block<TxEnvelope>, receipts: Vec<Receipt>, metas: Vec<ReceiptMeta>) -> anyhow::Result<()>;
 }
 
 /// Trait for writing transaction-related information to the database.
 pub trait TransactionWriter {
     /// Inserts a transaction into the database.
-    fn insert_transaction(&self, hash: B256, tx: Transaction) -> anyhow::Result<()>;
+    fn insert_transaction(&self, hash: B256, tx: TxEnvelope) -> anyhow::Result<()>;
     /// Inserts a transaction receipt into the database.
     fn insert_receipt(&self, block_hash: B256, index: u64, receipt: Receipt) -> anyhow::Result<()>;
     /// Inserts a transaction receipt metadata into the database.
