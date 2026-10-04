@@ -1,4 +1,7 @@
-use wasix_eth_types::{Block, BlockBody, BlockId, Bytes, Filter, Header, Log, PayloadId, Receipt, ReceiptMeta, TxEnvelope, TrieAccount, B256, U256, BlobsBundleV1};
+use wasix_eth_types::{
+    Block, BlockBody, BlockId, Bytes, Filter, Header, Log, PayloadId, Receipt, ReceiptMeta,
+    Transaction, TrieAccount, B256, U256, BlobsBundleV1,
+};
 use wasix_eth_types::{Address, PeerEntry};
 use crate::trie::MyTrieNode;
 
@@ -20,21 +23,21 @@ pub trait HeaderProvider: Send + Sync {
 /// Trait for reading block-related information from the database.
 pub trait BlockProvider: HeaderProvider + Send + Sync {
     /// Retrieves a full block by its number.
-    fn block(&self, id: BlockId) -> anyhow::Result<Option<Block<TxEnvelope>>>;
+    fn block(&self, id: BlockId) -> anyhow::Result<Option<Block<Transaction>>>;
     /// Retrieves the hash of a block by its number.
     fn block_hash(&self, number: u64) -> anyhow::Result<Option<B256>>;
     /// Retrieves the number of a block by its hash.
     fn block_number(&self, hash: B256) -> anyhow::Result<Option<u64>>;
     /// Retrieves a block body by block number.
-    fn block_body(&self, number: u64) -> anyhow::Result<Option<BlockBody<TxEnvelope>>>;
+    fn block_body(&self, number: u64) -> anyhow::Result<Option<BlockBody<Transaction>>>;
     /// Retrieves a block body by its hash.
-    fn block_body_by_hash(&self, hash: B256) -> anyhow::Result<Option<BlockBody<TxEnvelope>>>;
+    fn block_body_by_hash(&self, hash: B256) -> anyhow::Result<Option<BlockBody<Transaction>>>;
     /// Retrieves a block by its hash.
-    fn block_by_hash(&self, hash: B256) -> anyhow::Result<Option<Block<TxEnvelope>>>;
+    fn block_by_hash(&self, hash: B256) -> anyhow::Result<Option<Block<Transaction>>>;
     /// Retrieves a payload by its ID.
-    fn get_payload(&self, payload_id: &PayloadId) -> Option<(Block<TxEnvelope>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1)>;
+    fn get_payload(&self, payload_id: &PayloadId) -> Option<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1)>;
     /// Retrieves a payload by its block hash.
-    fn get_payload_by_block_hash(&self, hash: B256) -> Option<(Block<TxEnvelope>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1)>;
+    fn get_payload_by_block_hash(&self, hash: B256) -> Option<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1)>;
     fn all_payload_ids(&self) -> Vec<PayloadId>;
     /// Retrieves the latest block number.
     fn latest_block_number(&self) -> anyhow::Result<Option<u64>>;
@@ -49,7 +52,7 @@ pub trait BlockProvider: HeaderProvider + Send + Sync {
 /// Trait for reading transaction-related information from the database.
 pub trait TransactionProvider {
     /// Retrieves a transaction by its hash.
-    fn transaction(&self, hash: B256) -> anyhow::Result<Option<TxEnvelope>>;
+    fn transaction(&self, hash: B256) -> anyhow::Result<Option<Transaction>>;
     /// Retrieves a transaction receipt by its hash.
     fn transaction_receipt(&self, hash: B256) -> anyhow::Result<Option<Receipt>>;
     /// Retrieves a transaction receipt by block hash and index.
@@ -77,6 +80,10 @@ pub trait AccountProvider {
     fn addresses(&self) -> anyhow::Result<Vec<Address>>;
     /// Retrieves the transaction count (nonce) for a given address.
     fn transaction_count(&self, address: Address, block_id: BlockId, state_root: Option<B256>) -> anyhow::Result<u64>;
+    /// Retrieves the plain state value for a given address.
+    fn plain_state(&self, address: Address) -> anyhow::Result<Option<TrieAccount>>;
+    /// Retrieves the hashed state value for a given hash.
+    fn hashed_state(&self, hash: B256) -> anyhow::Result<Option<TrieAccount>>;
 }
 
 /// Trait for reading chain-related information.
@@ -108,10 +115,6 @@ pub trait BytecodeProvider {
 
 /// Trait for reading state-related information from the database.
 pub trait StateProvider: Send + Sync {
-    /// Retrieves the plain state value for a given address.
-    fn plain_state(&self, address: Address) -> anyhow::Result<Option<Bytes>>;
-    /// Retrieves the hashed state value for a given hash.
-    fn hashed_state(&self, hash: B256) -> anyhow::Result<Option<Bytes>>;
     /// Retrieves a trie node by its hash.
     fn trie_node(&self, hash: B256) -> anyhow::Result<Option<Bytes>>;
 
@@ -193,9 +196,9 @@ pub trait StateProvider: Send + Sync {
 /// Trait for reading state change sets from the database.
 pub trait ChangeSetProvider {
     /// Retrieves the account change set for a given block number.
-    fn account_change_set(&self, number: u64) -> anyhow::Result<Option<Vec<(Address, Option<Bytes>)>>>;
+    fn account_change_set(&self, number: u64) -> anyhow::Result<Option<Vec<(Address, Option<TrieAccount>)>>>;
     /// Retrieves the storage change set for a given block number.
-    fn storage_change_set(&self, number: u64) -> anyhow::Result<Option<Vec<(Address, B256, U256)>>>;
+    fn storage_change_set(&self, number: u64) -> anyhow::Result<Option<Vec<((Address, B256), Option<U256>)>>>;
 }
 
 pub trait MetadataProvider {

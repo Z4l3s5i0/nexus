@@ -1,9 +1,12 @@
+use wasix_eth_types::consensus_constants::MAX_INIT_CODE_SIZE;
 use wasix_eth_types::*;
 use wasix_eth_storage::write::BatchWriter;
 use wasix_eth_storage::read_traits::AccountProvider;
 use wasix_eth_storage::write_traits::AccountWriter;
 use wasix_eth_utils::{debug, exp};
 use evm::backend::{OverlayedBackend, OverlayedChangeSet, InMemoryEnvironment, RuntimeBaseBackend, RuntimeEnvironment, RuntimeBackend};
+use wasix_eth_types::TransactionTrait as alloy_consensus_Transaction;
+use wasix_eth_types::SignerRecoverable;
 use evm::uint::{H160, H256, U256 as EvmU256};
 use evm::standard::{Config, EtableResolver, ExecutionEtable, GasometerEtable, Invoker, TransactArgs, TransactArgsCallCreate, TransactGasPrice, TransactValue, TransactValueCallCreate};
 use evm::interpreter::etable::Chained;
@@ -14,6 +17,17 @@ use crate::executor::TransactionExecutionResult;
 use anyhow::Result;
 use std::collections::HashSet;
 use evm_precompile::StandardPrecompileSet;
+
+fn logs_bloom<'a>(logs: impl Iterator<Item = &'a ConsensusReceiptLog>) -> Bloom {
+    let mut bloom = Bloom::default();
+    for log in logs {
+        bloom.accrue_bloom(log.address.0);
+        for topic in &log.data.topics() {
+            bloom.accrue_bloom(topic.as_slice());
+        }
+    }
+    bloom
+}
 
 pub struct TransactionExecutor<'a> {
     pub batch: &'a BatchWriter,
@@ -177,7 +191,7 @@ impl<'a> TransactionExecutor<'a> {
         }
 
         if let Transaction::Eip1559(s) = tx {
-            let base_fee = self.env.block_base_fee_per_gas.as_u64();
+            let base_fee = self.env.block_base_fee_per_gas.low_u64();
             if s.max_fee_per_gas() < base_fee as u128 {
                 return Err(anyhow::anyhow!("Max fee per gas too low: max={}, base={}", s.max_fee_per_gas(), base_fee));
             }
@@ -188,7 +202,7 @@ impl<'a> TransactionExecutor<'a> {
 
         if self.fork >= Hardfork::Cancun {
             if let Transaction::Eip4844(s) = tx {
-                let blob_base_fee = self.env.blob_base_fee_per_gas.as_u64();
+                let blob_base_fee = self.env.blob_base_fee_per_gas.low_u64();
                 if s.max_fee_per_blob_gas() < Some(blob_base_fee as u128) {
                     return Err(anyhow::anyhow!("Max fee per blob gas too low: max={:?}, base={}", s.max_fee_per_blob_gas(), blob_base_fee));
                 }
@@ -299,7 +313,7 @@ impl<'a> TransactionExecutor<'a> {
             value: EvmU256::from_big_endian(&tx.value().to_be_bytes::<32>()),
             gas_limit: EvmU256::from(tx.gas_limit()),
             gas_price,
-            access_list: tx.access_list().map(|al| al.0.iter().map(|a| (H160::from_slice(a.address.as_slice()), a.storage_keys.iter().map(|k: &B256| H256::from_slice(k.as_slice())).collect())).collect()).unwrap_or_default(),
+            access_list: tx.access_list().map(|al| al.iter().map(|a| (H160::from_slice(a.address.as_slice()), a.storage_keys.iter().map(|k: &B256| H256::from_slice(k.as_slice())).collect())).collect()).unwrap_or_default(),
             call_create,
             config: self.config,
         }
@@ -335,10 +349,10 @@ impl<'a> TransactionExecutor<'a> {
         }
     }
 
-    fn process_logs(&self, changeset: &OverlayedChangeSet) -> Vec<LogPrimitive> {
-        changeset.logs.iter().map(|log| LogPrimitive {
+    fn process_logs(&self, changeset: &OverlayedChangeSet) -> Vec<ConsensusReceiptLog> {
+        changeset.logs.iter().map(|log| ConsensusReceiptLog {
             address: Address::from_slice(log.address.as_bytes()),
-            data: LogData::new_unchecked(log.topics.iter().map(|t| B256::from_slice(t.as_bytes())).collect(), log.data.clone().into()),
+            data: alloy_primitives::LogData::new_unchecked(log.topics.iter().map(|t| B256::from_slice(t.as_bytes())).collect(), log.data.clone().into()),
         }).collect()
     }
 }

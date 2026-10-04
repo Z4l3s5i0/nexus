@@ -78,11 +78,30 @@ Align the P2P layer with the Ethereum wire protocol using Alloy types.
 
 ---
 
-### Phase 5: Storage Layer (Future Phase)
-While storage remains as-is for now, the plan for future migration involves:
-*   **Consensus-only Storage:** Replacing custom `wasix_eth_types::Receipt` with `alloy_consensus::Receipt`.
-*   **RLP Consistency:** Ensuring all tables (`Headers`, `Transactions`, `Receipts`) store raw `alloy_consensus` types encoded with `alloy_rlp`.
-*   **Removal of `ReceiptMeta`:** Merging metadata (like `contract_address`) into a more standard indexing system if necessary, or strictly adhering to the minimal consensus receipt structure.
+### Phase 5: Storage Layer & Internal Type Alignment *
+The goal is to resolve compilation errors and complete the standardization of the storage layer.
+
+1.  **Fix `wasix_eth_types` Re-exports:** ✓
+    *   Re-export `TrieAccount` from `alloy_trie`.
+    *   Re-export `BlockId` and `BlockNumberOrTag` from `alloy_eips`.
+    *   Re-export `Log` from `alloy_rpc_types::eth`.
+    *   Re-export `TxEnvelope` as `Transaction` and `consensus::Receipt` as `Receipt`.
+
+2.  **Align Storage Codecs (`wasix_eth_storage\src\codecs.rs`):** *
+    *   Update `impl_redb_rlp!` macros to use `alloy_consensus` types where applicable.
+    *   Fix `Table` definitions to use `TxEnvelope` instead of the old custom `Transaction`.
+
+3.  **Update Storage Traits and Providers:**
+    *   Update trait methods in `read_traits.rs` & `write_traits.rs` to use `alloy_consensus::Block<TxEnvelope>` and `alloy_consensus::TxEnvelope`.
+    *   Adjust implementations in `read.rs` & `write.rs` to map between new types and database values.
+
+4.  **Fix `EthDatabase` Genesis Logic (`wasix_eth_storage\src\db.rs`):**
+    *   Update `init_genesis` and `calculate_genesis_state` functions.
+    *   Convert `wasix_eth_types::eip4895::Withdrawals` to `Vec<Withdrawal>` using `.to_vec()`.
+
+5.  **RLP Consistency:**
+    *   Ensure all tables store raw `alloy_consensus` types encoded with `alloy_rlp`.
+    *   Verify that `alloy_rlp` encoding for all storage types matches the expected format.
 
 ### Summary of Targeted Type Mappings
 | Category | Storage / Internal (Stay same for now) | RPC I/O / Gossip (New Goal) |

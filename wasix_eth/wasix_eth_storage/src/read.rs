@@ -3,23 +3,11 @@ use crate::tables::*;
 use redb::Database;
 use redb::ReadableDatabase;
 use redb::ReadableTable;
-use wasix_eth_types::{Address, PeerEntry, BlobsBundleV1};
-use wasix_eth_types::Block;
-use wasix_eth_types::BlockBody;
-use wasix_eth_types::BlockId;
-use wasix_eth_types::BlockNumberOrTag;
-use wasix_eth_types::Bytes;
-use wasix_eth_types::Filter;
-use wasix_eth_types::Header;
-use wasix_eth_types::Log;
-use wasix_eth_types::PayloadId;
-use wasix_eth_types::Receipt;
-use wasix_eth_types::ReceiptMeta;
-use wasix_eth_types::Result;
-use wasix_eth_types::Transaction;
-use wasix_eth_types::TrieAccount;
-use wasix_eth_types::B256;
-use wasix_eth_types::U256;
+use wasix_eth_types::{
+    Address, PeerEntry, BlobsBundleV1, Block, BlockBody, ConsensusBlockBody, BlockId,
+    BlockNumberOrTag, Bytes, Filter, Header, Log, PayloadId, Receipt, ReceiptMeta, Result,
+    Transaction, TrieAccount, B256, U256, eip4895::Withdrawals,
+};
 use std::sync::Arc;
 use alloy_rlp::Decodable;
 use crate::trie::MyTrieNode;
@@ -124,7 +112,11 @@ impl BlockProvider for DatabaseReadProvider {
             if let Some(body) = body {
                 return Ok(Some(Block {
                     header,
-                    body,
+                    body: ConsensusBlockBody {
+                        transactions: body.transactions,
+                        ommers: body.ommers,
+                        withdrawals: body.withdrawals.map(|w| wasix_eth_types::eip4895::Withdrawals::new(w.to_vec())),
+                    },
                 }));
             }
         }
@@ -432,6 +424,20 @@ impl AccountProvider for DatabaseReadProvider {
         let account = self.account(address, state_root)?;
         Ok(account.as_ref().map(|a| a.nonce).unwrap_or(0))
     }
+
+    fn plain_state(&self, address: Address) -> Result<Option<TrieAccount>> {
+        let tx = self.db.begin_read()?;
+        let table = tx.open_table(PlainState::definition())?;
+        let value = table.get(address)?;
+        Ok(value.map(|v| v.value()))
+    }
+
+    fn hashed_state(&self, hash: B256) -> Result<Option<TrieAccount>> {
+        let tx = self.db.begin_read()?;
+        let table = tx.open_table(HashedState::definition())?;
+        let value = table.get(hash)?;
+        Ok(value.map(|v| v.value()))
+    }
 }
 
 impl DatabaseReadProvider {
@@ -724,13 +730,13 @@ impl ChainProvider for DatabaseReadProvider {
 }
 
 impl StateWriter for DatabaseReadProvider {
-    fn update_plain_state(&self, _address: Address, _state: Bytes) -> anyhow::Result<()> {
+    fn update_plain_state(&self, _address: Address, _state: TrieAccount) -> anyhow::Result<()> {
         Err(anyhow::anyhow!("DatabaseReadProvider is read-only"))
     }
     fn remove_plain_state(&self, _address: Address) -> anyhow::Result<()> {
         Err(anyhow::anyhow!("DatabaseReadProvider is read-only"))
     }
-    fn update_hashed_state(&self, _hash: B256, _state: Bytes) -> anyhow::Result<()> {
+    fn update_hashed_state(&self, _hash: B256, _state: TrieAccount) -> anyhow::Result<()> {
         Err(anyhow::anyhow!("DatabaseReadProvider is read-only"))
     }
     fn update_trie_node(&self, _hash: B256, _node: Bytes) -> anyhow::Result<()> {
@@ -825,20 +831,6 @@ impl BytecodeProvider for DatabaseReadProvider {
 }
 
 impl StateProvider for DatabaseReadProvider {
-    fn plain_state(&self, address: Address) -> Result<Option<Bytes>> {
-        let tx = self.db.begin_read()?;
-        let table = tx.open_table(PlainState::definition())?;
-        let value = table.get(address)?;
-        Ok(value.map(|v| v.value()))
-    }
-
-    fn hashed_state(&self, hash: B256) -> Result<Option<Bytes>> {
-        let tx = self.db.begin_read()?;
-        let table = tx.open_table(HashedState::definition())?;
-        let value = table.get(hash)?;
-        Ok(value.map(|v| v.value()))
-    }
-
     fn trie_node(&self, hash: B256) -> Result<Option<Bytes>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(TrieNodes::definition())?;
@@ -847,11 +839,6 @@ impl StateProvider for DatabaseReadProvider {
         if let Some(value) = table.get(hash)? {
             return Ok(Some(value.value()));
         }
-        
-        // If hash represents a combined key H(root || hash) used in BatchWriter,
-        // it would have been found above. If we are looking for a node by its hash
-        // but it was stored by combined key only, we'd need the root.
-        // However, standard EthTrie uses hashes of RLP.
         
         Ok(None)
     }
@@ -880,14 +867,14 @@ impl PeerDiscoveryProvider for DatabaseReadProvider {
 }
 
 impl ChangeSetProvider for DatabaseReadProvider {
-    fn account_change_set(&self, number: u64) -> Result<Option<Vec<(Address, Option<Bytes>)>>> {
+    fn account_change_set(&self, number: u64) -> Result<Option<Vec<(Address, Option<TrieAccount>)>>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(AccountChangeSets::definition())?;
         let value = table.get(number)?;
         Ok(value.map(|v| v.value()))
     }
 
-    fn storage_change_set(&self, number: u64) -> Result<Option<Vec<(Address, B256, U256)>>> {
+    fn storage_change_set(&self, number: u64) -> Result<Option<Vec<((Address, B256), Option<U256>)>>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(StorageChangeSets::definition())?;
         let value = table.get(number)?;

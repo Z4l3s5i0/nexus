@@ -7,7 +7,10 @@ use redb::{Database, ReadableDatabase};
 use std::path::Path;
 use std::sync::Arc;
 use wasix_eth_types::genesis::GenesisConfiguration;
-use wasix_eth_types::{proofs, Block, BlockBody, Header, Result, TrieAccount, B256, B64, EMPTY_OMMER_ROOT_HASH, U256, Hardfork, Address, BlobsBundleV1};
+use wasix_eth_types::{
+    proofs, Block, BlockBody, ConsensusBlockBody, Header, Result, TrieAccount, B256, B64,
+    EMPTY_OMMER_ROOT_HASH, U256, Hardfork, Address, BlobsBundleV1, Transaction, eip4895::Withdrawals,
+};
 use wasix_eth_utils::{debug, info};
 use alloy_rlp::Encodable;
 use crate::read_traits::MetadataProvider;
@@ -47,6 +50,7 @@ impl EthDatabase {
         wtx.open_table(StorageChangeSets::definition())?;
         wtx.open_table(PlainState::definition())?;
         wtx.open_table(HashedState::definition())?;
+        wtx.open_table(HashedStorages::definition())?;
         wtx.open_table(TrieNodes::definition())?;
         wtx.open_table(Metadata::definition())?;
         wtx.open_table(Payloads::definition())?;
@@ -122,7 +126,7 @@ impl EthDatabase {
             let body = BlockBody {
                 transactions: Vec::new(),
                 ommers: Vec::new(),
-                withdrawals: if fork >= Hardfork::Shanghai { Some(wasix_eth_types::eip4895::Withdrawals::new(Vec::new())) } else { None },
+                withdrawals: if fork >= Hardfork::Shanghai { Some(Vec::new()) } else { None },
             };
             write_provider.insert_block_body(genesis_hash.hash(), block_number, body.clone())?;
             write_provider.update_forkchoice(genesis_hash.hash(), None, None)?;
@@ -130,7 +134,20 @@ impl EthDatabase {
 
             // Also insert into Payloads table for consistency in some lookups
             let payload_id = wasix_eth_types::PayloadId::new([0u8; 8]);
-            write_provider.add_payload(payload_id, Block { header: genesis_header, body }, Vec::new(), Vec::new(), BlobsBundleV1::default())?;
+            write_provider.add_payload(
+                payload_id,
+                Block {
+                    header: genesis_header,
+                    body: ConsensusBlockBody {
+                        transactions: body.transactions,
+                        ommers: body.ommers,
+                        withdrawals: body.withdrawals.map(|w| wasix_eth_types::eip4895::Withdrawals::new(w.to_vec())),
+                    },
+                },
+                Vec::new(),
+                Vec::new(),
+                BlobsBundleV1::default(),
+            )?;
 
             write_provider.set_metadata("chain_id".to_string(), genesis.config.chain_id.to_be_bytes().to_vec().into())?;
             write_provider.set_metadata("genesis_hash".to_string(), genesis_hash.hash().as_slice().to_vec().into())?;

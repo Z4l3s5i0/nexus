@@ -6,8 +6,10 @@ use evm_precompile::StandardPrecompileSet;
 use sha2::{Digest, Sha256};
 use wasix_eth_storage::read_traits::{AccountProvider, ChainProvider, HeaderProvider};
 use wasix_eth_storage::write::BatchWriter;
-use wasix_eth_storage::write_traits::{AccountWriter, ChangeSetWriter, TransactionWriter};
+use wasix_eth_storage::write_traits::{AccountWriter, ChangeSetWriter, TransactionWriter, HashedStorageWriter};
+use wasix_eth_types::consensus_constants::{DEPOSIT_CONTRACT_ADDRESS, MAX_BLOB_GAS_PER_BLOCK, TARGET_BLOB_GAS_PER_BLOCK};
 use wasix_eth_types::*;
+use wasix_eth_types::consensus_constants as constants;
 use wasix_eth_utils::{debug, info};
 
 use crate::config::prepare_execution_env;
@@ -99,8 +101,9 @@ impl EthExecutionProvider {
         fork: Hardfork,
         building: bool,
     ) -> Result<()> {
-        let transactions_root = proofs::calculate_transaction_root(&block.body.transactions);
-        let receipts_root = proofs::calculate_receipt_root(receipts);
+        let consensus_receipts: Vec<ConsensusReceipt> = receipts.iter().map(|r| r.receipt.clone()).collect();
+        let transactions_root = proofs::calculate_transaction_root(block.body.transactions.iter());
+        let receipts_root = proofs::calculate_receipt_root(consensus_receipts.iter());
 
         debug!("[Execution] Calculated transactions_root: {:?}", transactions_root);
         debug!("[Execution] Calculated receipts_root: {:?}", receipts_root);
@@ -283,9 +286,9 @@ impl EthExecutionProvider {
         for receipt in receipts {
             for log in &receipt.receipt.logs {
                 if log.address == DEPOSIT_CONTRACT_ADDRESS {
-                    if let Some(&topic0) = log.topics().first() {
-                        if topic0 == eip6110_utils::DEPOSIT_EVENT_SIGNATURE {
-                            if let Ok(deposit) = eip6110_utils::decode_deposit_log(&log.data.data) {
+                    if let Some(topic0) = log.data.topics().first() {
+                        if *topic0 == eip6110_utils::DEPOSIT_EVENT_SIGNATURE {
+                            if let Ok(deposit) = eip6110_utils::decode_deposit_log(log.data.data()) {
                                 deposits.push(deposit);
                             }
                         }
@@ -468,10 +471,10 @@ impl EthExecutionProvider {
 
         for tx in transactions {
             if is_simulation {
-                if let Some(from) = tx.recover_signer().ok() {
+                if let Some(from) = tx.recover_signer() {
                     let mut acc = batch.account(from, state_root)?.unwrap_or_default();
                     acc.balance = alloy_primitives::U256::from(10u128.pow(30));
-                    batch.update_account(from, acc.into())?;
+                    batch.update_account(from, acc)?;
                 }
             }
 
@@ -533,7 +536,7 @@ impl ExecutionProvider for EthExecutionProvider {
     }
 
     fn execute_block_with_state_root_and_building(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>, building: bool) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
-        debug!("[Execution] execute_block_with_state_root: block {} commit={} state_root={:?} building={}", block.header.number, commit, state_root, building);
+        debug!("[Execution] execute_block_with_state_root_and_building: block {} commit={} state_root={:?} building={}", block.header.number, commit, state_root, building);
         self.write_storage.clear_tracking();
         let batch = self.write_storage.begin_batch()?;
         
@@ -546,13 +549,13 @@ impl ExecutionProvider for EthExecutionProvider {
         };
         
         if commit {
-            debug!("[Execution] execute_block_with_state_root: committing batch for block {}", block.header.number);
+            debug!("[Execution] execute_block_with_state_root_and_building: committing batch for block {}", block.header.number);
 
             // Persist ChangeSets
             let account_changes = batch.collect_account_changes();
             let storage_changes = batch.collect_storage_changes();
-            batch.insert_account_change_set(executed_block.header.number, account_changes)?;
-            batch.insert_storage_change_set(executed_block.header.number, storage_changes)?;
+            batch.insert_account_change_set(executed_block.header.number, account_changes.iter().map(|(addr, acc)| (*addr, acc.clone())).collect())?;
+            batch.insert_storage_change_set(executed_block.header.number, storage_changes.iter().map(|(key, val)| (*key, *val)).collect())?;
 
             for (i, meta) in metas.iter().enumerate() {
                 batch.insert_receipt_meta(executed_block.header.hash_slow(), i as u64, meta.clone())?;

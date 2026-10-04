@@ -1,4 +1,6 @@
 use wasix_eth_types::*;
+use wasix_eth_types::consensus_constants as constants;
+use alloy_primitives::keccak256;
 use wasix_eth_storage::write::BatchWriter;
 use wasix_eth_storage::read_traits::AccountProvider;
 use wasix_eth_storage::write_traits::{AccountWriter, BytecodeWriter, StorageWriter};
@@ -73,7 +75,7 @@ impl<'a> BlockProcessor<'a> {
         Ok(0)
     }
 
-    pub fn process_withdrawals(&self, withdrawals: &[eip4895::Withdrawal], state_root: Option<B256>) -> Result<()> {
+    pub fn process_withdrawals(&self, withdrawals: &[alloy_eips::eip4895::Withdrawal], state_root: Option<B256>) -> Result<()> {
         if withdrawals.is_empty() {
             return Ok(());
         }

@@ -1,7 +1,8 @@
+use alloy_primitives::keccak256;
 use wasix_eth_types::*;
 use wasix_eth_storage::write::BatchWriter;
 use wasix_eth_storage::read_traits::{AccountProvider, StorageProvider};
-use wasix_eth_storage::write_traits::{AccountWriter, BytecodeWriter, StorageWriter, StateWriter};
+use wasix_eth_storage::write_traits::{AccountWriter, BytecodeWriter, StorageWriter, StateWriter, HashedStorageWriter};
 use wasix_eth_utils::debug;
 use evm::backend::OverlayedChangeSet;
 use anyhow::Result;
@@ -44,11 +45,8 @@ impl<'a> StateApplier<'a> {
             self.batch.update_account(addr, trie_account)?;
             
             // Sync PlainState and HashedState
-            let mut acc_rlp = Vec::new();
-            trie_account.encode(&mut acc_rlp);
-            let acc_rlp_bytes = Bytes::from(acc_rlp);
-            self.batch.update_plain_state(addr, acc_rlp_bytes.clone())?;
-            self.batch.update_hashed_state(keccak256(addr), acc_rlp_bytes)?;
+            self.batch.update_plain_state(addr, trie_account)?;
+            self.batch.update_hashed_state(keccak256(addr), trie_account)?;
         }
 
         // 2. Nonces
@@ -61,11 +59,8 @@ impl<'a> StateApplier<'a> {
             self.batch.update_account(addr, trie_account)?;
             
             // Sync PlainState and HashedState
-            let mut acc_rlp = Vec::new();
-            trie_account.encode(&mut acc_rlp);
-            let acc_rlp_bytes = Bytes::from(acc_rlp);
-            self.batch.update_plain_state(addr, acc_rlp_bytes.clone())?;
-            self.batch.update_hashed_state(keccak256(addr), acc_rlp_bytes)?;
+            self.batch.update_plain_state(addr, trie_account)?;
+            self.batch.update_hashed_state(keccak256(addr), trie_account)?;
         }
 
         // 3. Codes
@@ -80,11 +75,8 @@ impl<'a> StateApplier<'a> {
             self.batch.update_account(addr, trie_account)?;
             
             // Sync PlainState and HashedState
-            let mut acc_rlp = Vec::new();
-            trie_account.encode(&mut acc_rlp);
-            let acc_rlp_bytes = Bytes::from(acc_rlp);
-            self.batch.update_plain_state(addr, acc_rlp_bytes.clone())?;
-            self.batch.update_hashed_state(keccak256(addr), acc_rlp_bytes)?;
+            self.batch.update_plain_state(addr, trie_account)?;
+            self.batch.update_hashed_state(keccak256(addr), trie_account)?;
         }
 
         // 4. Storage Resets
@@ -109,8 +101,7 @@ impl<'a> StateApplier<'a> {
             let hashed_addr = keccak256(addr);
             let hashed_slot = keccak256(slot_b256);
             let combined_key = keccak256([hashed_addr.0, hashed_slot.0].concat());
-            let val_bytes = val_u256.to_be_bytes::<32>();
-            self.batch.update_hashed_state(combined_key, Bytes::from(val_bytes.to_vec()))?;
+            self.batch.update_hashed_storage(combined_key, val_u256)?;
         }
 
         for address in &changeset.touched { affected_accounts.insert(*address); }
@@ -141,11 +132,8 @@ impl<'a> StateApplier<'a> {
                     self.batch.update_account(addr, trie_account)?;
                     
                     // Sync PlainState and HashedState
-                    let mut acc_rlp = Vec::new();
-                    trie_account.encode(&mut acc_rlp);
-                    let acc_rlp_bytes = Bytes::from(acc_rlp);
-                    self.batch.update_plain_state(addr, acc_rlp_bytes.clone())?;
-                    self.batch.update_hashed_state(keccak256(addr), acc_rlp_bytes)?;
+                    self.batch.update_plain_state(addr, trie_account)?;
+                    self.batch.update_hashed_state(keccak256(addr), trie_account)?;
                 }
             } else {
                  let trie_account = TrieAccount {
@@ -158,11 +146,8 @@ impl<'a> StateApplier<'a> {
                     self.batch.update_account(addr, trie_account)?;
                     
                     // Sync PlainState and HashedState
-                    let mut acc_rlp = Vec::new();
-                    trie_account.encode(&mut acc_rlp);
-                    let acc_rlp_bytes = Bytes::from(acc_rlp);
-                    self.batch.update_plain_state(addr, acc_rlp_bytes.clone())?;
-                    self.batch.update_hashed_state(keccak256(addr), acc_rlp_bytes)?;
+                    self.batch.update_plain_state(addr, trie_account)?;
+                    self.batch.update_hashed_state(keccak256(addr), trie_account)?;
                  }
             }
         }

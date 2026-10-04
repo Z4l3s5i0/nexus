@@ -1,16 +1,11 @@
-use wasix_eth_types::{Address, Block, BlockBody, Bytes, Header, PayloadId, PeerEntry, Receipt, Result, Transaction, TrieAccount, B256, U256, BlockId, BlockNumberOrTag, BlobsBundleV1};
+use wasix_eth_types::{
+    Address, Block, BlockBody, Bytes, Header, PayloadId, PeerEntry, Receipt, Result, Transaction,
+    TrieAccount, B256, U256, BlockId, BlockNumberOrTag, BlobsBundleV1,
+};
 use wasix_eth_utils::debug;
 use redb::{Database, WriteTransaction, ReadableTable, ReadableDatabase};
-use crate::codecs::Table;
+use crate::codecs::{RlpValue, Table};
 use crate::tables::*;
-use std::collections::{HashSet, HashMap};
-use std::sync::Mutex;
-use std::sync::Arc;
-use crate::write_traits::{AccountWriter, BlockWriter, BytecodeWriter, ChangeSetWriter, HeaderWriter, MetadataWriter, PeerDiscoveryWriter, StateWriter, StorageWriter, TransactionWriter};
-use crate::read_traits::{AccountProvider, BytecodeProvider, StateProvider, StorageProvider, HeaderProvider};
-use crate::read::DatabaseReadProvider;
-use wasix_eth_types::ReceiptMeta;
-use alloy_rlp::Decodable;
 
 /// Implementation of database write providers using a `redb` database.
 #[derive(Clone)]
@@ -18,6 +13,23 @@ pub struct DatabaseWriteProvider {
     db: Arc<Database>,
     touched_accounts: Arc<Mutex<HashSet<Address>>>,
     touched_storages: Arc<Mutex<HashMap<Address, HashSet<B256>>>>,
+}
+
+use crate::write_traits::{AccountWriter, BlockWriter, BytecodeWriter, ChangeSetWriter, HeaderWriter, MetadataWriter, PeerDiscoveryWriter, StateWriter, StorageWriter, TransactionWriter, HashedStorageWriter};
+use crate::read_traits::{AccountProvider, BytecodeProvider, StateProvider, StorageProvider, HeaderProvider};
+use crate::read::DatabaseReadProvider;
+use wasix_eth_types::ReceiptMeta;
+use alloy_rlp::Decodable;
+use std::collections::{HashSet, HashMap};
+use std::sync::Mutex;
+use std::sync::Arc;
+
+impl HashedStorageWriter for BatchWriter {
+    fn update_hashed_storage(&self, hash: B256, value: U256) -> anyhow::Result<()> {
+        let mut table = self.wtx.open_table(HashedStorages::definition())?;
+        table.insert(hash, RlpValue(value))?;
+        Ok(())
+    }
 }
 
 impl DatabaseWriteProvider {
@@ -90,22 +102,15 @@ impl BatchWriter {
 use crate::trie::EthTrie;
 
 impl BatchWriter {
-    pub fn collect_account_changes(&self) -> Vec<(Address, Option<Bytes>)> {
+    pub fn collect_account_changes(&self) -> Vec<(Address, Option<TrieAccount>)> {
         let originals = self.original_accounts.lock().unwrap();
-        originals.iter().map(|(addr, acc)| {
-            let bytes = acc.map(|a| {
-                let mut buf = Vec::new();
-                alloy_rlp::Encodable::encode(&a, &mut buf);
-                Bytes::from(buf)
-            });
-            (*addr, bytes)
-        }).collect()
+        originals.iter().map(|(addr, acc)| (*addr, acc.clone())).collect()
     }
 
-    pub fn collect_storage_changes(&self) -> Vec<(Address, B256, U256)> {
+    pub fn collect_storage_changes(&self) -> Vec<((Address, B256), Option<U256>)> {
         let originals = self.original_storages.lock().unwrap();
         originals.iter().map(|((addr, slot), val)| {
-            (*addr, *slot, *val)
+            ((*addr, *slot), Some(*val))
         }).collect()
     }
 
@@ -167,16 +172,14 @@ impl BatchWriter {
                 table.insert(addr, trie_acc)?;
 
                 // Sync PlainState and HashedState
+                let mut plain_table = self.wtx.open_table(PlainState::definition())?;
+                plain_table.insert(addr, trie_acc)?;
+                let mut hashed_table = self.wtx.open_table(HashedState::definition())?;
+                hashed_table.insert(hashed_addr, trie_acc)?;
+
                 let mut acc_rlp = Vec::new();
                 alloy_rlp::Encodable::encode(&trie_acc, &mut acc_rlp);
-                let acc_rlp_bytes = Bytes::from(acc_rlp);
-                
-                let mut plain_table = self.wtx.open_table(PlainState::definition())?;
-                plain_table.insert(addr, acc_rlp_bytes.clone())?;
-                let mut hashed_table = self.wtx.open_table(HashedState::definition())?;
-                hashed_table.insert(hashed_addr, acc_rlp_bytes.clone())?;
-
-                trie.insert(hashed_addr, acc_rlp_bytes.0.to_vec())?;
+                trie.insert(hashed_addr, acc_rlp)?;
             } else {
                 debug!("[Trie] Account not found for trie update: addr={:?}", addr);
                 trie.delete(hashed_addr)?;
@@ -223,21 +226,20 @@ impl BatchWriter {
                 if value == U256::ZERO {
                     trie.delete(hashed_slot)?;
                     
-                    // Sync HashedState
+                    // Sync HashedStorages
                     let hashed_addr = alloy_primitives::keccak256(address);
                     let combined_key = alloy_primitives::keccak256([hashed_addr.0, hashed_slot.0].concat());
-                    let mut table = self.wtx.open_table(HashedState::definition())?;
+                    let mut table = self.wtx.open_table(HashedStorages::definition())?;
                     table.remove(combined_key)?;
                 } else {
                     let mut buf = Vec::new();
                     alloy_rlp::Encodable::encode(&value, &mut buf);
                     
-                    // Sync HashedState
-                    let val_bytes = value.to_be_bytes::<32>();
+                    // Sync HashedStorages
                     let hashed_addr = alloy_primitives::keccak256(address);
                     let combined_key = alloy_primitives::keccak256([hashed_addr.0, hashed_slot.0].concat());
-                    let mut table = self.wtx.open_table(HashedState::definition())?;
-                    table.insert(combined_key, Bytes::from(val_bytes.to_vec()))?;
+                    let mut table = self.wtx.open_table(HashedStorages::definition())?;
+                    table.insert(combined_key, value)?;
 
                     trie.insert(hashed_slot, buf)?;
                 }
@@ -292,7 +294,7 @@ impl AccountProvider for BatchWriter {
             let acc_bytes = trie.get_nibbles(alloy_trie::Nibbles::unpack(hashed_address))?;
             if let Some(bytes) = acc_bytes {
                 let mut slice = &bytes[..];
-                let acc = TrieAccount::decode(&mut slice)?;
+                let acc = <TrieAccount as alloy_rlp::Decodable>::decode(&mut slice)?;
                 return Ok(Some(acc));
             }
             return Ok(None);
@@ -332,6 +334,22 @@ impl AccountProvider for BatchWriter {
     fn transaction_count(&self, address: Address, _block_id: BlockId, state_root: Option<B256>) -> Result<u64> {
         let account = self.account(address, state_root)?;
         Ok(account.as_ref().map(|a| a.nonce).unwrap_or(0))
+    }
+
+    fn plain_state(&self, address: Address) -> Result<Option<TrieAccount>> {
+        let table = self.wtx.open_table(PlainState::definition())?;
+        if let Some(value) = table.get(address)? {
+            return Ok(Some(value.value()));
+        }
+        self.read_provider.plain_state(address)
+    }
+
+    fn hashed_state(&self, hash: B256) -> Result<Option<TrieAccount>> {
+        let table = self.wtx.open_table(HashedState::definition())?;
+        if let Some(value) = table.get(hash)? {
+            return Ok(Some(value.value()));
+        }
+        self.read_provider.hashed_state(hash)
     }
 }
 
@@ -505,7 +523,11 @@ impl BlockWriter for BatchWriter {
         let number = block.header.number;
         
         self.insert_header(hash, block.header.clone())?;
-        self.insert_block_body(hash, number, block.body.clone())?;
+        self.insert_block_body(hash, number, BlockBody {
+            transactions: block.body.transactions,
+            ommers: block.body.ommers,
+            withdrawals: block.body.withdrawals.map(|w| w.to_vec()),
+        })?;
         
         // Calculate TD
         let parent_td = if number == 0 {
@@ -653,22 +675,6 @@ impl BytecodeWriter for BatchWriter {
 }
 
 impl StateProvider for BatchWriter {
-    fn plain_state(&self, address: Address) -> anyhow::Result<Option<Bytes>> {
-        let table = self.wtx.open_table(PlainState::definition())?;
-        if let Some(value) = table.get(address)? {
-            return Ok(Some(value.value()));
-        }
-        self.read_provider.plain_state(address)
-    }
-
-    fn hashed_state(&self, hash: B256) -> anyhow::Result<Option<Bytes>> {
-        let table = self.wtx.open_table(HashedState::definition())?;
-        if let Some(value) = table.get(hash)? {
-            return Ok(Some(value.value()));
-        }
-        self.read_provider.hashed_state(hash)
-    }
-
     fn trie_node(&self, hash: B256) -> anyhow::Result<Option<Bytes>> {
         let table = self.wtx.open_table(TrieNodes::definition())?;
         if let Some(value) = table.get(hash)? {
@@ -679,7 +685,7 @@ impl StateProvider for BatchWriter {
 }
 
 impl StateWriter for BatchWriter {
-    fn update_plain_state(&self, address: Address, state: Bytes) -> Result<()> {
+    fn update_plain_state(&self, address: Address, state: TrieAccount) -> Result<()> {
         let mut table = self.wtx.open_table(PlainState::definition())?;
         table.insert(address, state)?;
         self.touched_accounts.lock().unwrap().insert(address);
@@ -693,7 +699,7 @@ impl StateWriter for BatchWriter {
         Ok(())
     }
 
-    fn update_hashed_state(&self, hash: B256, state: Bytes) -> Result<()> {
+    fn update_hashed_state(&self, hash: B256, state: TrieAccount) -> Result<()> {
         let mut table = self.wtx.open_table(HashedState::definition())?;
         table.insert(hash, state)?;
         Ok(())
@@ -707,13 +713,13 @@ impl StateWriter for BatchWriter {
 }
 
 impl ChangeSetWriter for BatchWriter {
-    fn insert_account_change_set(&self, number: u64, change_set: Vec<(Address, Option<Bytes>)>) -> Result<()> {
+    fn insert_account_change_set(&self, number: u64, change_set: Vec<(Address, Option<TrieAccount>)>) -> Result<()> {
         let mut table = self.wtx.open_table(AccountChangeSets::definition())?;
         table.insert(number, change_set)?;
         Ok(())
     }
 
-    fn insert_storage_change_set(&self, number: u64, change_set: Vec<(Address, B256, U256)>) -> Result<()> {
+    fn insert_storage_change_set(&self, number: u64, change_set: Vec<((Address, B256), Option<U256>)>) -> Result<()> {
         let mut table = self.wtx.open_table(StorageChangeSets::definition())?;
         table.insert(number, change_set)?;
         Ok(())
@@ -919,6 +925,16 @@ impl AccountProvider for DatabaseWriteProvider {
         let read_provider = DatabaseReadProvider::new(self.db.clone());
         read_provider.transaction_count(address, block_id, state_root)
     }
+
+    fn plain_state(&self, address: Address) -> anyhow::Result<Option<TrieAccount>> {
+        let read_provider = DatabaseReadProvider::new(self.db.clone());
+        read_provider.plain_state(address)
+    }
+
+    fn hashed_state(&self, hash: B256) -> anyhow::Result<Option<TrieAccount>> {
+        let read_provider = DatabaseReadProvider::new(self.db.clone());
+        read_provider.hashed_state(hash)
+    }
 }
 
 impl StorageProvider for DatabaseWriteProvider {
@@ -1105,20 +1121,6 @@ impl BytecodeWriter for DatabaseWriteProvider {
 }
 
 impl StateProvider for DatabaseWriteProvider {
-    fn plain_state(&self, address: Address) -> anyhow::Result<Option<Bytes>> {
-        let rtx = self.db.begin_read()?;
-        let table = rtx.open_table(PlainState::definition())?;
-        let value = table.get(address)?;
-        Ok(value.map(|v| v.value()))
-    }
-
-    fn hashed_state(&self, hash: B256) -> anyhow::Result<Option<Bytes>> {
-        let rtx = self.db.begin_read()?;
-        let table = rtx.open_table(HashedState::definition())?;
-        let value = table.get(hash)?;
-        Ok(value.map(|v| v.value()))
-    }
-
     fn trie_node(&self, hash: B256) -> anyhow::Result<Option<Bytes>> {
         let rtx = self.db.begin_read()?;
         let table = rtx.open_table(TrieNodes::definition())?;
@@ -1128,7 +1130,7 @@ impl StateProvider for DatabaseWriteProvider {
 }
 
 impl StateWriter for DatabaseWriteProvider {
-    fn update_plain_state(&self, address: Address, state: Bytes) -> Result<()> {
+    fn update_plain_state(&self, address: Address, state: TrieAccount) -> Result<()> {
         self.with_write(|wtx| {
             let mut table = wtx.open_table(PlainState::definition())?;
             table.insert(address, state)?;
@@ -1144,7 +1146,7 @@ impl StateWriter for DatabaseWriteProvider {
         })
     }
 
-    fn update_hashed_state(&self, hash: B256, state: Bytes) -> Result<()> {
+    fn update_hashed_state(&self, hash: B256, state: TrieAccount) -> Result<()> {
         self.with_write(|wtx| {
             let mut table = wtx.open_table(HashedState::definition())?;
             table.insert(hash, state)?;
@@ -1158,6 +1160,18 @@ impl StateWriter for DatabaseWriteProvider {
             table.insert(hash, node)?;
             Ok(())
         })
+    }
+}
+
+impl HashedStorageWriter for DatabaseWriteProvider {
+    fn update_hashed_storage(&self, hash: B256, value: U256) -> anyhow::Result<()> {
+        let mut tx = self.db.begin_write()?;
+        {
+            let mut table = tx.open_table(HashedStorages::definition())?;
+            table.insert(hash, RlpValue(value))?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 }
 
@@ -1190,7 +1204,7 @@ impl PeerDiscoveryWriter for DatabaseWriteProvider {
 }
 
 impl ChangeSetWriter for DatabaseWriteProvider {
-    fn insert_account_change_set(&self, number: u64, change_set: Vec<(Address, Option<Bytes>)>) -> Result<()> {
+    fn insert_account_change_set(&self, number: u64, change_set: Vec<(Address, Option<TrieAccount>)>) -> Result<()> {
         self.with_write(|wtx| {
             let mut table = wtx.open_table(AccountChangeSets::definition())?;
             table.insert(number, change_set)?;
@@ -1198,7 +1212,7 @@ impl ChangeSetWriter for DatabaseWriteProvider {
         })
     }
 
-    fn insert_storage_change_set(&self, number: u64, change_set: Vec<(Address, B256, U256)>) -> Result<()> {
+    fn insert_storage_change_set(&self, number: u64, change_set: Vec<((Address, B256), Option<U256>)>) -> Result<()> {
         self.with_write(|wtx| {
             let mut table = wtx.open_table(StorageChangeSets::definition())?;
             table.insert(number, change_set)?;
