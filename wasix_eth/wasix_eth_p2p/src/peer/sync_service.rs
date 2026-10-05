@@ -14,7 +14,7 @@ use wasix_eth_types::p2p::{
     GossipMessage, RequestPair, GetBlockHeaders, BlockHeaders, GetBlockBodies, BlockBodies,
     GetPooledTransactions, PooledTransactions, GetReceipts, Receipts, GetNodeData, NodeData
 };
-use wasix_eth_types::{async_trait, Block, BlockId, GossipProvider, Transaction, B256, TxPooledEnvelope, BlobTransactionSidecar, Signed, TxEip4844Variant, BlobTransactionSidecarVariant};
+use wasix_eth_types::{async_trait, Block, BlockId, GossipProvider, Transaction, B256, TxPooledEnvelope, BlobTransactionSidecar, Signed, TxEip4844Variant, BlobTransactionSidecarVariant, BlobTransactionSidecarEip7594};
 use wasix_eth_utils::metrics::GOSSIP_MESSAGES_RECEIVED;
 use wasix_eth_utils::{debug, error, info};
 
@@ -304,7 +304,7 @@ impl SyncService {
                     if let TxPooledEnvelope::Eip4844(s) = &pooled {
                          let inner_tx = s.tx();
                          let sidecar = &inner_tx.sidecar;
-                         debug!("[Sync] Blobs: {}, first blob len: {}", sidecar.blobs().len(), sidecar.blobs().get(0).map(|b| b.len()).unwrap_or(0));
+                         debug!("[Sync] Blobs: {}, first blob len: {}", sidecar.blobs.len(), sidecar.blobs.get(0).map(|b| b.len()).unwrap_or(0));
                     }
                 }
                 txs.push(pooled);
@@ -338,17 +338,17 @@ impl SyncService {
 
                         if !blobs.is_empty() {
                             let (tx_variant, signature, hash) = t.clone().into_parts();
-                            let sidecar = BlobTransactionSidecar {
+                            let sidecar = BlobTransactionSidecarEip7594 {
                                 blobs,
                                 commitments,
-                                proofs,
+                                cell_proofs: proofs,
                             };
                             let pooled = match tx_variant {
                                 TxEip4844Variant::TxEip4844(inner_tx) => {
-                                    TxPooledEnvelope::Eip4844(Signed::new_unchecked(inner_tx.with_sidecar(BlobTransactionSidecarVariant::Eip4844(sidecar)), signature, hash))
+                                    TxPooledEnvelope::Eip4844(Signed::new_unchecked(inner_tx.with_sidecar(sidecar.clone()), signature, hash))
                                 }
                                 TxEip4844Variant::TxEip4844WithSidecar(inner_tx) => {
-                                    TxPooledEnvelope::Eip4844(Signed::new_unchecked(inner_tx.tx.with_sidecar(BlobTransactionSidecarVariant::Eip4844(sidecar)), signature, hash))
+                                    TxPooledEnvelope::Eip4844(Signed::new_unchecked(inner_tx.tx.with_sidecar(sidecar.clone()), signature, hash))
                                 }
                             };
                             
@@ -360,7 +360,7 @@ impl SyncService {
                                 if let TxPooledEnvelope::Eip4844(s) = &pooled {
                                      let inner_tx = s.tx();
                                      let sidecar = &inner_tx.sidecar;
-                                     debug!("[Sync] Blobs: {}, first blob len: {}", sidecar.blobs().len(), sidecar.blobs().get(0).map(|b| b.len()).unwrap_or(0));
+                                     debug!("[Sync] Reconstructed Blobs: {}, first blob len: {}", sidecar.blobs.len(), sidecar.blobs.get(0).map(|b| b.len()).unwrap_or(0));
                                 }
                             }
                             
@@ -517,17 +517,18 @@ impl GossipProvider for SyncService {
 
                         if !blobs.is_empty() {
                             let (tx_variant, signature, hash) = t.clone().into_parts();
-                            let sidecar = BlobTransactionSidecar {
+                            let sidecar = BlobTransactionSidecarEip7594 {
                                 blobs,
                                 commitments,
-                                proofs,
+                                cell_proofs: proofs,
                             };
+
                             match tx_variant {
                                 TxEip4844Variant::TxEip4844(inner_tx) => {
-                                    TxPooledEnvelope::Eip4844(Signed::new_unchecked(inner_tx.with_sidecar(BlobTransactionSidecarVariant::Eip4844(sidecar)), signature, hash))
+                                    TxPooledEnvelope::Eip4844(Signed::new_unchecked(inner_tx.with_sidecar(sidecar.clone()), signature, hash))
                                 }
                                 TxEip4844Variant::TxEip4844WithSidecar(inner_tx) => {
-                                    TxPooledEnvelope::Eip4844(Signed::new_unchecked(inner_tx.tx.with_sidecar(BlobTransactionSidecarVariant::Eip4844(sidecar)), signature, hash))
+                                    TxPooledEnvelope::Eip4844(Signed::new_unchecked(inner_tx.tx.with_sidecar(sidecar.clone()), signature, hash))
                                 }
                             }
                         } else {

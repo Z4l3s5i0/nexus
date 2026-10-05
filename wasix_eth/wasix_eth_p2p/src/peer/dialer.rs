@@ -180,10 +180,17 @@ impl PeerDialer {
 
         if attempts > 0 {
             let elapsed = Instant::now().duration_since(last_dial_time);
-            let jitter = rand::thread_rng().gen_range(0..10);
-            let cooldown = Duration::from_secs(5 + jitter);
-            if elapsed < cooldown {
-                let wait = cooldown - elapsed;
+            let wait = {
+                use rand::Rng;
+                let jitter = rand::thread_rng().gen_range(0..10u64);
+                let cooldown = Duration::from_secs(5 + jitter);
+                if elapsed < cooldown {
+                    Some(cooldown - elapsed)
+                } else {
+                    None
+                }
+            };
+            if let Some(wait) = wait {
                 debug!("[P2P Dialer] Cooldown for {}: waiting {:?} (jittered)", addr, wait);
                 sleep(wait).await;
             }

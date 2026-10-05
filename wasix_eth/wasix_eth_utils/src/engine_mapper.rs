@@ -85,7 +85,12 @@ impl EngineMapper {
     pub fn to_execution_payload_v2(block: &Block<Transaction>, chain_config: &ChainConfig) -> ExecutionPayloadV2 {
         ExecutionPayloadV2 {
             payload_inner: Self::to_execution_payload_v1(block, chain_config),
-            withdrawals: block.body.withdrawals.as_ref().map(|w| w.to_vec()),
+            withdrawals: block.body.withdrawals.as_ref().map(|w| w.0.iter().map(|wi| eip4895::Withdrawal {
+                index: wi.index,
+                validator_index: wi.validator_index,
+                address: wi.address,
+                amount: wi.amount,
+            }).collect::<Vec<_>>()).unwrap_or_default(),
         }
     }
     pub fn to_execution_payload_envelope_v2(execution_payload_v2: ExecutionPayloadV2, block_value: U256, fork: Hardfork) -> ExecutionPayloadEnvelopeV2 {
@@ -101,7 +106,7 @@ impl EngineMapper {
 
     pub fn to_execution_payload_v3(block: &Block<Transaction>, chain_config: &ChainConfig) -> ExecutionPayloadV3 {
         ExecutionPayloadV3 {
-            payload_inner: Self::to_execution_payload_v2(block, chain_config).into(),
+            payload_inner: Self::to_execution_payload_v2(block, chain_config),
             blob_gas_used: block.header.blob_gas_used.unwrap_or_default(),
             excess_blob_gas: block.header.excess_blob_gas.unwrap_or_default(),
         }
@@ -109,7 +114,7 @@ impl EngineMapper {
 
     pub fn to_execution_payload_envelope_v3(execution_payload_v3: ExecutionPayloadV3, block_value: U256, blobs_bundle: BlobsBundleV1) -> ExecutionPayloadEnvelopeV3 {
         ExecutionPayloadEnvelopeV3 {
-            execution_payload: execution_payload_v3,
+            execution_payload: execution_payload_v3.into(),
             block_value,
             blobs_bundle,
             should_override_builder: false,
@@ -120,13 +125,14 @@ impl EngineMapper {
         ExecutionPayloadV4 {
             payload_inner: Self::to_execution_payload_v3(block, chain_config),
             block_access_list: vec![].into(),
+            slot_number: 0,
         }
     }
 
     pub fn to_execution_payload_envelope_v4(execution_payload_v4: ExecutionPayloadV4, block_value: U256, blobs_bundle: BlobsBundleV1, execution_requests: Vec<Bytes>) -> ExecutionPayloadEnvelopeV4 {
         ExecutionPayloadEnvelopeV4 {
             envelope_inner: ExecutionPayloadEnvelopeV3 {
-                execution_payload: execution_payload_v4.payload_inner,
+                execution_payload: execution_payload_v4.payload_inner.into(),
                 block_value,
                 blobs_bundle,
                 should_override_builder: false,
@@ -140,7 +146,12 @@ impl EngineMapper {
             transactions: block.body.transactions.iter().map(|tx| {
                 encode_tx_for_payload(tx).into()
             }).collect(),
-            withdrawals: block.body.withdrawals.clone().map(|w| w.to_vec()),
+            withdrawals: Option::from(block.body.withdrawals.clone().map(|w| w.0.iter().map(|wi| eip4895::Withdrawal {
+                index: wi.index,
+                validator_index: wi.validator_index,
+                address: wi.address,
+                amount: wi.amount,
+            }).collect::<Vec<_>>()).unwrap_or_default()),
         }
     }
 
@@ -223,6 +234,8 @@ impl EngineMapper {
             difficulty: if fork >= Hardfork::Paris { U256::ZERO } else { U256::from(0x30000) }, // Use 0x30000 as default pre-merge difficulty for Hive consistency
             nonce: if fork >= Hardfork::Paris { B64::ZERO } else { B64::from(0x42u64) }, // Arbitrary non-zero nonce for pre-Paris
             requests_hash: None,
+            block_access_list_hash: None,
+            slot_number: None,
         };
 
         Block {

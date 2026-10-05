@@ -37,15 +37,15 @@ wasix_eth_core = { path = "wasix_eth_core", version = "0.1.0" }
 
 
 alloy-rlp = { version = "=0.3.16" }
-alloy-consensus = { version = "=2.5.0" }
+alloy-consensus = { version = "=2.5.0" , features = ["k256"] }
 alloy-network = { version = "=2.5.0" }
-alloy-rpc-types = { version = "=2.5.0", default-features = true, features = ["engine", "eth", "admin", "txpool"]}
+alloy-rpc-types = { version = "=2.5.0", default-features = true, features = ["engine", "eth", "admin", "txpool", "any", "default"]}
 alloy-signer = { version = "=2.5.0" }
 alloy-signer-local = { version = "=2.5.0" }
 alloy-primitives = { version = "=1.7.3" }
 alloy-json-rpc= { version = "=2.5.0" }
 alloy-serde= { version = "=2.5.0" }
-alloy-eips = { version = "=2.5.0" }
+alloy-eips = { version = "=2.5.0", features = ["kzg-sidecar"]}
 alloy-trie = { version = "=0.9.8" }
 alloy-genesis = {version = "=2.5.0"}
 alloy-tx-macros = {version = "=2.5.0"}
@@ -73,9 +73,9 @@ prometheus = "0.14.0"
 getrandom = {version = "0.4.3", default-features = false}
 hex = "0.4.3"
 snap = "1.1.2"
-clap = "4.6.7"
+clap = { version = "4.6.7", features = ["derive"] }
 http = "1.5.0"
-hyper = "1.6.0"
+hyper = { version = "1.6.0", features = ["server"] }
 reqwest = "0.12.22"
 tower = "0.5.3"
 aes = "0.8.4"

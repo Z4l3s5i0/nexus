@@ -266,11 +266,13 @@ impl PayloadBuilder {
         let old_value = self.calculate_block_value(&payload_block, &payload_receipts);
 
         let attr = PayloadAttributes {
-            timestamp: payload_block.header.timestamp,
-            prev_randao: payload_block.header.mix_hash,
-            suggested_fee_recipient: payload_block.header.beneficiary,
-            withdrawals: payload_block.body.withdrawals.as_ref().map(|w| w.0.clone()),
-            parent_beacon_block_root: payload_block.header.parent_beacon_block_root,
+                timestamp: payload_block.header.timestamp,
+                prev_randao: payload_block.header.mix_hash,
+                suggested_fee_recipient: payload_block.header.beneficiary,
+                withdrawals: payload_block.body.withdrawals.as_ref().map(|w| w.0.clone()),
+                parent_beacon_block_root: payload_block.header.parent_beacon_block_root,
+                slot_number: None,
+                target_gas_limit: None,
         };
 
         // 1. Validate attributes (check if parent block still exists)

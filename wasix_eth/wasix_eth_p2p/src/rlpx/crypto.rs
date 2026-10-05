@@ -7,6 +7,7 @@ use k256::elliptic_curve::sec1::ToEncodedPoint;
 use k256::{PublicKey, SecretKey};
 use anyhow::{Result, anyhow};
 use sha3::{Digest, Keccak256};
+use rand::RngCore;
 
 type HmacSha256 = Hmac<Sha256>;
 type Aes128Ctr = ctr::Ctr128BE<aes::Aes128>;
@@ -180,7 +181,10 @@ pub fn ecies_encrypt(remote_pub: &PublicKey, data: &[u8], ephemeral_sk: &SecretK
     let mac_key = Sha256::digest(&derived[16..32]);
     
     let mut iv = [0u8; 16];
-    getrandom::getrandom(&mut iv).map_err(|e| anyhow!("getrandom error: {}", e))?;
+    {
+        use rand::RngCore;
+        rand::thread_rng().fill_bytes(&mut iv);
+    }
 
     let mut cipher_text = data.to_vec();
 

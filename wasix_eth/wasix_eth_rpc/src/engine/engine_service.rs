@@ -161,7 +161,7 @@ impl EngineService {
     }
 
     pub async fn new_payload_v2(&self, payload: ExecutionPayloadV2) -> RpcResult<PayloadStatus> {
-        self.new_payload(payload.payload_inner.into(), payload.withdrawals).await
+        self.new_payload(payload.payload_inner.into(), Some(payload.withdrawals)).await
     }
 
     async fn new_payload(

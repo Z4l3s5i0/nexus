@@ -7,6 +7,8 @@ use crate::rlpx::crypto::{AuthMsgV4, AuthAckV4, b512_to_pubkey, pubkey_to_b512, 
 use alloy_rlp::Decodable;
 use wasix_eth_utils::debug;
 use crate::rlpx::frame::RlpxFrameCodec;
+use rand::Rng;
+use k256::elliptic_curve::rand_core::OsRng;
 
 pub async fn do_handshake<S: AsyncReadExt + AsyncWriteExt + Unpin>(
     stream: &mut RlpxStream<S>,
@@ -14,7 +16,7 @@ pub async fn do_handshake<S: AsyncReadExt + AsyncWriteExt + Unpin>(
     local_sk: &SecretKey,
     remote_pk: Option<&PublicKey>,
 ) -> Result<()> {
-    let initiator_session_eph_sk = SecretKey::random(&mut rand::thread_rng());
+    let initiator_session_eph_sk = SecretKey::random(&mut OsRng);
     let initiator_nonce = B256::from(rand::random::<[u8; 32]>());
 
     if initiator {
@@ -52,7 +54,11 @@ pub async fn do_handshake<S: AsyncReadExt + AsyncWriteExt + Unpin>(
 
         let auth_rlp = alloy_rlp::encode(&auth_msg);
         let mut auth_body = auth_rlp.to_vec();
-        auth_body.resize(auth_body.len() + rand::Rng::gen_range(&mut rand::thread_rng(), 100..300), 0);
+        {
+            use rand::Rng;
+            let mut rng = rand::thread_rng();
+            auth_body.resize(auth_body.len() + rng.gen_range(100..300), 0);
+        }
         let full_auth = ecies_encrypt(remote_pk, &auth_body, &initiator_session_eph_sk)?;
         debug!("[ECIES] Initiator: writing auth packet, len={}", full_auth.len());
         stream.inner.write_all(&full_auth).await?;
@@ -137,7 +143,7 @@ pub async fn do_handshake<S: AsyncReadExt + AsyncWriteExt + Unpin>(
         let initiator_session_eph_pk = recover_pubkey(&auth_msg.signature, &msg_to_sign)?;
         tokio::task::yield_now().await;
 
-        let recipient_session_eph_sk = SecretKey::random(&mut rand::thread_rng());
+        let recipient_session_eph_sk = SecretKey::random(&mut OsRng);
         let recipient_nonce = B256::from(rand::random::<[u8; 32]>());
 
         let ack_msg = AuthAckV4 {
@@ -148,7 +154,11 @@ pub async fn do_handshake<S: AsyncReadExt + AsyncWriteExt + Unpin>(
 
         let ack_rlp = alloy_rlp::encode(&ack_msg);
         let mut ack_body = ack_rlp.to_vec();
-        ack_body.resize(ack_body.len() + rand::Rng::gen_range(&mut rand::thread_rng(), 100..300), 0);
+        {
+            use rand::Rng;
+            let mut rng = rand::thread_rng();
+            ack_body.resize(ack_body.len() + rng.gen_range(100..300), 0);
+        }
         let full_ack = ecies_encrypt(&initiator_static_pk, &ack_body, &recipient_session_eph_sk)?;
         debug!("[ECIES] Recipient: writing ack packet, len={}", full_ack.len());
         stream.inner.write_all(&full_ack).await?;

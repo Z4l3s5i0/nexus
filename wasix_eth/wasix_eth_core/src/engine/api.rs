@@ -330,40 +330,35 @@ impl RPCEngine {
         // Store blobs if present (EIP-4844)
         if let TxPooledEnvelope::Eip4844(signed_tx_sidecar) = &pooled_tx {
             let inner_tx = signed_tx_sidecar.tx();
-            let sidecar_variant = &inner_tx.sidecar;
+            let sidecar = &inner_tx.sidecar;
 
-            if let BlobTransactionSidecarVariant::Eip4844(sidecar) = sidecar_variant {
-                for (i, versioned_hash) in inner_tx.blob_versioned_hashes().unwrap_or_default().iter().enumerate() {
-                    if let (Some(blob), Some(commitment), Some(proof)) = (
-                        sidecar.blobs.get(i),
-                        sidecar.commitments.get(i),
-                        sidecar.proofs.get(i)
-                    ) {
-                        debug!("[Engine] Adding blob for versioned hash: {:?}, blob len: {}", versioned_hash, blob.len());
-                        self.mempool.add_blob(*versioned_hash, (*blob).clone(), *commitment, *proof).await;
-                    }
+            for (i, versioned_hash) in inner_tx.blob_versioned_hashes().unwrap_or_default().iter().enumerate() {
+                if let (Some(blob), Some(commitment)) = (
+                    sidecar.blobs.get(i),
+                    sidecar.commitments.get(i)
+                ) {
+                    debug!("[Engine] Adding blob for versioned hash: {:?}, blob len: {}", versioned_hash, blob.len());
+                    // use cell_proofs as proofs if compatible or handle accordingly
+                    let proof = sidecar.cell_proofs.get(i).cloned().unwrap_or_default();
+                    self.mempool.add_blob(*versioned_hash, (*blob).clone(), *commitment, proof).await;
                 }
             }
         }
 
-        // Convert to Transaction (TxEnvelope) for submission to mempool
-        let mut signed_tx: Transaction = pooled_tx.try_into()
-            .map_err(|_| RpcError::InvalidParams("Failed to convert pooled tx to envelope".to_string()))?;
-
-        // Strip sidecar from EIP-4844 transactions for the mempool (consensus format)
-        if let Transaction::Eip4844(signed_tx_sidecar) = &signed_tx {
-            use wasix_eth_types::{TxEip4844Variant, Signed, TxEip4844};
-            let inner_tx: TxEip4844 = match signed_tx_sidecar.tx() {
-                TxEip4844Variant::TxEip4844(tx) => tx.clone(),
-                TxEip4844Variant::TxEip4844WithSidecar(tx_sidecar) => tx_sidecar.tx.clone(),
-            };
-            signed_tx = Transaction::Eip4844(Signed::new_unchecked(
-                TxEip4844Variant::<wasix_eth_types::BlobTransactionSidecarVariant>::TxEip4844(inner_tx),
-                *signed_tx_sidecar.signature(),
-                *signed_tx_sidecar.hash(),
-            ));
-        }
-
+        let mut signed_tx: Transaction = match pooled_tx.clone() {
+            TxPooledEnvelope::Legacy(tx) => Transaction::Legacy(tx),
+            TxPooledEnvelope::Eip2930(tx) => Transaction::Eip2930(tx),
+            TxPooledEnvelope::Eip1559(tx) => Transaction::Eip1559(tx),
+            TxPooledEnvelope::Eip4844(tx) => {
+                let inner_tx = tx.tx();
+                wasix_eth_types::Transaction::Eip4844(Signed::new_unchecked(
+                    wasix_eth_types::TxEip4844Variant::TxEip4844(inner_tx.tx.clone()),
+                    *tx.signature(),
+                    *tx.hash(),
+                ))
+            }
+            TxPooledEnvelope::Eip7702(tx) => Transaction::Eip7702(tx),
+        };
         self.submit_transaction_with_source(signed_tx, is_local).await
     }
 

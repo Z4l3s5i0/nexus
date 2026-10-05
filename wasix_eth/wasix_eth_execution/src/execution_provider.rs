@@ -9,6 +9,7 @@ use wasix_eth_storage::write::BatchWriter;
 use wasix_eth_storage::write_traits::{AccountWriter, ChangeSetWriter, TransactionWriter};
 use wasix_eth_types::*;
 use wasix_eth_utils::{debug, info};
+use wasix_eth_types::PayloadAttributes;
 
 use crate::config::prepare_execution_env;
 pub use crate::executor::{EvmExecutor, TransactionExecutionResult};

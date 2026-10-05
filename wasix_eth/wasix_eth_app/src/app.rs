@@ -2,8 +2,6 @@ use crate::cli::Args;
 use crate::jwt::HeaderInjectorLayer;
 use crate::jwt::JwtAuthLayer;
 use crate::node::Node;
-use hyper::service::service_fn;
-use hyper::{Body, Request, Response, Server as HyperServer};
 use jsonrpsee::server::middleware::rpc::RpcServiceBuilder;
 use jsonrpsee::server::Server;
 use prometheus::{Encoder, TextEncoder};
@@ -113,40 +111,41 @@ impl App {
         let auth_rpc_handle = auth_rpc_server.start(auth_module);
 
         let metrics_port = common_args.metrics_port;
+        // info!("Metrics server DISABLED (hyper 1.0 migration pending) on port {}...", metrics_port);
+
         let addr = SocketAddr::from(([0, 0, 0, 0], metrics_port));
-        info!("Starting metrics server on {}...", addr);
-        let make_svc = hyper::service::make_service_fn(|_conn| async {
-            Ok::<_, hyper::Error>(service_fn(|req: Request<Body>| async move {
-                if req.uri().path() == "/metrics" {
-                    let encoder = TextEncoder::new();
-                    let metric_families = prometheus::gather();
-                    let mut buffer = vec![];
-                    encoder.encode(&metric_families, &mut buffer).unwrap();
-
-                    let response = Response::builder()
-                        .status(200)
-                        .header(hyper::header::CONTENT_TYPE, encoder.format_type())
-                        .body(Body::from(buffer))
-                        .unwrap();
-
-                    Ok::<_, hyper::Error>(response)
-                } else {
-                    let response = Response::builder()
-                        .status(404)
-                        .body(Body::from("Not Found"))
-                        .unwrap();
-                    Ok::<_, hyper::Error>(response)
-                }
-            }))
-        });
-
-        let server = HyperServer::bind(&addr).serve(make_svc);
-        tokio::spawn(async move {
-            if let Err(e) = server.await {
-                error!("Metrics server error: {}", e);
-            }
-        });
-
+        // info!("Starting metrics server on {}...", addr);
+        // let make_svc = hyper::service::service_fn(|_conn| async {
+        //     Ok::<_, hyper::Error>(service_fn(|req: Request<Body>| async move {
+        //         if req.uri().path() == "/metrics" {
+        //             let encoder = TextEncoder::new();
+        //             let metric_families = prometheus::gather();
+        //             let mut buffer = vec![];
+        //             encoder.encode(&metric_families, &mut buffer).unwrap();
+        //
+        //             let response = Response::builder()
+        //                 .status(200)
+        //                 .header(hyper::header::CONTENT_TYPE, encoder.format_type())
+        //                 .body(Body::from(buffer))
+        //                 .unwrap();
+        //
+        //             Ok::<_, hyper::Error>(response)
+        //         } else {
+        //             let response = Response::builder()
+        //                 .status(404)
+        //                 .body(Body::from("Not Found"))
+        //                 .unwrap();
+        //             Ok::<_, hyper::Error>(response)
+        //         }
+        //     }))
+        // });
+        //
+        // let server = Server::bind(&addr).serve(make_svc);
+        // tokio::spawn(async move {
+        //     if let Err(e) = server.await {
+        //         error!("Metrics server error: {}", e);
+        //     }
+        // });
         let node = self.node.as_mut().ok_or("Node not initialized")?;
         node.start(&self.args).await;
 
@@ -165,8 +164,8 @@ impl App {
             _ = &mut auth_rpc_stop => {
                 error!("Auth RPC server stopped internally");
             }
-            _ = tokio::signal::ctrl_c() => {
-                info!("Shutdown signal received, shutting down...");
+            _ = futures_util::future::pending::<()>() => {
+                info!("Running forever (ctrl_c not available on this platform)...");
             }
         }
         error!("[App] App::run exiting");
@@ -344,8 +343,12 @@ impl AppBuilder {
             } else {
                 info!("[App] Generating new JWT secret for this node...");
                 let mut secret_bytes = [0u8; 32];
-                getrandom::getrandom(&mut secret_bytes)
-                    .map_err(|e| format!("Failed to generate JWT secret: {}", e))?;
+                {
+                    use rand::RngCore;
+                    rand::thread_rng().fill_bytes(&mut secret_bytes);
+                }
+                // getrandom::getrandom(&mut secret_bytes)
+                //    .map_err(|e| format!("Failed to generate JWT secret: {}", e))?;
                 let secret_hex = hex::encode(secret_bytes);
                 std::fs::write(&jwt_path, &secret_hex)?;
                 info!("[App] New JWT secret saved to {:?}", jwt_path);
