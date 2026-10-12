@@ -72,11 +72,11 @@ retry_command() {
 # 4. Pull necessary common images to speed up first start
 echo "Pre-pulling common Docker images..."
 retry_command docker pull ethpandaops/ethereum-genesis-generator:6.1.3
-retry_command docker pull sigp/lighthouse:latest
-retry_command docker pull ghcr.io/ethstaker/ethstaker-deposit-cli:latest
+retry_command docker pull sigp/lighthouse:v8.2.1
+retry_command docker pull ghcr.io/ethstaker/ethstaker-deposit-cli:v1.3.0
 retry_command docker pull prom/node-exporter:v1.8.1
 retry_command docker pull grafana/grafana:11.1.0
 retry_command docker pull prom/prometheus:v2.53.1
 retry_command docker pull docker.io/z4l3s5i0/contender:latest
-retry_command docker pull ghcr.io/foundry-rs/foundry:latest
+retry_command docker pull ghcr.io/foundry-rs/foundry:v1.7.1
 echo "Setup complete!"

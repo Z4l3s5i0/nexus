@@ -6,7 +6,7 @@ WORKDIR /app
 
 # Install Wasmer
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
-RUN curl https://get.wasmer.io -sSfL | sh -s "v7.2.0"
+RUN curl https://get.wasmer.io -sSfL | sh -s "v7.4.2"
 ENV PATH="/root/.wasmer/bin:${PATH}"
 
 # Copy the pre-built .wasm file
