@@ -133,16 +133,16 @@ run_hive_tests() {
 
 perform_check() {
     check_and_pull "$LINUX_IMAGE" "LAST_LINUX_DIGEST"
-    if [ $? -eq 0 ]; then
         echo "Image $LINUX_IMAGE updated. Running HIVE tests for wasix-r-eth."
+    if [ $? -eq 0 ] || [ "$ONCE" = true ]; then
         run_hive_tests "wasix-r-eth"
     else
         echo "No updates found for $LINUX_IMAGE."
     fi
     
     check_and_pull "$WASIX_IMAGE" "LAST_WASIX_DIGEST"
-    if [ $? -eq 0 ]; then
         echo "Image $WASIX_IMAGE updated. Running HIVE tests for wasix-w-eth."
+    if [ $? -eq 0 ] || [ "$ONCE" = true ]; then
         run_hive_tests "wasix-w-eth"
     else
         echo "No updates found for $WASIX_IMAGE."
