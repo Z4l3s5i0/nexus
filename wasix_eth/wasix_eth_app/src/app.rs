@@ -21,6 +21,12 @@ use wasix_eth_types::genesis::GenesisConfiguration;
 use wasix_eth_utils::logging;
 use wasix_eth_utils::logging::LogLevel;
 use wasix_eth_utils::{debug, error, info, exp};
+use hyper::service::service_fn;
+use hyper::{Request, Response, body::Bytes};
+use http_body_util::Full;
+use std::convert::Infallible;
+use hyper_util::rt::TokioIo;
+use hyper_util::server::conn::auto::Builder;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct RegisterNodeRequest {
@@ -59,8 +65,6 @@ pub struct App {
     auth_rpc_server: Option<Server<tower::layer::util::Stack<HeaderInjectorLayer, tower::layer::util::Identity>, tower::layer::util::Stack<JwtAuthLayer, tower::layer::util::Identity>>>,
     eth_module: Option<jsonrpsee::RpcModule<()>>,
     auth_module: Option<jsonrpsee::RpcModule<()>>,
-    metrics_module: Option<jsonrpsee::RpcModule<()>>,
-    metrics_server: Option<Server>,
     metrics_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -106,14 +110,66 @@ impl App {
 
         let eth_module = self.eth_module.take().ok_or("Eth module not initialized")?;
         let auth_module = self.auth_module.take().ok_or("Auth module not initialized")?;
-        let metrics_module = self.metrics_module.take().ok_or("Metrics module not initialized")?;
         let eth_rpc_server = self.eth_rpc_server.take().ok_or("Eth RPC server not initialized")?;
         let auth_rpc_server = self.auth_rpc_server.take().ok_or("Auth RPC server not initialized")?;
-        let metrics_server = self.metrics_server.take().ok_or("Metrics server not initialized")?;
 
         let eth_rpc_handle = eth_rpc_server.start(eth_module);
         let auth_rpc_handle = auth_rpc_server.start(auth_module);
-        let metrics_rpc_handle = metrics_server.start(metrics_module);
+
+        let metrics_port = self.args.common.metrics_port;
+        let metrics_addr = SocketAddr::from(([0, 0, 0, 0], metrics_port));
+        info!("Starting metrics server on http://{}...", metrics_addr);
+
+        let metrics_handle = tokio::spawn(async move {
+            let listener = match tokio::net::TcpListener::bind(metrics_addr).await {
+                Ok(l) => l,
+                Err(e) => {
+                    error!("Failed to bind metrics server to {}: {}", metrics_addr, e);
+                    return;
+                }
+            };
+
+            loop {
+                let (stream, _) = match listener.accept().await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        error!("Failed to accept metrics connection: {}", e);
+                        continue;
+                    }
+                };
+
+                let io = TokioIo::new(stream);
+                tokio::spawn(async move {
+                    if let Err(err) = Builder::new(hyper_util::rt::TokioExecutor::new())
+                        .serve_connection(io, service_fn(|req: Request<hyper::body::Incoming>| async move {
+                            if req.uri().path() == "/metrics" {
+                                let encoder = TextEncoder::new();
+                                let metric_families = prometheus::gather();
+                                let mut buffer = vec![];
+                                encoder.encode(&metric_families, &mut buffer).unwrap();
+
+                                let response = Response::builder()
+                                    .status(200)
+                                    .header(hyper::header::CONTENT_TYPE, encoder.format_type())
+                                    .body(Full::new(Bytes::from(buffer)))
+                                    .unwrap();
+
+                                Ok::<Response<Full<Bytes>>, Infallible>(response)
+                            } else {
+                                let response = Response::builder()
+                                    .status(404)
+                                    .body(Full::new(Bytes::from("Not Found")))
+                                    .unwrap();
+                                Ok::<Response<Full<Bytes>>, Infallible>(response)
+                            }
+                        }))
+                        .await
+                    {
+                        error!("Error serving metrics connection: {:?}", err);
+                    }
+                });
+            }
+        });
 
         let node = self.node.as_mut().ok_or("Node not initialized")?;
         node.start(&self.args).await;
@@ -122,11 +178,9 @@ impl App {
 
         let eth_rpc_stop = eth_rpc_handle.stopped();
         let auth_rpc_stop = auth_rpc_handle.stopped();
-        let metrics_rpc_stop = metrics_rpc_handle.stopped();
 
         tokio::pin!(eth_rpc_stop);
         tokio::pin!(auth_rpc_stop);
-        tokio::pin!(metrics_rpc_stop);
 
         tokio::select! {
             _ = &mut eth_rpc_stop => {
@@ -135,8 +189,8 @@ impl App {
             _ = &mut auth_rpc_stop => {
                 error!("Auth RPC server stopped internally");
             }
-            _ = &mut metrics_rpc_stop => {
-                error!("Metrics RPC server stopped internally");
+            _ = metrics_handle => {
+                error!("Metrics server stopped internally");
             }
             _ = futures_util::future::pending::<()>() => {
                 info!("Running forever (ctrl_c not available on this platform)...");
@@ -335,19 +389,10 @@ impl AppBuilder {
         &self,
         node: &Node,
         ext_ip: Option<String>,
-    ) -> Result<(jsonrpsee::RpcModule<()>, jsonrpsee::RpcModule<()>, jsonrpsee::RpcModule<()>), Box<dyn Error>> {
+    ) -> Result<(jsonrpsee::RpcModule<()>, jsonrpsee::RpcModule<()>), Box<dyn Error>> {
         info!("[App] Setting up RPC services");
         let mut eth_facade = RpcServerFacade::new();
         let mut auth_facade = RpcServerFacade::new();
-        let mut metrics_module = jsonrpsee::RpcModule::new(());
-
-        metrics_module.register_method("metrics", |_, _, _| {
-            let encoder = TextEncoder::new();
-            let metric_families = prometheus::gather();
-            let mut buffer = vec![];
-            encoder.encode(&metric_families, &mut buffer).unwrap();
-            String::from_utf8(buffer).map_err(|e| jsonrpsee::types::ErrorObjectOwned::owned(jsonrpsee::types::error::INTERNAL_ERROR_CODE, e.to_string(), None::<()>))
-        })?;
 
         let eth_service = EthService {
             engine: node.rpc_engine.clone(),
@@ -370,7 +415,7 @@ impl AppBuilder {
         auth_facade.register_engine(engine_service)?;
         auth_facade.register_eth(eth_service)?;
         info!("[App] RPC services set up");
-        Ok((eth_facade.into_module(), auth_facade.into_module(), metrics_module))
+        Ok((eth_facade.into_module(), auth_facade.into_module()))
     }
 
     async fn setup_core_server(
@@ -436,8 +481,6 @@ impl AppBuilder {
             auth_rpc_server: None,
             eth_module: None,
             auth_module: None,
-            metrics_module: None,
-            metrics_server: None,
             metrics_handle: None,
         })
     }
@@ -468,8 +511,6 @@ impl AppBuilder {
             auth_rpc_server: None,
             eth_module: None,
             auth_module: None,
-            metrics_module: None,
-            metrics_server: None,
             metrics_handle: None,
         })
     }
@@ -499,14 +540,8 @@ impl AppBuilder {
         let (eth_rpc_addr, auth_rpc_addr) = self.setup_addresses(&args);
 
         let ext_ip_str = args.common.ext_ip.map(|ip| ip.to_string());
-        let (eth_module, auth_module, metrics_module) = self.setup_rpc_services(&node, ext_ip_str).await?;
+        let (eth_module, auth_module) = self.setup_rpc_services(&node, ext_ip_str).await?;
         let (eth_rpc_server, auth_rpc_server) = self.setup_core_server(eth_rpc_addr, auth_rpc_addr, Some(jwt_secret)).await?;
-
-        let bind_ip = "0.0.0.0".parse::<std::net::IpAddr>().unwrap();
-        let metrics_addr = SocketAddr::new(bind_ip, args.common.metrics_port);
-        let metrics_server = Server::builder()
-            .build(metrics_addr)
-            .await?;
 
         debug!("[App] App built with all services");
         Ok(App {
@@ -516,8 +551,6 @@ impl AppBuilder {
             auth_rpc_server: Some(auth_rpc_server),
             eth_module: Some(eth_module),
             auth_module: Some(auth_module),
-            metrics_module: Some(metrics_module),
-            metrics_server: Some(metrics_server),
             metrics_handle: None,
         })
     }

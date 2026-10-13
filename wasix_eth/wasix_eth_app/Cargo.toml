@@ -41,6 +41,8 @@ alloy-json-rpc = {workspace = true}
 reqwest = { workspace = true, features = ["json"] }
 prometheus = { workspace = true }
 hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
 rand = {workspace = true}
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
