@@ -83,7 +83,9 @@ echo "password12345" > "$OUTPUT_DIR/password.txt"
 # Note: existing-mnemonic is used to derive keys from the shared MNEMONIC.
 # We pipe the password and index twice to handle confirmation prompts.
 # We run as the current user to avoid permission issues with generated files.
-printf "%s\n%s\n\n" "0" "password12345" | \
+# We provide a withdrawal address to avoid interactive prompts.
+#WITHDRAWAL_ADDRESS="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+printf "%s\n%s\n%s\n\n\n" "0" "password12345" "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" | \
 docker run --rm -i -u "$(id -u):$(id -g)" -v "$(pwd)/$OUTPUT_DIR:/data" ghcr.io/ethstaker/ethstaker-deposit-cli:latest --language English existing-mnemonic \
   --mnemonic="$MNEMONIC" \
   --num_validators="$NUM_NODES" \
@@ -91,6 +93,7 @@ docker run --rm -i -u "$(id -u):$(id -g)" -v "$(pwd)/$OUTPUT_DIR:/data" ghcr.io/
   --mnemonic_language="english" \
   --chain=mainnet \
   --keystore_password="password12345" \
+  --execution_address="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" \
   --folder=/data
 
 # Organize keys into node-specific folders for compatibility with start_remote.sh

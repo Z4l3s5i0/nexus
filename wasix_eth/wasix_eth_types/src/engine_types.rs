@@ -4,9 +4,9 @@ use alloy_rpc_types::engine::{
     ExecutionPayloadV3 as AlloyExecutionPayloadV3,
     ExecutionPayloadV4 as AlloyExecutionPayloadV4,
 };
-use crate::eip4895::Withdrawal;
-use alloy_primitives::U256;
+use alloy_primitives::{Address, U256};
 use serde::{Deserialize, Serialize};
+use crate::eip4895::Withdrawal;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,7 +21,9 @@ pub struct ExecutionPayloadV2 {
 pub struct ExecutionPayloadV3 {
     #[serde(flatten)]
     pub payload_inner: ExecutionPayloadV2,
+    #[serde(serialize_with = "crate::serde_utils::u64_hex", deserialize_with = "crate::serde_utils::deserialize_u64_hex")]
     pub blob_gas_used: u64,
+    #[serde(serialize_with = "crate::serde_utils::u64_hex", deserialize_with = "crate::serde_utils::deserialize_u64_hex")]
     pub excess_blob_gas: u64,
 }
 
@@ -31,6 +33,7 @@ pub struct ExecutionPayloadV4 {
     #[serde(flatten)]
     pub payload_inner: ExecutionPayloadV3,
     pub block_access_list: alloy_primitives::Bytes,
+    #[serde(serialize_with = "crate::serde_utils::u64_hex", deserialize_with = "crate::serde_utils::deserialize_u64_hex")]
     pub slot_number: u64,
 }
 

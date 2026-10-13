@@ -158,6 +158,14 @@ pub mod serde_utils {
         s.serialize_str(&format!("0x{:x}", val))
     }
 
+    pub fn deserialize_u64_hex<'de, D>(d: D) -> Result<u64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let val: U64 = U64::deserialize(d)?;
+        Ok(val.to::<u64>())
+    }
+
     pub fn deserialize_u64_hex_opt<'de, D>(d: D) -> Result<Option<u64>, D::Error>
     where
         D: Deserializer<'de>,
@@ -180,35 +188,38 @@ pub struct RpcHeader {
     pub transactions_root: B256,
     pub receipts_root: B256,
     pub logs_bloom: Bloom,
-    #[serde(serialize_with = "serde_utils::u256_hex")]
+    #[serde(serialize_with = "serde_utils::u256_hex", deserialize_with = "U256::deserialize")]
     pub difficulty: U256,
-    #[serde(serialize_with = "serde_utils::u64_hex")]
+    #[serde(serialize_with = "serde_utils::u64_hex", deserialize_with = "serde_utils::deserialize_u64_hex")]
     pub number: u64,
-    #[serde(serialize_with = "serde_utils::u64_hex")]
+    #[serde(serialize_with = "serde_utils::u64_hex", deserialize_with = "serde_utils::deserialize_u64_hex")]
     pub gas_limit: u64,
-    #[serde(serialize_with = "serde_utils::u64_hex")]
+    #[serde(serialize_with = "serde_utils::u64_hex", deserialize_with = "serde_utils::deserialize_u64_hex")]
     pub gas_used: u64,
-    #[serde(serialize_with = "serde_utils::u64_hex")]
+    #[serde(serialize_with = "serde_utils::u64_hex", deserialize_with = "serde_utils::deserialize_u64_hex")]
     pub timestamp: u64,
     pub extra_data: Bytes,
     pub mix_hash: B256,
-    #[serde(serialize_with = "serde_utils::b64_hex")]
+    #[serde(serialize_with = "serde_utils::b64_hex", deserialize_with = "B64::deserialize")]
     pub nonce: B64,
     #[serde(
         default,
         serialize_with = "serde_utils::u256_hex_opt",
+        deserialize_with = "Option::deserialize",
         skip_serializing_if = "Option::is_none"
     )]
     pub total_difficulty: Option<U256>,
     #[serde(
         default,
         serialize_with = "serde_utils::u256_hex_opt",
+        deserialize_with = "Option::deserialize",
         skip_serializing_if = "Option::is_none"
     )]
     pub size: Option<U256>,
     #[serde(
         default,
         serialize_with = "serde_utils::u64_hex_opt",
+        deserialize_with = "serde_utils::deserialize_u64_hex_opt",
         skip_serializing_if = "Option::is_none"
     )]
     pub base_fee_per_gas: Option<u64>,
@@ -220,12 +231,14 @@ pub struct RpcHeader {
     #[serde(
         default,
         serialize_with = "serde_utils::u64_hex_opt",
+        deserialize_with = "serde_utils::deserialize_u64_hex_opt",
         skip_serializing_if = "Option::is_none"
     )]
     pub blob_gas_used: Option<u64>,
     #[serde(
         default,
         serialize_with = "serde_utils::u64_hex_opt",
+        deserialize_with = "serde_utils::deserialize_u64_hex_opt",
         skip_serializing_if = "Option::is_none"
     )]
     pub excess_blob_gas: Option<u64>,

@@ -213,11 +213,11 @@ for i in $(seq 0 $((NODES - 1))); do
     
     if [ "$TYPE" = "wasix" ]; then
         # Wasix nodes need init before run. Start node-exporter in background.
-        ENTRYPOINT_STR="entrypoint: [\"sh\", \"-c\", \"prometheus-node-exporter --web.listen-address=:9100 & wasmer run /app/wasix_eth.wasm --enable-async-threads --net --volume /app/data:/app/data --volume /app/startup:/app/startup -- init $FLAGS && wasmer run /app/wasix_eth.wasm --enable-async-threads --net --volume /app/data:/app/data --volume /app/startup:/app/startup -- run $FLAGS\"]"
+        ENTRYPOINT_STR="entrypoint: [\"sh\", \"-c\", \"prometheus-node-exporter --web.listen-address=:9100 & sleep 2 && wasmer run /app/wasix_eth.wasm --enable-async-threads --net --volume /app/data:/app/data --volume /app/startup:/app/startup -- init $FLAGS && wasmer run /app/wasix_eth.wasm --enable-async-threads --net --volume /app/data:/app/data --volume /app/startup:/app/startup -- run $FLAGS\"]"
         COMMAND_STR="# Command is handled by entrypoint for wasix"
     else
         # Linux nodes need init before run. Start node-exporter in background.
-        ENTRYPOINT_STR="entrypoint: [\"sh\", \"-c\", \"prometheus-node-exporter --web.listen-address=:9100 & /app/wasix_eth init $FLAGS && /app/wasix_eth run $FLAGS\"]"
+        ENTRYPOINT_STR="entrypoint: [\"sh\", \"-c\", \"prometheus-node-exporter --web.listen-address=:9100 & sleep 2 && /app/wasix_eth init $FLAGS && /app/wasix_eth run $FLAGS\"]"
         COMMAND_STR="# Command is handled by entrypoint for linux"
     fi
 

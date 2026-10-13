@@ -29,6 +29,7 @@ alloy-consensus = { workspace = true }
 rand = { workspace = true }
 dashmap = { workspace = true }
 im = { workspace = true }
+arc-swap = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 tempfile = { workspace = true }

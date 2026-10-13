@@ -4,7 +4,8 @@ use std::sync::Arc;
 use wasix_eth_types::{async_trait, ConsensusTransaction, Transaction, B256, U256, Blob, Bytes48, TxPooledEnvelope, Bytes};
 use wasix_eth_storage::read::DatabaseReadProvider;
 use wasix_eth_storage::read_traits::AccountProvider;
-use crate::mempool::mempool::{Mempool, MempoolSnapshot};
+use crate::mempool::mempool::{Mempool, MempoolSnapshot, MempoolInternalState};
+use im::HashMap as ImmutableMap;
 use wasix_eth_utils::info;
 
 #[async_trait]
@@ -64,6 +65,7 @@ impl MempoolProvider for Mempool {
         let mut addresses_to_promote = Vec::new();
 
         let base_fee = *self.inner.base_fee.read().await;
+        let mempool_state = self.inner.state.load();
 
         let process_address = |address: Address, to_remove: &mut Vec<B256>, addresses_to_promote: &mut Vec<Address>| {
             let (current_nonce, current_balance) = if let Ok(Some(acc)) = state.account(address, None) {
@@ -73,7 +75,7 @@ impl MempoolProvider for Mempool {
             };
 
             // Check pending transactions
-            if let Some(queue) = self.inner.pending_transactions.get(&address) {
+            if let Some(queue) = mempool_state.pending_transactions.get(&address) {
                 for tx in queue.iter() {
                     let tx_nonce = tx.nonce();
                     let max_fee = tx.max_fee_per_gas();
@@ -98,7 +100,7 @@ impl MempoolProvider for Mempool {
                     if tx.is_eip4844() {
                         if let Some(hashes) = tx.blob_versioned_hashes() {
                             for hash in hashes {
-                                if !self.inner.blobs.contains_key(hash) {
+                                if !mempool_state.blobs.contains_key(hash) {
                                     info!("[Mempool] Evicting transaction {:?} because blob {:?} is missing", tx.hash(), hash);
                                     to_remove.push(*tx.hash());
                                     break;
@@ -110,7 +112,7 @@ impl MempoolProvider for Mempool {
             }
 
             // Check queued transactions
-            if let Some(queue) = self.inner.queued_transactions.get(&address) {
+            if let Some(queue) = mempool_state.queued_transactions.get(&address) {
                 for tx in queue.iter() {
                     let tx_nonce = tx.nonce();
                     let max_fee = tx.max_fee_per_gas();
@@ -135,7 +137,7 @@ impl MempoolProvider for Mempool {
                     if tx.is_eip4844() {
                         if let Some(hashes) = tx.blob_versioned_hashes() {
                             for hash in hashes {
-                                if !self.inner.blobs.contains_key(hash) {
+                                if !mempool_state.blobs.contains_key(hash) {
                                     info!("[Mempool] Evicting transaction {:?} because blob {:?} is missing", tx.hash(), hash);
                                     to_remove.push(*tx.hash());
                                     break;
@@ -154,12 +156,12 @@ impl MempoolProvider for Mempool {
             }
         } else {
             // Full revalidation
-            for r in self.inner.pending_transactions.iter() {
-                process_address(*r.key(), &mut to_remove, &mut addresses_to_promote);
+            for (addr, _) in mempool_state.pending_transactions.iter() {
+                process_address(*addr, &mut to_remove, &mut addresses_to_promote);
             }
-            for r in self.inner.queued_transactions.iter() {
-                if !self.inner.pending_transactions.contains_key(r.key()) {
-                    process_address(*r.key(), &mut to_remove, &mut addresses_to_promote);
+            for (addr, _) in mempool_state.queued_transactions.iter() {
+                if !mempool_state.pending_transactions.contains_key(addr) {
+                    process_address(*addr, &mut to_remove, &mut addresses_to_promote);
                 }
             }
         }
@@ -176,7 +178,7 @@ impl MempoolProvider for Mempool {
             } else {
                 0
             };
-            let next_nonce = self.inner.pending_transactions.get(&address)
+            let next_nonce = self.inner.state.load().pending_transactions.get(&address)
                 .and_then(|q| q.back().map(|t| t.nonce() + 1))
                 .unwrap_or(current_nonce);
             self.inner.promote_queued(address, next_nonce);
@@ -201,10 +203,11 @@ impl MempoolProvider for Mempool {
 
     async fn get_transactions_by_sender(&self, address: Address) -> Vec<Transaction> {
         let mut txs = Vec::new();
-        if let Some(pending) = self.inner.pending_transactions.get(&address) {
+        let state = self.inner.state.load();
+        if let Some(pending) = state.pending_transactions.get(&address) {
             txs.extend(pending.iter().cloned());
         }
-        if let Some(queued) = self.inner.queued_transactions.get(&address) {
+        if let Some(queued) = state.queued_transactions.get(&address) {
             txs.extend(queued.iter().cloned());
         }
         txs
@@ -235,21 +238,24 @@ impl MempoolProvider for Mempool {
     }
 
     async fn add_blob(&self, versioned_hash: B256, blob: Blob, commitment: Bytes48, proof: Bytes48) {
-        self.inner.blobs.insert(versioned_hash, Arc::new((blob, commitment, proof)));
+        self.inner.update_state(move |state| {
+            state.blobs.insert(versioned_hash, Arc::new((blob.clone(), commitment, proof)));
+        });
     }
 
     async fn get_blob(&self, versioned_hash: B256) -> Option<(Blob, Bytes48, Bytes48)> {
-        self.inner.blobs.get(&versioned_hash).map(|r| (**r.value()).clone())
+        self.inner.state.load().blobs.get(&versioned_hash).map(|r| (**r).clone())
     }
 
     async fn get_transaction(&self, hash: B256) -> Option<Transaction> {
-        for r in self.inner.pending_transactions.iter() {
-            if let Some(tx) = r.value().iter().find(|tx| *tx.hash() == hash) {
+        let state = self.inner.state.load();
+        for (_, queue) in state.pending_transactions.iter() {
+            if let Some(tx) = queue.iter().find(|tx| *tx.hash() == hash) {
                 return Some(tx.clone());
             }
         }
-        for r in self.inner.queued_transactions.iter() {
-            if let Some(tx) = r.value().iter().find(|tx| *tx.hash() == hash) {
+        for (_, queue) in state.queued_transactions.iter() {
+            if let Some(tx) = queue.iter().find(|tx| *tx.hash() == hash) {
                 return Some(tx.clone());
             }
         }
@@ -257,19 +263,23 @@ impl MempoolProvider for Mempool {
     }
 
     async fn add_pooled_envelope(&self, hash: B256, pooled: TxPooledEnvelope) {
-        self.inner.pooled_envelopes.insert(hash, pooled);
+        self.inner.update_state(move |state| {
+            state.pooled_envelopes.insert(hash, pooled.clone());
+        });
     }
 
     async fn get_pooled_envelope(&self, hash: B256) -> Option<TxPooledEnvelope> {
-        self.inner.pooled_envelopes.get(&hash).map(|r| r.value().clone())
+        self.inner.state.load().pooled_envelopes.get(&hash).cloned()
     }
 
     async fn add_pooled_bytes(&self, hash: B256, bytes: Bytes) {
-        self.inner.pooled_bytes.insert(hash, bytes);
+        self.inner.update_state(move |state| {
+            state.pooled_bytes.insert(hash, bytes.clone());
+        });
     }
 
     async fn get_pooled_bytes(&self, hash: B256) -> Option<Bytes> {
-        self.inner.pooled_bytes.get(&hash).map(|r| r.value().clone())
+        self.inner.state.load().pooled_bytes.get(&hash).cloned()
     }
 
     async fn next_expected_nonce(&self, address: Address, state_nonce: u64) -> u64 {
@@ -277,7 +287,8 @@ impl MempoolProvider for Mempool {
     }
 
     async fn nonce_lookup(&self, address: Address, state_nonce: u64) -> (u64, u64) {
-        let next_pending = if let Some(q) = self.inner.pending_transactions.get(&address) {
+        let state = self.inner.state.load();
+        let next_pending = if let Some(q) = state.pending_transactions.get(&address) {
             let mut expected = state_nonce;
             for tx in q.iter() {
                 if tx.nonce() == expected {
@@ -293,7 +304,14 @@ impl MempoolProvider for Mempool {
         (state_nonce, next_pending)
     }
 }
+
 pub struct NoopMempoolProvider;
+
+impl NoopMempoolProvider {
+    fn empty_blobs() -> Arc<ImmutableMap<B256, Arc<(Blob, Bytes48, Bytes48)>>> {
+        Arc::new(ImmutableMap::new())
+    }
+}
 
 #[async_trait]
 impl MempoolProvider for NoopMempoolProvider {
@@ -310,7 +328,7 @@ impl MempoolProvider for NoopMempoolProvider {
     async fn clear(&self) {}
     async fn base_fee(&self) -> U256 { U256::ZERO }
     async fn peek_best_transactions(&self, _target_gas_limit: u64, _base_fee: U256, _blob_base_fee: Option<U256>, _max_blobs_per_block: Option<u32>) -> Vec<Transaction> { Vec::new() }
-    fn snapshot(&self) -> MempoolSnapshot { MempoolSnapshot { pending: HashMap::new(), blobs: Arc::new(HashMap::new()) } }
+    fn snapshot(&self) -> MempoolSnapshot { MempoolSnapshot { pending: ImmutableMap::new(), blobs: Self::empty_blobs() } }
     async fn add_blob(&self, _versioned_hash: B256, _blob: Blob, _commitment: Bytes48, _proof: Bytes48) {}
     async fn get_blob(&self, _versioned_hash: B256) -> Option<(Blob, Bytes48, Bytes48)> { None }
     async fn get_transaction(&self, _hash: B256) -> Option<Transaction> { None }

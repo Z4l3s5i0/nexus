@@ -22,8 +22,8 @@ rust_2024_compatibility = { level = "warn", priority = -1 }
 
 [profile.release]
 #panic = "abort"
-#lto = true
-#codegen-units = 1
+lto = true
+codegen-units = 1
 
 [workspace.dependencies]
 wasix_eth_app = { path = "wasix_eth_app", version = "0.1.0" }
@@ -57,6 +57,7 @@ tempfile = { version = "3.27.0" }
 tokio = {version = "1.47.0"}
 dashmap = "7.0.0-rc2"
 im = {version = "15.1.0"}
+arc-swap = "1.8.1"
 
 rand = {version = "0.9.5"}
 
