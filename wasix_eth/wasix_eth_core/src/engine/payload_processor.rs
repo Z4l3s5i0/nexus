@@ -1,27 +1,25 @@
+use dashmap::{DashMap, DashSet};
 use futures_util::{future::BoxFuture, FutureExt};
 use crate::engine::canonicality_tracker::CanonicalState;
 use crate::engine::sidechain_tracker::{BlockTree};
 use crate::sync::registry::SyncRegistry;
 use crate::Consensus;
-use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use wasix_eth_execution::execution_provider::ExecutionProvider;
 use wasix_eth_storage::read::DatabaseReadProvider;
 use wasix_eth_storage::read_traits::{BlockProvider, ChainProvider, HeaderProvider};
 use wasix_eth_storage::write::DatabaseWriteProvider;
-use wasix_eth_storage::write_traits::{BlockWriter, HeaderWriter, TransactionWriter, StateWriter};
+use wasix_eth_storage::write_traits::{BlockWriter, HeaderWriter, TransactionWriter};
 use wasix_eth_types::error::{RpcError, RpcResult};
 use wasix_eth_types::{Block, BlockId, ChainConfig, PayloadStatus, PayloadStatusEnum, Transaction, B256, U256, proofs, Header, Hardfork, ChainManager, InvalidationReason};
 use wasix_eth_utils::{debug, error, info, exp, metrics::BLOCKS_IMPORTED_TOTAL};
-use tokio::sync::RwLock as TokioRwLock;
-use std::collections::HashMap;
-use std::time::{Instant, Duration};
 use crate::engine::engine::EngineEvent;
 
 #[derive(Clone)]
 pub struct PayloadProcessor {
-    pub processing_payloads: Arc<std::sync::RwLock<HashSet<B256>>>,
+    pub processing_payloads: Arc<DashSet<B256>>,
+    pub in_flight_results: Arc<DashMap<B256, broadcast::Sender<PayloadStatus>>>,
     pub block_tree: Arc<BlockTree>,
     pub canonical: Arc<CanonicalState>,
     pub consensus: Arc<dyn Consensus>,
@@ -74,16 +72,27 @@ impl PayloadProcessor {
         });
         let active_fork = Hardfork::get_active_fork(&chain_config, block.header.number, block.header.timestamp);
 
+        // 1. Idempotency check: See if this block is already being processed
+        if let Some(sender) = self.in_flight_results.get(&actual_hash) {
+            debug!("[PayloadProcessor] Block {:?} is already being processed, joining request", actual_hash);
+            let mut receiver = sender.subscribe();
+            drop(sender);
+            match receiver.recv().await {
+                Ok(status) => return Ok(status),
+                Err(_) => {
+                    // This happens if the original sender was dropped without sending a result.
+                    // Fall through to start a new execution.
+                }
+            }
+        }
 
-        // 1. Mark as processing to avoid concurrent imports of the same block
+        // 2. Mark as processing to avoid concurrent imports of the same block
         {
-            let mut processing = self.processing_payloads.write().unwrap();
-
             // Optimization: Avoid concurrent processing of the same block HEIGHT
             // This prevents race conditions between different payloads for the same slot
             let block_number = block.header.number;
             let mut height_processing = false;
-            for hash in processing.iter() {
+            for hash in self.processing_payloads.iter() {
                 if let Ok(Some(h)) = self.read_storage.header(BlockId::Hash((*hash).into())) {
                     if h.number == block_number && *hash != actual_hash {
                         height_processing = true;
@@ -92,7 +101,7 @@ impl PayloadProcessor {
                 }
             }
 
-            if processing.contains(&actual_hash) || height_processing {
+            if self.processing_payloads.contains(&actual_hash) || height_processing {
                 debug!("[PayloadProcessor] Block {:?} (height {}) is already being processed, skipping", actual_hash, block_number);
 
                 return Ok(PayloadStatus {
@@ -100,8 +109,22 @@ impl PayloadProcessor {
                     latest_valid_hash: None,
                 });
             }
-            processing.insert(actual_hash);
+            self.processing_payloads.insert(actual_hash);
         }
+
+        // Setup idempotency channel
+        let (tx, _) = broadcast::channel(1);
+        self.in_flight_results.insert(actual_hash, tx.clone());
+
+        // Helper to broadcast result and cleanup
+        let cleanup = |res: RpcResult<PayloadStatus>| {
+            self.processing_payloads.remove(&actual_hash);
+            self.in_flight_results.remove(&actual_hash);
+            if let Ok(ref status) = res {
+                let _ = tx.send(status.clone());
+            }
+            res
+        };
 
         // Cancun validation (versioned hashes)
         if active_fork >= Hardfork::Cancun {
@@ -118,14 +141,10 @@ impl PayloadProcessor {
                 }
                 
                 let latest_valid = self.chain.get_latest_valid_ancestor(block.header.parent_hash).await;
-                {
-                    let mut processing = self.processing_payloads.write().unwrap();
-                    processing.remove(&actual_hash);
-                }
-                return Ok(PayloadStatus {
+                return cleanup(Ok(PayloadStatus {
                     status: PayloadStatusEnum::Invalid { validation_error: e },
                     latest_valid_hash: latest_valid,
-                });
+                }));
             }
             if let Err(e) = self.consensus.validate_parent_beacon_block_root(&block.header, parent_beacon_block_root) {
                 error!("[PayloadProcessor] Cancun validation (parent beacon block root) failed for block {}: {}", actual_hash, e);
@@ -140,41 +159,29 @@ impl PayloadProcessor {
                 }
 
                 let latest_valid = self.chain.get_latest_valid_ancestor(block.header.parent_hash).await;
-                {
-                    let mut processing = self.processing_payloads.write().unwrap();
-                    processing.remove(&actual_hash);
-                }
-                return Ok(PayloadStatus {
+                return cleanup(Ok(PayloadStatus {
                     status: PayloadStatusEnum::Invalid { validation_error: e },
                     latest_valid_hash: latest_valid,
-                });
+                }));
             }
         }
 
         // Idempotency check: If block is in storage, it's VALID
         if let Ok(Some(_)) = self.read_storage.block_body_by_hash(actual_hash) {
-            {
-                let mut processing = self.processing_payloads.write().unwrap();
-                processing.remove(&actual_hash);
-            }
-            return Ok(PayloadStatus {
+            return cleanup(Ok(PayloadStatus {
                 status: PayloadStatusEnum::Valid,
                 latest_valid_hash: Some(actual_hash)
-            });
+            }));
         }
 
         // Check if it's a known invalid block
         if let Some(reason) = self.chain.get_invalidation_reason(actual_hash).await {
             if reason == InvalidationReason::Hard {
                 let latest_valid = self.chain.get_latest_valid_ancestor(block.header.parent_hash).await;
-                {
-                    let mut processing = self.processing_payloads.write().unwrap();
-                    processing.remove(&actual_hash);
-                }
-                return Ok(PayloadStatus {
+                return cleanup(Ok(PayloadStatus {
                     status: PayloadStatusEnum::Invalid { validation_error: "Block is known to be invalid".to_string() },
                     latest_valid_hash: latest_valid,
-                });
+                }));
             }
         }
 
@@ -189,30 +196,20 @@ impl PayloadProcessor {
                 // Also mark this block as invalid
                 self.chain.add_invalid_block(actual_hash, parent_hash, InvalidationReason::Hard).await;
                 
-                {
-                    let mut processing = self.processing_payloads.write().unwrap();
-                    processing.remove(&actual_hash);
-                }
-
-                return Ok(PayloadStatus {
+                return cleanup(Ok(PayloadStatus {
                     status: PayloadStatusEnum::Invalid { validation_error: "Parent block is known to be invalid".to_string() },
                     latest_valid_hash: latest_valid,
-                });
+                }));
             } else if reason == InvalidationReason::Soft {
                  let latest_valid = self.chain.get_latest_valid_ancestor(parent_hash).await;
                  info!("[PayloadProcessor] rejecting payload {:?} because parent {:?} is known invalid (Soft). Latest valid: {:?}", actual_hash, parent_hash, latest_valid);
 
                 self.chain.add_invalid_block(actual_hash, parent_hash, InvalidationReason::Soft).await;
 
-                {
-                    let mut processing = self.processing_payloads.write().unwrap();
-                    processing.remove(&actual_hash);
-                 }
-                 
-                 return Ok(PayloadStatus {
+                 return cleanup(Ok(PayloadStatus {
                     status: PayloadStatusEnum::Invalid { validation_error: "Parent block is known to be invalid (Soft)".to_string() },
                     latest_valid_hash: latest_valid,
-                 });
+                 }));
             }
         }
 
@@ -224,10 +221,7 @@ impl PayloadProcessor {
             }
         };
 
-        {
-            let mut processing = self.processing_payloads.write().unwrap();
-            processing.remove(&actual_hash);
-        }
+        let result = cleanup(result);
 
         if let Ok(ref status) = result {
 
@@ -538,7 +532,7 @@ impl PayloadProcessor {
         
         // If header not found in storage/payloads, check if it's currently being processed or available elsewhere.
         let parent_header = if parent_header.is_none() {
-            if self.processing_payloads.read().unwrap().contains(&parent_hash) {
+            if self.processing_payloads.contains(&parent_hash) {
                 // If it's being processed, we can't get its header yet but we know it's coming.
                   // We return SYNCING and the CL will retry.
                   info!("[PayloadProcessor] Parent block {:?} is currently being processed. Returning SYNCING.", parent_hash);
@@ -743,21 +737,15 @@ impl PayloadProcessor {
                         
                         if let Some(block) = block {
                             // Mark as processing to avoid concurrent imports of the same block
-                            {
-                                let mut processing = self.processing_payloads.write().unwrap();
-                                if processing.contains(&child_hash) {
-                                    debug!("[PayloadProcessor] Child block {:?} is already being processed, skipping revalidation", child_hash);
-                                    continue;
-                                }
-                                processing.insert(child_hash);
+                            if self.processing_payloads.contains(&child_hash) {
+                                debug!("[PayloadProcessor] Child block {:?} is already being processed, skipping revalidation", child_hash);
+                                continue;
                             }
+                            self.processing_payloads.insert(child_hash);
 
                             let result = self.new_payload_internal_inner(block.clone(), child_hash, None, None, false).await;
 
-                            {
-                                let mut processing = self.processing_payloads.write().unwrap();
-                                processing.remove(&child_hash);
-                            }
+                            self.processing_payloads.remove(&child_hash);
 
                             match result {
                                 Ok(status) => {

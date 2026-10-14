@@ -1,3 +1,4 @@
+use dashmap::{DashMap, DashSet};
 use crate::engine::canonicality_tracker::CanonicalState;
 use crate::engine::sidechain_tracker::{BlockTree};
 use crate::engine::reorg_manager::ReorgHandler;
@@ -10,7 +11,6 @@ use crate::Consensus;
 use std::sync::Arc;
 use alloy_rlp::Encodable;
 use alloy_rpc_types::RpcBlockHash;
-use std::collections::HashSet;
 use tokio::sync::broadcast;
 use wasix_eth_execution::execution_provider::ExecutionProvider;
 use wasix_eth_storage::read::DatabaseReadProvider;
@@ -162,7 +162,8 @@ impl Engine {
         mempool_listener: Arc<MempoolListener>,
         sync_registry: Arc<SyncRegistry>,
     ) -> Self {
-        let processing_payloads = Arc::new(std::sync::RwLock::new(HashSet::new()));
+        let processing_payloads = Arc::new(DashSet::new());
+        let in_flight_results = Arc::new(DashMap::new());
 
         let engine = Self {
             read_storage: read_storage.clone(),
@@ -186,6 +187,7 @@ impl Engine {
             },
             payload_processor: PayloadProcessor { 
                 processing_payloads: processing_payloads.clone(), 
+                in_flight_results: in_flight_results.clone(),
                 block_tree: block_tree.clone(),
                 canonical: canonical.clone(),
                 consensus: consensus.clone(),
