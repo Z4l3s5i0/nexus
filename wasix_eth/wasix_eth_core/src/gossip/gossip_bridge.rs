@@ -58,28 +58,9 @@ impl GossipBridge {
                                         }
                                     }
                                 }
-                                EngineEvent::NewBlock { block, is_local } => {
-                                    let hash = block.header.hash_slow();
-                                    let mut seen = self.seen_hashes.lock().await;
-
-                                    if seen.contains(&hash) {
-                                        continue;
-                                    }
-
-                                    if is_local || !seen.contains(&hash) {
-                                        if seen.len() > 10000 {
-                                            seen.clear();
-                                        }
-                                        seen.insert(hash);
-                                        drop(seen);
-
-                                        if is_local {
-                                            info!("[GossipBridge] Broadcasting local block {} (hash: {:?})", block.header.number, hash);
-                                        } else {
-                                            info!("[GossipBridge] Re-broadcasting remote block {} (hash: {:?})", block.header.number, hash);
-                                        }
-                                        self.gossip.broadcast_block(&block).await;
-                                    }
+                                EngineEvent::NewBlock { .. } => {
+                                    // Block gossip is disabled. 
+                                    // New blocks are transmitted via Consensus Client and P2P on-demand syncing.
                                 }
                             }
                         }

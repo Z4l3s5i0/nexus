@@ -1,7 +1,7 @@
 use anyhow::Result;
 use tokio::sync::oneshot;
 use wasix_eth_types::p2p::{
-    NewBlock, NewBlockHashes, NewPooledTransactionHashes, Transactions,
+    NewPooledTransactionHashes, Transactions,
     GetBlockHeaders, BlockHeaders, GetBlockBodies, BlockBodies,
     GetPooledTransactions, PooledTransactions, GetReceipts, Receipts,
     GetNodeData, NodeData,
@@ -29,9 +29,7 @@ pub enum SessionRequest {
         request: RequestPair<GetNodeData>,
         response_tx: oneshot::Sender<Result<RequestPair<NodeData>>>,
     },
-    SendNewBlockHashes(NewBlockHashes),
     SendTransactions(Transactions),
-    SendNewBlock(NewBlock),
     SendNewPooledTransactionHashes(NewPooledTransactionHashes),
     Ping,
     Disconnect(Disconnect),

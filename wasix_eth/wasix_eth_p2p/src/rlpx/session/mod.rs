@@ -9,7 +9,7 @@ use anyhow::Result;
 use wasix_eth_types::sync::P2pSession;
 use wasix_eth_types::async_trait;
 use wasix_eth_types::p2p::{
-    NewBlock, NewBlockHashes, NewPooledTransactionHashes, Transactions,
+    NewPooledTransactionHashes, Transactions,
     GetBlockHeaders, BlockHeaders, GetBlockBodies, BlockBodies,
     GetPooledTransactions, PooledTransactions, GetReceipts, Receipts,
     GetNodeData, NodeData,
@@ -147,18 +147,8 @@ impl P2pSession for PeerSession {
         *self.best_height.lock().await
     }
 
-    async fn send_new_block_hashes(&self, hashes: NewBlockHashes) -> Result<()> {
-        self.request_tx.send(SessionRequest::SendNewBlockHashes(hashes)).await
-            .map_err(|_| anyhow::anyhow!("Session closed"))
-    }
-
     async fn send_transactions(&self, txs: Transactions) -> Result<()> {
         self.request_tx.send(SessionRequest::SendTransactions(txs)).await
-            .map_err(|_| anyhow::anyhow!("Session closed"))
-    }
-
-    async fn send_new_block(&self, block: NewBlock) -> Result<()> {
-        self.request_tx.send(SessionRequest::SendNewBlock(block)).await
             .map_err(|_| anyhow::anyhow!("Session closed"))
     }
 

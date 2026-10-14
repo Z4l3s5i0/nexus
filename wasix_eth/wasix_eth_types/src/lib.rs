@@ -410,7 +410,6 @@ pub trait GossipProvider: Send + Sync {
     async fn broadcast_raw(&self, data: Vec<u8>);
     async fn broadcast_transaction(&self, tx: &Transaction);
     async fn broadcast_new_pooled_transaction_hashes(&self, txs: Vec<Transaction>);
-    async fn broadcast_block(&self, block: &Block<Transaction>);
 }
 
 pub struct NoopGossip;
@@ -420,7 +419,6 @@ impl GossipProvider for NoopGossip {
     async fn broadcast_raw(&self, _data: Vec<u8>) {}
     async fn broadcast_transaction(&self, _tx: &Transaction) {}
     async fn broadcast_new_pooled_transaction_hashes(&self, _txs: Vec<Transaction>) {}
-    async fn broadcast_block(&self, _block: &Block<Transaction>) {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

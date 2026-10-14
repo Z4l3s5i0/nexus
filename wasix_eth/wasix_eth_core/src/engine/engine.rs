@@ -114,10 +114,6 @@ impl SyncProvider for Engine {
         Ok(block)
     }
 
-    async fn process_gossip_block(&self, block: Block<Transaction>, _td: U256) -> wasix_eth_types::Result<()> {
-        self.import_block(block).await
-    }
-
     async fn process_gossip_transactions(&self, txs: Vec<Transaction>) -> wasix_eth_types::Result<()> {
         for tx in txs {
             let _ = self.rpc_engine.submit_transaction_with_source(tx, false).await;
@@ -135,10 +131,6 @@ impl SyncProvider for Engine {
     }
 
     async fn handle_announced_pooled_transactions(&self, _peer_id: String, _hashes: Vec<B256>) -> wasix_eth_types::Result<()> {
-        // Engine doesn't have a downloader, it relies on the sync controller to fetch
-        Ok(())
-    }
-    async fn handle_announced_block_hashes(&self, _peer_id: String, _hashes: Vec<BlockHashAndNumber>) -> anyhow::Result<()> {
         // Engine doesn't have a downloader, it relies on the sync controller to fetch
         Ok(())
     }

@@ -905,9 +905,7 @@ impl alloy_rlp::Decodable for NewPooledTransactionHashes66 {
 
 #[derive(Debug, Clone)]
 pub enum GossipMessage {
-    NewBlockHashes(String, u64, NewBlockHashes),
     Transactions(String, u64, Transactions),
-    NewBlock(String, u64, NewBlock),
     NewPooledTransactionHashes(String, u64, NewPooledTransactionHashes),
     // Incoming requests from peers
     GetBlockHeaders(String, u64, RequestPair<GetBlockHeaders>),

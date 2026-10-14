@@ -15,11 +15,9 @@ pub trait SyncProvider: Send + Sync {
     async fn trigger_sync(&self) -> Result<()>;
     async fn has_block(&self, hash: B256) -> bool;
     async fn get_block_by_hash(&self, hash: B256) -> Result<Option<Block<Transaction>>>;
-    async fn process_gossip_block(&self, block: Block<Transaction>, td: alloy_primitives::U256) -> Result<()>;
     async fn process_gossip_transactions(&self, txs: Vec<Transaction>) -> Result<()>;
     async fn process_pooled_transactions(&self, txs: Vec<crate::TxPooledEnvelope>) -> Result<()>;
     async fn handle_announced_pooled_transactions(&self, peer_id: String, hashes: Vec<B256>) -> Result<()>;
-    async fn handle_announced_block_hashes(&self, peer_id: String, hashes: Vec<crate::p2p::BlockHashAndNumber>) -> Result<()>;
 }
 
 #[async_trait]
@@ -41,9 +39,7 @@ pub trait P2pSession: Send + Sync {
     async fn eth_status(&self) -> Option<crate::p2p::Status>;
     async fn best_height(&self) -> u64;
 
-    async fn send_new_block_hashes(&self, hashes: crate::p2p::NewBlockHashes) -> Result<()>;
     async fn send_transactions(&self, txs: crate::p2p::Transactions) -> Result<()>;
-    async fn send_new_block(&self, block: crate::p2p::NewBlock) -> Result<()>;
     async fn send_new_pooled_transaction_hashes(&self, hashes: crate::p2p::NewPooledTransactionHashes) -> Result<()>;
     async fn ping(&self) -> Result<()>;
     async fn disconnect(&self, reason: crate::p2p::DisconnectReason) -> Result<()>;
@@ -72,9 +68,6 @@ impl SyncProvider for NoopSync {
     async fn get_block_by_hash(&self, _hash: B256) -> Result<Option<Block<Transaction>>> {
         Ok(None)
     }
-    async fn process_gossip_block(&self, _block: Block<Transaction>, _td: alloy_primitives::U256) -> Result<()> {
-        Ok(())
-    }
     async fn process_gossip_transactions(&self, _txs: Vec<Transaction>) -> Result<()> {
         Ok(())
     }
@@ -82,9 +75,6 @@ impl SyncProvider for NoopSync {
         Ok(())
     }
     async fn handle_announced_pooled_transactions(&self, _peer_id: String, _hashes: Vec<B256>) -> Result<()> {
-        Ok(())
-    }
-    async fn handle_announced_block_hashes(&self, _peer_id: String, _hashes: Vec<crate::p2p::BlockHashAndNumber>) -> Result<()> {
         Ok(())
     }
 }
