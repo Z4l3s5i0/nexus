@@ -27,6 +27,9 @@ use http_body_util::Full;
 use std::convert::Infallible;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto::Builder;
+use arc_swap::ArcSwap;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct RegisterNodeRequest {
@@ -120,6 +123,27 @@ impl App {
         let metrics_addr = SocketAddr::from(([0, 0, 0, 0], metrics_port));
         info!("Starting metrics server on http://{}...", metrics_addr);
 
+        let cached_metrics = Arc::new(ArcSwap::from_pointee(String::new()));
+        let cached_metrics_for_refresher = cached_metrics.clone();
+        
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            let encoder = TextEncoder::new();
+            loop {
+                interval.tick().await;
+                let metric_families = prometheus::gather();
+                let mut buffer = vec![];
+                if let Err(e) = encoder.encode(&metric_families, &mut buffer) {
+                    error!("Failed to encode metrics for caching: {}", e);
+                    continue;
+                }
+                match String::from_utf8(buffer) {
+                    Ok(text) => cached_metrics_for_refresher.store(Arc::new(text)),
+                    Err(e) => error!("Failed to convert metrics to UTF-8: {}", e),
+                }
+            }
+        });
+
         let metrics_handle = tokio::spawn(async move {
             let listener = match tokio::net::TcpListener::bind(metrics_addr).await {
                 Ok(l) => l,
@@ -128,6 +152,8 @@ impl App {
                     return;
                 }
             };
+
+            let semaphore = Arc::new(Semaphore::new(2));
 
             loop {
                 let (stream, _) = match listener.accept().await {
@@ -139,28 +165,34 @@ impl App {
                 };
 
                 let io = TokioIo::new(stream);
+                let cached_metrics = cached_metrics.clone();
+                let permit = match semaphore.clone().acquire_owned().await {
+                    Ok(p) => p,
+                    Err(_) => break,
+                };
                 tokio::spawn(async move {
+                    let _permit = permit;
                     if let Err(err) = Builder::new(hyper_util::rt::TokioExecutor::new())
-                        .serve_connection(io, service_fn(|req: Request<hyper::body::Incoming>| async move {
-                            if req.uri().path() == "/metrics" {
-                                let encoder = TextEncoder::new();
-                                let metric_families = prometheus::gather();
-                                let mut buffer = vec![];
-                                encoder.encode(&metric_families, &mut buffer).unwrap();
+                        .serve_connection(io, service_fn(|req: Request<hyper::body::Incoming>| {
+                            let cached_metrics = cached_metrics.clone();
+                            async move {
+                                if req.uri().path() == "/metrics" {
+                                    let cached = cached_metrics.load_full();
+                                    
+                                    let response = Response::builder()
+                                        .status(200)
+                                        .header(hyper::header::CONTENT_TYPE, "text/plain; version=0.0.4")
+                                        .body(Full::new(Bytes::from(cached.to_string())))
+                                        .unwrap();
 
-                                let response = Response::builder()
-                                    .status(200)
-                                    .header(hyper::header::CONTENT_TYPE, encoder.format_type())
-                                    .body(Full::new(Bytes::from(buffer)))
-                                    .unwrap();
-
-                                Ok::<Response<Full<Bytes>>, Infallible>(response)
-                            } else {
-                                let response = Response::builder()
-                                    .status(404)
-                                    .body(Full::new(Bytes::from("Not Found")))
-                                    .unwrap();
-                                Ok::<Response<Full<Bytes>>, Infallible>(response)
+                                    Ok::<Response<Full<Bytes>>, Infallible>(response)
+                                } else {
+                                    let response = Response::builder()
+                                        .status(404)
+                                        .body(Full::new(Bytes::from("Not Found")))
+                                        .unwrap();
+                                    Ok::<Response<Full<Bytes>>, Infallible>(response)
+                                }
                             }
                         }))
                         .await

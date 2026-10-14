@@ -40,6 +40,7 @@ alloy-rlp = {workspace = true}
 alloy-json-rpc = {workspace = true}
 reqwest = { workspace = true, features = ["json"] }
 prometheus = { workspace = true }
+arc-swap = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 http-body-util = { workspace = true }
