@@ -2,7 +2,7 @@ use clap::Parser;
 use wasix_eth_app::app::App;
 use wasix_eth_app::cli::{self, Commands};
 
-#[tokio::main(flavor = "multi_thread")]
+#[tokio::main(flavor = "multi_thread", worker_threads = 16)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     std::panic::set_hook(Box::new(|panic_info| {

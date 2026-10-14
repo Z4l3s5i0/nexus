@@ -155,6 +155,7 @@ impl Engine {
         sync_registry: Arc<SyncRegistry>,
     ) -> Self {
         let processing_payloads = Arc::new(DashSet::new());
+        let processing_heights = Arc::new(DashMap::new());
         let in_flight_results = Arc::new(DashMap::new());
 
         let engine = Self {
@@ -179,6 +180,7 @@ impl Engine {
             },
             payload_processor: PayloadProcessor { 
                 processing_payloads: processing_payloads.clone(), 
+                processing_heights: processing_heights.clone(),
                 in_flight_results: in_flight_results.clone(),
                 block_tree: block_tree.clone(),
                 canonical: canonical.clone(),

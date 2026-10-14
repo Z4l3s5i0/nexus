@@ -19,6 +19,7 @@ use crate::engine::engine::EngineEvent;
 #[derive(Clone)]
 pub struct PayloadProcessor {
     pub processing_payloads: Arc<DashSet<B256>>,
+    pub processing_heights: Arc<DashMap<u64, B256>>,
     pub in_flight_results: Arc<DashMap<B256, broadcast::Sender<PayloadStatus>>>,
     pub block_tree: Arc<BlockTree>,
     pub canonical: Arc<CanonicalState>,
@@ -91,25 +92,27 @@ impl PayloadProcessor {
             // Optimization: Avoid concurrent processing of the same block HEIGHT
             // This prevents race conditions between different payloads for the same slot
             let block_number = block.header.number;
-            let mut height_processing = false;
-            for hash in self.processing_payloads.iter() {
-                if let Ok(Some(h)) = self.read_storage.header(BlockId::Hash((*hash).into())) {
-                    if h.number == block_number && *hash != actual_hash {
-                        height_processing = true;
-                        break;
-                    }
-                }
-            }
-
-            if self.processing_payloads.contains(&actual_hash) || height_processing {
-                debug!("[PayloadProcessor] Block {:?} (height {}) is already being processed, skipping", actual_hash, block_number);
-
+            
+            if self.processing_payloads.contains(&actual_hash) {
+                debug!("[PayloadProcessor] Block {:?} is already being processed, skipping", actual_hash);
                 return Ok(PayloadStatus {
                     status: PayloadStatusEnum::Syncing,
                     latest_valid_hash: None,
                 });
             }
+
+            if let Some(existing_hash) = self.processing_heights.get(&block_number) {
+                if *existing_hash != actual_hash {
+                    debug!("[PayloadProcessor] Another block {:?} for height {} is already being processed, skipping", *existing_hash, block_number);
+                    return Ok(PayloadStatus {
+                        status: PayloadStatusEnum::Syncing,
+                        latest_valid_hash: None,
+                    });
+                }
+            }
+
             self.processing_payloads.insert(actual_hash);
+            self.processing_heights.insert(block_number, actual_hash);
         }
 
         // Setup idempotency channel
@@ -117,8 +120,11 @@ impl PayloadProcessor {
         self.in_flight_results.insert(actual_hash, tx.clone());
 
         // Helper to broadcast result and cleanup
-        let cleanup = |res: RpcResult<PayloadStatus>| {
+        let processing_heights = self.processing_heights.clone();
+        let block_number = block.header.number;
+        let cleanup = move |res: RpcResult<PayloadStatus>| {
             self.processing_payloads.remove(&actual_hash);
+            processing_heights.remove(&block_number);
             self.in_flight_results.remove(&actual_hash);
             if let Ok(ref status) = res {
                 let _ = tx.send(status.clone());
