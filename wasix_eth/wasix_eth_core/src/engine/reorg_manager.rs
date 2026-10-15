@@ -162,7 +162,7 @@ impl ReorgHandler {
 
 
     pub async fn revert_to_height(&self, height: u64) -> wasix_eth_types::Result<()> {
-        let (_, head_number) = self.canonical.get_head().await;
+        let (_, head_number) = self.canonical.get_head();
 
         info!("Reverting chain from {} to {}", head_number, height);
 

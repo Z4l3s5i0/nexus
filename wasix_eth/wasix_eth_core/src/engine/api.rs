@@ -133,7 +133,7 @@ impl RPCEngine {
 
         // 1. Add to mempool synchronously to ensure consistency for block building
         let from = tx.recover_signer().unwrap_or_default();
-        let (head_hash, _head_number) = self.canonical.get_head().await;
+        let (head_hash, _head_number) = self.canonical.get_head();
         
         // Robust nonce lookup: use the state nonce at the current head and sync with mempool.
         let state_nonce = self.read_storage.transaction_count(from, BlockId::Hash(head_hash.into()), None).unwrap_or_default();

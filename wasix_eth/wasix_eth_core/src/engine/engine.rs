@@ -516,7 +516,7 @@ impl Engine {
         }
 
         // Save current forkchoice state for potential rollback
-        let (old_state, old_head_number) = self.canonical.get_state().await;
+        let (old_state, old_head_number) = self.canonical.get_state();
 
         // Update forkchoice in storage
         if head_number == 0 && forkchoice_state.head_block_hash != B256::ZERO {

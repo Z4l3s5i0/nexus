@@ -66,7 +66,7 @@ impl ChainManager for ChainManagerImpl {
     }
 
     async fn head_block(&self) -> (B256, u64) {
-        self.canonical.get_head().await
+        self.canonical.get_head()
     }
 
     async fn set_head_block(&self, hash: B256, number: u64) {
