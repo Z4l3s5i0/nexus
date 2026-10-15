@@ -746,7 +746,7 @@ impl<'a, S: StateProvider + StateWriter> EthTrie<'a, S> {
             MyTrieNode::Leaf(leaf) => {
                 let mut full_path = path;
                 full_path.extend(&leaf.key);
-                if full_path.len() == 64 {
+                if full_path.len() == 16 {
                     let key = B256::from_slice(&full_path.pack());
                     entries.push((key, leaf.value));
                 }
@@ -757,7 +757,7 @@ impl<'a, S: StateProvider + StateWriter> EthTrie<'a, S> {
                 self.walk_recursive_rlp(&ext.child, next_path, entries)?;
             }
             MyTrieNode::Branch(branch) => {
-                for i in 0..64 {
+                for i in 0..16 {
                     let child_rlp = &branch.stack[i];
                     if !child_rlp.is_empty() {
                         let mut next_path = path.clone();
@@ -766,7 +766,7 @@ impl<'a, S: StateProvider + StateWriter> EthTrie<'a, S> {
                     }
                 }
                 if let Some(val) = branch.value {
-                    if path.len() == 64 {
+                    if path.len() == 16 {
                         let key = B256::from_slice(&path.pack());
                         entries.push((key, val));
                     }

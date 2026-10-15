@@ -24,6 +24,7 @@ alloy-rlp = {workspace = true, features = ["derive"]}
 alloy-json-rpc = {workspace = true}
 alloy-eips = { workspace = true }
 dashmap = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 tempfile = { workspace = true }

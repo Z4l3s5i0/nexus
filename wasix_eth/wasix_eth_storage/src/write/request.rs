@@ -1,0 +1,45 @@
+use wasix_eth_types::{Address, Block, BlockBody, Bytes, Header, PeerEntry, Receipt, Result, Transaction, TrieAccount, B256, U256};
+use wasix_eth_types::ReceiptMeta;
+use tokio::sync::oneshot;
+
+pub enum WriteRequest {
+    InsertHeader { hash: B256, header: Header, resp: oneshot::Sender<Result<()>> },
+    InsertHeaderTD { hash: B256, td: U256, resp: oneshot::Sender<Result<()>> },
+    UpdateForkchoice { head: B256, safe: Option<B256>, finalized: Option<B256>, resp: oneshot::Sender<Result<()>> },
+    InsertHeaderNumber { hash: B256, number: u64, resp: oneshot::Sender<Result<()>> },
+    InsertBlock { block: Block<Transaction>, receipts: Vec<Receipt>, metas: Vec<ReceiptMeta>, resp: oneshot::Sender<Result<()>> },
+    InsertBlockBody { hash: B256, number: u64, body: BlockBody<Transaction>, resp: oneshot::Sender<Result<()>> },
+    SetCanonical { number: u64, hash: B256, resp: oneshot::Sender<Result<()>> },
+    RemoveCanonical { number: u64, resp: oneshot::Sender<Result<()>> },
+    InsertTransaction { hash: B256, tx: Transaction, resp: oneshot::Sender<Result<()>> },
+    InsertReceipt { block_hash: B256, index: u64, receipt: Receipt, resp: oneshot::Sender<Result<()>> },
+    InsertReceiptMeta { block_hash: B256, index: u64, meta: ReceiptMeta, resp: oneshot::Sender<Result<()>> },
+    RemoveReceiptMeta { block_hash: B256, index: u64, resp: oneshot::Sender<Result<()>> },
+    InsertTransactionLookup { hash: B256, block_hash: B256, index: u64, resp: oneshot::Sender<Result<()>> },
+    UpdateAccount { address: Address, account: TrieAccount, resp: oneshot::Sender<Result<()>> },
+    RemoveAccount { address: Address, resp: oneshot::Sender<Result<()>> },
+    UpdateStorage { address: Address, slot: B256, value: U256, resp: oneshot::Sender<Result<()>> },
+    InsertBytecode { code_hash: B256, bytecode: Bytes, resp: oneshot::Sender<Result<()>> },
+    UpdateTrieNode { hash: B256, node: Bytes, resp: oneshot::Sender<Result<()>> },
+    UpdatePlainState { address: Address, state: Bytes, resp: oneshot::Sender<Result<()>> },
+    RemovePlainState { address: Address, resp: oneshot::Sender<Result<()>> },
+    UpdateHashedState { hash: B256, state: Bytes, resp: oneshot::Sender<Result<()>> },
+    RegisterPeer { peer: PeerEntry, resp: oneshot::Sender<Result<()>> },
+    RemovePeer { peer_id: String, resp: oneshot::Sender<Result<()>> },
+    ResetStorage { address: Address, resp: oneshot::Sender<Result<()>> },
+    SetMetadata { key: String, value: Bytes, resp: oneshot::Sender<Result<()>> },
+    InsertAccountChangeSet { number: u64, change_set: Vec<(Address, Option<Bytes>)>, resp: oneshot::Sender<Result<()>> },
+    InsertStorageChangeSet { number: u64, change_set: Vec<(Address, B256, U256)>, resp: oneshot::Sender<Result<()>> },
+    RemoveChangeSet { number: u64, resp: oneshot::Sender<Result<()>> },
+    InsertBlockFull { 
+        block: Block<Transaction>, 
+        receipts: Vec<Receipt>, 
+        metas: Vec<ReceiptMeta>, 
+        td: U256, 
+        account_changes: Vec<(Address, Option<Bytes>)>,
+        storage_changes: Vec<(Address, B256, U256)>,
+        resp: oneshot::Sender<Result<()>> 
+    },
+    AddPayload { id: wasix_eth_types::PayloadId, block: Block<Transaction>, receipts: Vec<Receipt>, metas: Vec<ReceiptMeta>, bundle: wasix_eth_types::BlobsBundleV1, resp: oneshot::Sender<Result<()>> },
+    RemovePayloadByBlockHash { hash: B256, resp: oneshot::Sender<Result<()>> },
+}

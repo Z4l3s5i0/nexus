@@ -607,7 +607,7 @@ impl PayloadProcessor {
         
         let start_time = std::time::Instant::now();
         let exec_result = tokio::task::spawn_blocking(move || {
-            execution.execute_block_with_state_root(block_clone, true, parent_state_root)
+            execution.execute_block_with_state_root(block_clone, false, parent_state_root)
         }).await.map_err(|e| RpcError::Internal(format!("Execution task panicked: {}", e)))?;
         let elapsed = start_time.elapsed();
         info!("[PayloadProcessor] Block {} executed in {:?}", block.header.number, elapsed);
@@ -615,7 +615,7 @@ impl PayloadProcessor {
         exp!("[EXP] BLOCK_EXEC_END number={} hash={:?} elapsed_ms={}", block.header.number, actual_hash, elapsed.as_millis());
 
         
-        let (final_block, receipts, metas) = match exec_result {
+        let (final_block, receipts, metas, account_changes, storage_changes) = match exec_result {
             Ok(res) => res,
             Err(e) => {
                 error!("[PayloadProcessor] Execution failed for block {}: {}", block.header.number, e);
@@ -686,31 +686,19 @@ impl PayloadProcessor {
         let td = parent_td + U256::from(final_block.header.difficulty);
 
         tokio::task::spawn_blocking(move || -> wasix_eth_types::error::RpcResult<()> {
-            let batch = storage.begin_batch().map_err(|e| RpcError::Internal(e.to_string()))?;
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let rt = tokio::runtime::Handle::current();
+            rt.block_on(storage.send_request(wasix_eth_storage::write::request::WriteRequest::InsertBlockFull {
+                block: final_block_clone,
+                receipts: receipts_clone,
+                metas: metas_clone,
+                td,
+                account_changes,
+                storage_changes,
+                resp: tx,
+            }, rx)).map_err(|e| RpcError::Internal(e.to_string()))?;
 
-            batch.insert_header(block_hash, final_block_clone.header.clone()).map_err(|e| RpcError::Internal(e.to_string()))?;
-            batch.insert_header_td(block_hash, td).map_err(|e| RpcError::Internal(e.to_string()))?;
-            batch.insert_block_body(block_hash, block_number, final_block_clone.body.clone()).map_err(|e| RpcError::Internal(e.to_string()))?;
-            batch.insert_block_hash(block_hash, block_number).map_err(|e| RpcError::Internal(e.to_string()))?;
-
-            // Persist receipts and transaction lookup
-            for (i, tx) in final_block_clone.body.transactions.iter().enumerate() {
-                let tx_hash = *tx.hash();
-                batch.insert_transaction(tx_hash, tx.clone()).map_err(|e| RpcError::Internal(e.to_string()))?;
-                if let Some(receipt) = receipts_clone.get(i) {
-                    batch.insert_receipt(block_hash, i as u64, receipt.clone()).map_err(|e| RpcError::Internal(e.to_string()))?;
-                }
-                if let Some(meta) = metas_clone.get(i) {
-                    batch.insert_receipt_meta(block_hash, i as u64, meta.clone()).map_err(|e| RpcError::Internal(e.to_string()))?;
-                }
-                batch.insert_transaction_lookup(tx_hash, block_hash, i as u64).map_err(|e| RpcError::Internal(e.to_string()))?;
-            }
-
-            // Also remove payload as it's now officially a block
-            let _ = batch.remove_payload_by_block_hash(block_hash);
-
-            batch.commit().map_err(|e| RpcError::Internal(e.to_string()))?;
-            info!("[PayloadProcessor] Block {} (hash: {}) successfully committed to storage", block_number, block_hash);
+            info!("[PayloadProcessor] Block {} (hash: {}) successfully committed to storage via coordinator", block_number, block_hash);
             Ok(())
         }).await.map_err(|e| RpcError::Internal(format!("Storage task panicked: {}", e)))??;
 
