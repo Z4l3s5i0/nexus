@@ -5,10 +5,10 @@ use alloy_rlp::{Decodable, Encodable};
 
 use redb::{Value, TableDefinition, Key};
 
-pub trait Table: Debug {
+pub trait Table: Debug + Send + Sync {
     const NAME: &'static str;
-    type Key: RedbRlp + 'static;
-    type Value: RedbRlp + 'static;
+    type Key: RedbRlp + 'static + Send + Sync;
+    type Value: RedbRlp + 'static + Send + Sync;
 
     fn definition() -> TableDefinition<'static, RlpValue<Self::Key>, RlpValue<Self::Value>> {
         TableDefinition::new(Self::NAME)
