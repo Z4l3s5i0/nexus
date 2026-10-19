@@ -34,7 +34,7 @@ impl<'a> TransactionExecutor<'a> {
         Self { batch, env, config, invoker, fork }
     }
 
-    pub fn execute_transaction(
+    pub async fn execute_transaction(
         &self,
         tx: &Transaction,
         beneficiary: Address,
@@ -44,7 +44,7 @@ impl<'a> TransactionExecutor<'a> {
         let recovered = tx.clone().try_into_recovered().map_err(|e| anyhow::anyhow!("Failed to recover signer: {}", e))?;
         let sender = recovered.signer();
         
-        self.validate_transaction_with_state(tx, sender, state_root)?;
+        self.validate_transaction_with_state(tx, sender, state_root).await?;
 
         let start_time = std::time::Instant::now();
 
@@ -54,7 +54,7 @@ impl<'a> TransactionExecutor<'a> {
 
         exp!("[EXP] TX_EXEC_START hash={:?} sender={:?} nonce={}", tx_hash_final, sender, recovered.nonce());
 
-        let mut backend = self.prepare_backend(tx, sender, state_root)?;
+        let mut backend = self.prepare_backend(tx, sender, state_root).await?;
         let sender_h160 = H160::from_slice(sender.as_slice());
         let balance_before = backend.balance(sender_h160);
 
@@ -88,7 +88,7 @@ impl<'a> TransactionExecutor<'a> {
             Ok(res) => (res, false),
             Err(e) => {
                 debug!("[Execution] Transaction {:?} EVM execution error: {:?}. Args: caller={:?}, value={}, gas_limit={}, gas_price={:?}", tx_hash_final, e, args.caller, args.value, args.gas_limit, args.gas_price);
-                let res = self.handle_transact_error(tx, e, &args, sender_h160, balance_before, effective_gas_price, reward_rate, is_coinbase, &overlay)?;
+                let res = self.handle_transact_error(tx, e, &args, sender_h160, balance_before, effective_gas_price, reward_rate, is_coinbase, &overlay).await?;
                 (res, true)
             }
         };
@@ -119,11 +119,11 @@ impl<'a> TransactionExecutor<'a> {
         H160::from_slice(beneficiary.as_slice());
 
         let state_applier = StateApplier::new(self.batch);
-        state_applier.apply_changeset(&changeset, eip161, state_root)?;
+        state_applier.apply_changeset(&changeset, eip161, state_root).await?;
 
         // Ensure beneficiary exists (EIP-158/161)
-        self.batch.account(beneficiary, state_root)?;
-        let intermediate_root = self.batch.calculate_state_root(eip161, state_root)?;
+        self.batch.account(beneficiary, state_root).await?;
+        let intermediate_root = self.batch.calculate_state_root(eip161, state_root).await?;
         let logs_bloom = logs_bloom(consensus_logs.iter());
 
         let status = if self.fork >= Hardfork::Byzantium {
@@ -153,6 +153,8 @@ impl<'a> TransactionExecutor<'a> {
             }
         };
 
+        let call_create = result.call_create;
+
         let receipt_meta = ReceiptMeta { contract_address };
 
         Ok(TransactionExecutionResult {
@@ -160,12 +162,12 @@ impl<'a> TransactionExecutor<'a> {
             gas_used: tx_gas_used,
             receipt,
             receipt_meta,
-            call_create: result.call_create,
+            call_create,
         })
     }
 
-    fn validate_transaction_with_state(&self, tx: &Transaction, sender: Address, state_root: Option<B256>) -> Result<()> {
-        let account = self.batch.account(sender, state_root)?.unwrap_or_default();
+    async fn validate_transaction_with_state(&self, tx: &Transaction, sender: Address, state_root: Option<B256>) -> Result<()> {
+        let account = self.batch.account(sender, state_root).await?.unwrap_or_default();
         if tx.nonce() != account.nonce {
             return Err(anyhow::anyhow!("Nonce mismatch for sender {:?}: expected {}, got {}", sender, account.nonce, tx.nonce()));
         }
@@ -211,7 +213,7 @@ impl<'a> TransactionExecutor<'a> {
     }
 
 
-    fn prepare_backend(&self, tx: &Transaction, sender: Address, state_root: Option<B256>) -> Result<SputnikBackend<'a>> {
+    async fn prepare_backend(&self, tx: &Transaction, sender: Address, state_root: Option<B256>) -> Result<SputnikBackend<'a>> {
         let mut hot_accounts = HashSet::new();
         let mut hot_storage = HashSet::new();
         let mut access_list = Vec::new();
@@ -305,7 +307,7 @@ impl<'a> TransactionExecutor<'a> {
         }
     }
 
-    fn handle_transact_error(&self, tx: &Transaction, e: evm::interpreter::ExitError, args: &TransactArgs<'a>, sender_h160: H160, balance_before: EvmU256, effective_gas_price: EvmU256, reward_rate: EvmU256, is_coinbase: bool, overlay: &OverlayedBackend<'a, SputnikBackend<'a>>) -> Result<TransactValue> {
+    async fn handle_transact_error(&self, tx: &Transaction, e: evm::interpreter::ExitError, args: &TransactArgs<'a>, sender_h160: H160, balance_before: EvmU256, effective_gas_price: EvmU256, reward_rate: EvmU256, is_coinbase: bool, overlay: &OverlayedBackend<'a, SputnikBackend<'a>>) -> Result<TransactValue> {
         use evm::interpreter::ExitError;
         let balance_after = overlay.balance(sender_h160);
         let used_gas = {

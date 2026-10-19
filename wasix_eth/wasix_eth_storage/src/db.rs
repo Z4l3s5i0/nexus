@@ -57,16 +57,16 @@ impl EthDatabase {
         Ok(())
     }
 
-    pub fn init_genesis(&self, genesis: GenesisConfiguration) -> Result<()> {
+    pub async fn init_genesis(&self, genesis: GenesisConfiguration) -> Result<()> {
         let read_provider = DatabaseReadProvider::new(self.inner.clone());
-        let genesis_hash_meta = read_provider.get_metadata("genesis_hash".to_string())?;
+        let genesis_hash_meta = read_provider.get_metadata("genesis_hash".to_string()).await?;
 
         if genesis_hash_meta.is_none() {
             info!("[Storage] Initializing genesis block");
             let write_provider = DatabaseWriteProvider::new(self.inner.clone());
 
             // 1. Process allocations and calculate state root
-            let state_root = self.calculate_genesis_state(&write_provider, &genesis)?;
+            let state_root = self.calculate_genesis_state(&write_provider, &genesis).await?;
             
             debug!("[Storage] Genesis initialized with state root: {:?}", state_root);
 
@@ -114,27 +114,27 @@ impl EthDatabase {
             debug!("[Storage] Genesis hash (calculated): {:?}", genesis_hash);
 
             // 3. Persist Block and Metadata
-            write_provider.insert_header(genesis_hash.hash(), genesis_header_clone)?;
-            write_provider.set_canonical(block_number, genesis_hash.hash())?;
-            write_provider.insert_block_hash(genesis_hash.hash(), block_number)?;
-            write_provider.insert_header_number(genesis_hash.hash(), block_number)?;
+            write_provider.insert_header(genesis_hash.hash(), genesis_header_clone).await?;
+            write_provider.set_canonical(block_number, genesis_hash.hash()).await?;
+            write_provider.insert_block_hash(genesis_hash.hash(), block_number).await?;
+            write_provider.insert_header_number(genesis_hash.hash(), block_number).await?;
             
             let body = BlockBody {
                 transactions: Vec::new(),
                 ommers: Vec::new(),
                 withdrawals: if fork >= Hardfork::Shanghai { Some(wasix_eth_types::eip4895::Withdrawals::new(Vec::new())) } else { None },
             };
-            write_provider.insert_block_body(genesis_hash.hash(), block_number, body.clone())?;
-            write_provider.update_forkchoice(genesis_hash.hash(), None, None)?;
-            write_provider.insert_header_td(genesis_hash.hash(), genesis_header.difficulty)?;
+            write_provider.insert_block_body(genesis_hash.hash(), block_number, body.clone()).await?;
+            write_provider.update_forkchoice(genesis_hash.hash(), None, None).await?;
+            write_provider.insert_header_td(genesis_hash.hash(), genesis_header.difficulty).await?;
 
             // Also insert into Payloads table for consistency in some lookups
             let payload_id = wasix_eth_types::PayloadId::new([0u8; 8]);
-            write_provider.add_payload(payload_id, Block { header: genesis_header, body }, Vec::new(), Vec::new(), BlobsBundleV1::default())?;
+            write_provider.add_payload(payload_id, Block { header: genesis_header, body }, Vec::new(), Vec::new(), BlobsBundleV1::default()).await?;
 
-            write_provider.set_metadata("chain_id".to_string(), genesis.config.chain_id.to_be_bytes().to_vec().into())?;
-            write_provider.set_metadata("genesis_hash".to_string(), genesis_hash.hash().as_slice().to_vec().into())?;
-            write_provider.set_metadata("canonical_0".to_string(), genesis_hash.hash().as_slice().to_vec().into())?;
+            write_provider.set_metadata("chain_id".to_string(), genesis.config.chain_id.to_be_bytes().to_vec().into()).await?;
+            write_provider.set_metadata("genesis_hash".to_string(), genesis_hash.hash().as_slice().to_vec().into()).await?;
+            write_provider.set_metadata("canonical_0".to_string(), genesis_hash.hash().as_slice().to_vec().into()).await?;
 
             debug!("[Storage] Genesis state root (calculated): {:?}", state_root);
             info!("[Storage] Genesis initialized with hash: {:?}", genesis_hash.hash());
@@ -144,16 +144,16 @@ impl EthDatabase {
 
         // Always ensure chain_config is set in metadata if we have it
         let read_provider = DatabaseReadProvider::new(self.inner.clone());
-        if read_provider.get_metadata("chain_config".to_string())?.is_none() {
+        if read_provider.get_metadata("chain_config".to_string()).await?.is_none() {
              let write_provider = DatabaseWriteProvider::new(self.inner.clone());
              let config_json = serde_json::to_vec(&genesis.config)?;
-             write_provider.set_metadata("chain_config".to_string(), config_json.into())?;
+             write_provider.set_metadata("chain_config".to_string(), config_json.into()).await?;
         }
 
         Ok(())
     }
 
-    fn calculate_genesis_state(&self, write_provider: &DatabaseWriteProvider, genesis: &GenesisConfiguration) -> Result<B256> {
+    async fn calculate_genesis_state(&self, write_provider: &DatabaseWriteProvider, genesis: &GenesisConfiguration) -> Result<B256> {
         let batch = write_provider.begin_batch()?;
         
         let timestamp = genesis.timestamp.unwrap_or(U256::ZERO).to::<u64>();
@@ -168,59 +168,34 @@ impl EthDatabase {
         for (address, account) in &genesis.alloc {
             let addr = *address;
             
-            // debug!(
-            //     "[Execution] GENESIS ALLOC ACCOUNT:
-            //         addr={:?}
-            //         nonce={}
-            //         balance={}
-            //         code_len={}",
-            //     addr,
-            //     account.nonce.unwrap_or(0),
-            //     account.balance,
-            //     account.code.as_ref().map(|c| c.len()).unwrap_or(0)
-            // );
-
             for (slot, value) in account.storage.as_ref().unwrap_or(&Default::default()) {
                 let slot_b256 = *slot;
                 let val_u256 = (*value).into();
                 
-                // debug!(
-                //     "[Execution] STORAGE DIFF:
-                //         addr={:?}
-                //         slot={:?}
-                //         old={:?}
-                //         new={:?}",
-                //     addr,
-                //     slot_b256,
-                //     U256::ZERO,
-                //     val_u256,
-                // );
-
-                batch.update_storage(addr, slot_b256, val_u256)?;
+                batch.update_storage(addr, slot_b256, val_u256).await?;
             }
 
-            let storage_root = batch.calculate_storage_root(addr, None)?;
+            let storage_root = batch.calculate_storage_root(addr, None).await?;
+
+            let code_hash = if let Some(c) = &account.code {
+                let hash = alloy_primitives::keccak256(c);
+                batch.insert_bytecode(hash, c.clone()).await?;
+                hash
+            } else {
+                KECCAK256_EMPTY
+            };
 
             let trie_account = TrieAccount {
                 nonce: account.nonce.unwrap_or(0),
                 balance: account.balance,
                 storage_root,
-                code_hash: account.code.as_ref().map(|c| {
-                    let hash = alloy_primitives::keccak256(c);
-                    batch.insert_bytecode(hash, c.clone()).unwrap();
-                    hash
-                }).unwrap_or(KECCAK256_EMPTY),
+                code_hash,
             };
 
-            if addr == Address::ZERO {
-                let mut encoded = Vec::new();
-                trie_account.encode(&mut encoded);
-            }
-
-            batch.update_account(addr, trie_account)?;
+            batch.update_account(addr, trie_account).await?;
         }
 
-        let state_root = batch.calculate_state_root(eip161, None)?;
+        let state_root = batch.calculate_state_root(eip161, None).await?;
         batch.commit()?;
         
         debug!(
@@ -232,9 +207,9 @@ impl EthDatabase {
         Ok(state_root)
     }
 
-    pub fn calculate_state_root(&self, is_eip161: bool) -> Result<B256> {
+    pub async fn calculate_state_root(&self, is_eip161: bool) -> Result<B256> {
         let write_provider = DatabaseWriteProvider::new(self.inner.clone());
-        write_provider.calculate_state_root(is_eip161, None)
+        write_provider.calculate_state_root(is_eip161, None).await
     }
 
     pub fn inner(&self) -> Arc<Database> {

@@ -1,9 +1,14 @@
+use alloy_primitives::{Address, B256, Bytes, keccak256, KECCAK256_EMPTY, U256};
+use alloy_rlp::{Decodable, Encodable, EMPTY_STRING_CODE, Header};
 use alloy_trie::nodes::RlpNode as ChildNode;
 use alloy_trie::{Nibbles, EMPTY_ROOT_HASH};
-use alloy_rlp::{Encodable, Decodable, Header, EMPTY_STRING_CODE};
-use std::collections::HashMap;
+use async_trait::async_trait;
 use dashmap::DashMap;
-use alloy_primitives::{B256, keccak256, Bytes, Address};
+use futures_util::future::BoxFuture;
+use futures_util::FutureExt;
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use crate::read_traits::StateProvider;
 use crate::write_traits::StateWriter;
 
@@ -251,30 +256,43 @@ pub struct MemoryState {
     pub nodes: DashMap<B256, Bytes>,
 }
 
+#[async_trait]
 impl StateProvider for MemoryState {
-    fn trie_node(&self, hash: B256) -> anyhow::Result<Option<Bytes>> {
+    async fn trie_node(&self, hash: B256) -> anyhow::Result<Option<Bytes>> {
         Ok(self.nodes.get(&hash).as_deref().cloned())
     }
+
     // Implement other methods as needed, or just panic if not used
-    fn plain_state(&self, _address: Address) -> anyhow::Result<Option<Bytes>> { unreachable!() }
-    fn hashed_state(&self, _hash: B256) -> anyhow::Result<Option<Bytes>> { unreachable!() }
+    async fn plain_state(&self, _address: Address) -> anyhow::Result<Option<Bytes>> {
+        unreachable!()
+    }
+    async fn hashed_state(&self, _hash: B256) -> anyhow::Result<Option<Bytes>> {
+        unreachable!()
+    }
 }
 
+#[async_trait]
 impl StateWriter for MemoryState {
-    fn update_trie_node(&self, hash: B256, node: Bytes) -> anyhow::Result<()> {
+    async fn update_trie_node(&self, hash: B256, node: Bytes) -> anyhow::Result<()> {
         self.nodes.insert(hash, node);
         Ok(())
     }
-    fn update_plain_state(&self, _address: Address, _state: Bytes) -> anyhow::Result<()> { unreachable!() }
-    fn remove_plain_state(&self, _address: Address) -> anyhow::Result<()> { unreachable!() }
-    fn update_hashed_state(&self, _hash: B256, _state: Bytes) -> anyhow::Result<()> { unreachable!() }
+    async fn update_plain_state(&self, _address: Address, _state: Bytes) -> anyhow::Result<()> {
+        unreachable!()
+    }
+    async fn remove_plain_state(&self, _address: Address) -> anyhow::Result<()> {
+        unreachable!()
+    }
+    async fn update_hashed_state(&self, _hash: B256, _state: Bytes) -> anyhow::Result<()> {
+        unreachable!()
+    }
 }
 
-pub fn calculate_trie_root(leaves: Vec<(B256, Vec<u8>)>) -> anyhow::Result<B256> {
-    calculate_trie_root_incremental(EMPTY_ROOT_HASH, &MemoryState::default(), leaves)
+pub async fn calculate_trie_root(leaves: Vec<(B256, Vec<u8>)>) -> anyhow::Result<B256> {
+    calculate_trie_root_incremental(EMPTY_ROOT_HASH, &MemoryState::default(), leaves).await
 }
 
-pub fn calculate_trie_root_incremental<S: StateProvider + StateWriter>(
+pub async fn calculate_trie_root_incremental<S: StateProvider + StateWriter>(
     base_root: B256,
     state: &S,
     leaves: Vec<(B256, Vec<u8>)>,
@@ -282,12 +300,12 @@ pub fn calculate_trie_root_incremental<S: StateProvider + StateWriter>(
     let mut trie = EthTrie::new(state, base_root);
     for (key, value) in leaves {
         if value.is_empty() {
-            trie.delete(key)?;
+            trie.delete(key).await?;
         } else {
-            trie.insert(key, value)?;
+            trie.insert(key, value).await?;
         }
     }
-    trie.commit()?;
+    trie.commit().await?;
     Ok(trie.root_hash())
 }
 
@@ -312,233 +330,330 @@ impl<'a, S: StateProvider + StateWriter> EthTrie<'a, S> {
         self.root_hash
     }
 
-    pub fn get_nibbles(&mut self, nibbles: Nibbles) -> anyhow::Result<Option<Vec<u8>>> {
-        self.get_recursive(self.root_hash, nibbles)
+    pub async fn get_nibbles(&mut self, nibbles: Nibbles) -> anyhow::Result<Option<Vec<u8>>> {
+        self.get_recursive(self.root_hash, nibbles).await
     }
 
-    pub fn insert_nibbles(&mut self, nibbles: Nibbles, value: Vec<u8>) -> anyhow::Result<()> {
+    pub async fn insert_nibbles(&mut self, nibbles: Nibbles, value: Vec<u8>) -> anyhow::Result<()> {
         let root = self.root_hash;
-        self.root_hash = self.insert_recursive(root, nibbles, value)?;
+        self.root_hash = self.insert_recursive(root, nibbles, value).await?;
         Ok(())
     }
 
-    pub fn delete_nibbles(&mut self, nibbles: Nibbles) -> anyhow::Result<()> {
+    pub async fn delete_nibbles(&mut self, nibbles: Nibbles) -> anyhow::Result<()> {
         let root = self.root_hash;
-        self.root_hash = self.delete_recursive(root, nibbles)?;
+        self.root_hash = self.delete_recursive(root, nibbles).await?;
         Ok(())
     }
 
-    pub fn get(&mut self, key: B256) -> anyhow::Result<Option<Vec<u8>>> {
+    pub async fn get(&mut self, key: B256) -> anyhow::Result<Option<Vec<u8>>> {
         let nibbles = Nibbles::unpack(key);
-        self.get_nibbles(nibbles)
+        self.get_nibbles(nibbles).await
     }
 
-    fn get_recursive(&mut self, node_hash: B256, nibbles: Nibbles) -> anyhow::Result<Option<Vec<u8>>> {
-        if node_hash == EMPTY_ROOT_HASH {
-            return Ok(None);
-        }
-
-        let node = self.get_node(node_hash)?;
-        self.get_recursive_node(node, nibbles)
-    }
-
-    fn get_recursive_node(&mut self, node: MyTrieNode, nibbles: Nibbles) -> anyhow::Result<Option<Vec<u8>>> {
-        match node {
-            MyTrieNode::EmptyRoot => Ok(None),
-            MyTrieNode::Leaf(leaf) => {
-                if leaf.key == nibbles {
-                    Ok(Some(leaf.value))
-                } else {
-                    Ok(None)
-                }
-            }
-            MyTrieNode::Extension(ext) => {
-                if nibbles.starts_with(&ext.key) {
-                    let remaining = if ext.key.len() < nibbles.len() { nibbles.slice(ext.key.len()..) } else { Nibbles::default() };
-                    self.get_recursive_rlp(&ext.child, remaining)
-                } else {
-                    Ok(None)
-                }
-            }
-            MyTrieNode::Branch(branch) => {
-                if nibbles.is_empty() {
-                    return Ok(branch.value);
-                }
-                let index = nibbles.get(0).ok_or_else(|| anyhow::anyhow!("Nibbles empty"))? as usize;
-                let remaining = if 1 < nibbles.len() { nibbles.slice(1..) } else { Nibbles::default() };
-                self.get_recursive_rlp(&branch.stack[index], remaining)
-            }
-        }
-    }
-
-    fn get_recursive_rlp(&mut self, rlp_node: &ChildNode, nibbles: Nibbles) -> anyhow::Result<Option<Vec<u8>>> {
-        if let Some(hash) = rlp_node.as_hash() {
-            self.get_recursive(hash, nibbles)
-        } else {
-            let mut data = rlp_node.as_slice();
-            if data.is_empty() {
+    fn get_recursive(
+        &mut self,
+        node_hash: B256,
+        nibbles: Nibbles,
+    ) -> BoxFuture<'_, anyhow::Result<Option<Vec<u8>>>> {
+        async move {
+            if node_hash == EMPTY_ROOT_HASH {
                 return Ok(None);
             }
-            let node = MyTrieNode::decode(&mut data)?;
-            self.get_recursive_node(node, nibbles)
-        }
+
+            let node = self.get_node(node_hash).await?;
+            self.get_recursive_node(node, nibbles).await
+        }.boxed()
     }
 
-    pub fn insert(&mut self, key: B256, value: Vec<u8>) -> anyhow::Result<()> {
-        let nibbles = Nibbles::unpack(key);
-        self.insert_nibbles(nibbles, value)
-    }
-
-    fn insert_recursive(&mut self, node_hash: B256, nibbles: Nibbles, value: Vec<u8>) -> anyhow::Result<B256> {
-        if node_hash == EMPTY_ROOT_HASH {
-            let leaf = MyLeafNode::new(nibbles, value);
-            return Ok(self.store_node(MyTrieNode::Leaf(leaf))?);
-        }
-
-        let node = self.get_node(node_hash)?;
-        if let MyTrieNode::EmptyRoot = node {
-             let leaf = MyLeafNode::new(nibbles, value);
-             return Ok(self.store_node(MyTrieNode::Leaf(leaf))?);
-        }
-        let new_node = match node {
-            MyTrieNode::EmptyRoot => {
-                MyTrieNode::Leaf(MyLeafNode::new(nibbles, value))
-            }
-            MyTrieNode::Leaf(mut leaf) => {
-                let common = nibbles.common_prefix_length(&leaf.key);
-                if common == nibbles.len() && common == leaf.key.len() {
-                    // Update existing leaf
-                    leaf.value = value;
-                    MyTrieNode::Leaf(leaf)
-                } else {
-                    // Split
-                    let mut branch = MyBranchNode::default();
-                    
-                    if common == leaf.key.len() {
-                        // Current leaf is prefix of new key
-                        branch.value = Some(leaf.value);
-                        let remaining_new = nibbles.slice(common..);
-                        let index_new = remaining_new.get(0).expect("common < nibbles.len()") as usize;
-                        let child_new_key = if 1 < remaining_new.len() { remaining_new.slice(1..) } else { Nibbles::default() };
-                        let child_new = MyLeafNode::new(child_new_key, value);
-                        branch.stack[index_new] = self.store_node_to_rlp(MyTrieNode::Leaf(child_new))?;
-                    } else if common == nibbles.len() {
-                        // New key is prefix of current leaf
-                        branch.value = Some(value);
-                        let remaining_leaf = leaf.key.slice(common..);
-                        let index_leaf = remaining_leaf.get(0).expect("common < leaf.key.len()") as usize;
-                        let child_leaf_key = if 1 < remaining_leaf.len() { remaining_leaf.slice(1..) } else { Nibbles::default() };
-                        let child_leaf = MyLeafNode::new(child_leaf_key, leaf.value);
-                        branch.stack[index_leaf] = self.store_node_to_rlp(MyTrieNode::Leaf(child_leaf))?;
+    fn get_recursive_node(
+        &mut self,
+        node: MyTrieNode,
+        nibbles: Nibbles,
+    ) -> BoxFuture<'_, anyhow::Result<Option<Vec<u8>>>> {
+        async move {
+            match node {
+                MyTrieNode::EmptyRoot => Ok(None),
+                MyTrieNode::Leaf(leaf) => {
+                    if leaf.key == nibbles {
+                        Ok(Some(leaf.value))
                     } else {
-                        // Diverge
-                        let index_leaf = leaf.key.get(common).expect("common < leaf.key.len()") as usize;
-                        let index_new = nibbles.get(common).expect("common < nibbles.len()") as usize;
-                        
-                        let remaining_leaf = if common + 1 < leaf.key.len() { leaf.key.slice(common + 1..) } else { Nibbles::default() };
-                        let child_leaf = MyLeafNode::new(remaining_leaf, leaf.value);
-                        branch.stack[index_leaf] = self.store_node_to_rlp(MyTrieNode::Leaf(child_leaf))?;
-                        
-                        let remaining_new = if common + 1 < nibbles.len() { nibbles.slice(common + 1..) } else { Nibbles::default() };
-                        let child_new = MyLeafNode::new(remaining_new, value);
-                        branch.stack[index_new] = self.store_node_to_rlp(MyTrieNode::Leaf(child_new))?;
-                    }
-                    
-                    if common > 0 {
-                        let ext = MyExtensionNode::new(nibbles.slice(..common), self.store_node_to_rlp(MyTrieNode::Branch(branch))?);
-                        MyTrieNode::Extension(ext)
-                    } else {
-                        MyTrieNode::Branch(branch)
+                        Ok(None)
                     }
                 }
+                MyTrieNode::Extension(ext) => {
+                    if nibbles.starts_with(&ext.key) {
+                        let remaining = if ext.key.len() < nibbles.len() {
+                            nibbles.slice(ext.key.len()..)
+                        } else {
+                            Nibbles::default()
+                        };
+                        self.get_recursive_rlp(&ext.child, remaining).await
+                    } else {
+                        Ok(None)
+                    }
+                }
+                MyTrieNode::Branch(branch) => {
+                    if nibbles.is_empty() {
+                        return Ok(branch.value);
+                    }
+                    let index = nibbles
+                        .get(0)
+                        .ok_or_else(|| anyhow::anyhow!("Nibbles empty"))? as usize;
+                    let remaining = if 1 < nibbles.len() {
+                        nibbles.slice(1..)
+                    } else {
+                        Nibbles::default()
+                    };
+                    self.get_recursive_rlp(&branch.stack[index], remaining).await
+                }
             }
-            MyTrieNode::Extension(mut ext) => {
-                let common = nibbles.common_prefix_length(&ext.key);
+        }.boxed()
+    }
 
-                if common == ext.key.len() {
+    fn get_recursive_rlp(
+        &mut self,
+        rlp_node: &ChildNode,
+        nibbles: Nibbles,
+    ) -> BoxFuture<'_, anyhow::Result<Option<Vec<u8>>>> {
+        let hash = rlp_node.as_hash();
+        let slice = rlp_node.as_slice().to_vec();
+        async move {
+            if let Some(hash) = hash {
+                self.get_recursive(hash, nibbles).await
+            } else {
+                let mut data = slice.as_slice();
+                if data.is_empty() {
+                    return Ok(None);
+                }
+                let node = MyTrieNode::decode(&mut data)?;
+                self.get_recursive_node(node, nibbles).await
+            }
+        }.boxed()
+    }
+
+    pub async fn insert(&mut self, key: B256, value: Vec<u8>) -> anyhow::Result<()> {
+        let nibbles = Nibbles::unpack(key);
+        self.insert_nibbles(nibbles, value).await
+    }
+
+    fn insert_recursive(
+        &mut self,
+        node_hash: B256,
+        nibbles: Nibbles,
+        value: Vec<u8>,
+    ) -> BoxFuture<'_, anyhow::Result<B256>> {
+        async move {
+            if node_hash == EMPTY_ROOT_HASH {
+                let leaf = MyLeafNode::new(nibbles, value);
+                return Ok(self.store_node(MyTrieNode::Leaf(leaf))?);
+            }
+
+            let node = self.get_node(node_hash).await?;
+            if let MyTrieNode::EmptyRoot = node {
+                let leaf = MyLeafNode::new(nibbles, value);
+                return Ok(self.store_node(MyTrieNode::Leaf(leaf))?);
+            }
+            let new_node = match node {
+                MyTrieNode::EmptyRoot => MyTrieNode::Leaf(MyLeafNode::new(nibbles, value)),
+                MyTrieNode::Leaf(mut leaf) => {
+                    let common = nibbles.common_prefix_length(&leaf.key);
+                    if common == nibbles.len() && common == leaf.key.len() {
+                        // Update existing leaf
+                        leaf.value = value;
+                        MyTrieNode::Leaf(leaf)
+                    } else {
+                        // Split
+                        let mut branch = MyBranchNode::default();
+
+                        if common == leaf.key.len() {
+                            // Current leaf is prefix of new key
+                            branch.value = Some(leaf.value);
+                            let remaining_new = nibbles.slice(common..);
+                            let index_new = remaining_new.get(0).expect("common < nibbles.len()") as usize;
+                            let child_new_key = if 1 < remaining_new.len() {
+                                remaining_new.slice(1..)
+                            } else {
+                                Nibbles::default()
+                            };
+                            let child_new = MyLeafNode::new(child_new_key, value);
+                            branch.stack[index_new] =
+                                self.store_node_to_rlp(MyTrieNode::Leaf(child_new))?;
+                        } else if common == nibbles.len() {
+                            // New key is prefix of current leaf
+                            branch.value = Some(value);
+                            let remaining_leaf = leaf.key.slice(common..);
+                            let index_leaf =
+                                remaining_leaf.get(0).expect("common < leaf.key.len()") as usize;
+                            let child_leaf_key = if 1 < remaining_leaf.len() {
+                                remaining_leaf.slice(1..)
+                            } else {
+                                Nibbles::default()
+                            };
+                            let child_leaf = MyLeafNode::new(child_leaf_key, leaf.value);
+                            branch.stack[index_leaf] =
+                                self.store_node_to_rlp(MyTrieNode::Leaf(child_leaf))?;
+                        } else {
+                            // Diverge
+                            let index_leaf =
+                                leaf.key.get(common).expect("common < leaf.key.len()") as usize;
+                            let index_new = nibbles.get(common).expect("common < nibbles.len()") as usize;
+
+                            let remaining_leaf = if common + 1 < leaf.key.len() {
+                                leaf.key.slice(common + 1..)
+                            } else {
+                                Nibbles::default()
+                            };
+                            let child_leaf = MyLeafNode::new(remaining_leaf, leaf.value);
+                            branch.stack[index_leaf] =
+                                self.store_node_to_rlp(MyTrieNode::Leaf(child_leaf))?;
+
+                            let remaining_new = if common + 1 < nibbles.len() {
+                                nibbles.slice(common + 1..)
+                            } else {
+                                Nibbles::default()
+                            };
+                            let child_new = MyLeafNode::new(remaining_new, value);
+                            branch.stack[index_new] =
+                                self.store_node_to_rlp(MyTrieNode::Leaf(child_new))?;
+                        }
+
+                        if common > 0 {
+                            let ext = MyExtensionNode::new(
+                                nibbles.slice(..common),
+                                self.store_node_to_rlp(MyTrieNode::Branch(branch))?,
+                            );
+                            MyTrieNode::Extension(ext)
+                        } else {
+                            MyTrieNode::Branch(branch)
+                        }
+                    }
+                }
+                MyTrieNode::Extension(mut ext) => {
+                    let common = nibbles.common_prefix_length(&ext.key);
+
+                    if common == ext.key.len() {
                         // Full match of extension, recurse to child
                         let remaining = nibbles.slice(common..);
-                        let new_child_rlp = self.insert_recursive_rlp(ext.child, remaining, value)?;
+                        let new_child_rlp = self
+                            .insert_recursive_rlp(ext.child, remaining, value)
+                            .await?;
                         ext.child = new_child_rlp;
                         MyTrieNode::Extension(ext)
                     } else {
                         // Split extension
                         let mut branch = MyBranchNode::default();
-                        
+
                         if common == nibbles.len() {
                             // New key is a prefix of extension key
                             branch.value = Some(value);
                             let remaining_ext = ext.key.slice(common..);
-                            let index_ext = remaining_ext.get(0).expect("common < ext.key.len()") as usize;
-                            let sub_ext_key = if 1 < remaining_ext.len() { remaining_ext.slice(1..) } else { Nibbles::default() };
+                            let index_ext =
+                                remaining_ext.get(0).expect("common < ext.key.len()") as usize;
+                            let sub_ext_key = if 1 < remaining_ext.len() {
+                                remaining_ext.slice(1..)
+                            } else {
+                                Nibbles::default()
+                            };
                             if sub_ext_key.is_empty() {
                                 branch.stack[index_ext] = ext.child;
                             } else {
                                 let sub_ext = MyExtensionNode::new(sub_ext_key, ext.child);
-                                branch.stack[index_ext] = self.store_node_to_rlp(MyTrieNode::Extension(sub_ext))?;
+                                branch.stack[index_ext] =
+                                    self.store_node_to_rlp(MyTrieNode::Extension(sub_ext))?;
                             }
                         } else {
                             // Diverge
-                            let index_ext = ext.key.get(common).expect("common < ext.key.len()") as usize;
+                            let index_ext =
+                                ext.key.get(common).expect("common < ext.key.len()") as usize;
                             let index_new = nibbles.get(common).expect("common < nibbles.len()") as usize;
 
-                            let remaining_ext = if common + 1 < ext.key.len() { ext.key.slice(common + 1..) } else { Nibbles::default() };
-                            if remaining_ext.is_empty() {
-                                 branch.stack[index_ext] = ext.child;
+                            let remaining_ext = if common + 1 < ext.key.len() {
+                                ext.key.slice(common + 1..)
                             } else {
-                                 let sub_ext = MyExtensionNode::new(remaining_ext, ext.child);
-                                 branch.stack[index_ext] = self.store_node_to_rlp(MyTrieNode::Extension(sub_ext))?;
+                                Nibbles::default()
+                            };
+                            if remaining_ext.is_empty() {
+                                branch.stack[index_ext] = ext.child;
+                            } else {
+                                let sub_ext = MyExtensionNode::new(remaining_ext, ext.child);
+                                branch.stack[index_ext] =
+                                    self.store_node_to_rlp(MyTrieNode::Extension(sub_ext))?;
                             }
-                            
-                            let remaining_new = if common + 1 < nibbles.len() { nibbles.slice(common + 1..) } else { Nibbles::default() };
-                            let child_new = MyLeafNode::new(remaining_new, value);
-                            branch.stack[index_new] = self.store_node_to_rlp(MyTrieNode::Leaf(child_new))?;
-                        }
-                        
-                        if common > 0 {
-                             let new_ext = MyExtensionNode::new(ext.key.slice(..common), self.store_node_to_rlp(MyTrieNode::Branch(branch))?);
-                             MyTrieNode::Extension(new_ext)
-                        } else {
-                             MyTrieNode::Branch(branch)
-                        }
-                    }
-            }
-            MyTrieNode::Branch(mut branch) => {
-                if nibbles.is_empty() {
-                    branch.value = Some(value);
-                    MyTrieNode::Branch(branch)
-                } else {
-                    let index = nibbles.get(0).ok_or_else(|| anyhow::anyhow!("Index error"))? as usize;
-                    if index >= 16 {
-                        return Err(anyhow::anyhow!("Branch index out of bounds: {}", index));
-                    }
-                    let remaining = if 1 < nibbles.len() { nibbles.slice(1..) } else { Nibbles::default() };
-                    let new_child_rlp = self.insert_recursive_rlp(branch.stack[index].clone(), remaining, value)?;
-                    branch.stack[index] = new_child_rlp;
-                    MyTrieNode::Branch(branch)
-                }
-            }
-        };
 
-        self.store_node(new_node)
+                            let remaining_new = if common + 1 < nibbles.len() {
+                                nibbles.slice(common + 1..)
+                            } else {
+                                Nibbles::default()
+                            };
+                            let child_new = MyLeafNode::new(remaining_new, value);
+                            branch.stack[index_new] =
+                                self.store_node_to_rlp(MyTrieNode::Leaf(child_new))?;
+                        }
+
+                        if common > 0 {
+                            let new_ext = MyExtensionNode::new(
+                                ext.key.slice(..common),
+                                self.store_node_to_rlp(MyTrieNode::Branch(branch))?,
+                            );
+                            MyTrieNode::Extension(new_ext)
+                        } else {
+                            MyTrieNode::Branch(branch)
+                        }
+                    }
+                }
+                MyTrieNode::Branch(mut branch) => {
+                    if nibbles.is_empty() {
+                        branch.value = Some(value);
+                        MyTrieNode::Branch(branch)
+                    } else {
+                        let index = nibbles
+                            .get(0)
+                            .ok_or_else(|| anyhow::anyhow!("Index error"))? as usize;
+                        if index >= 16 {
+                            return Err(anyhow::anyhow!("Branch index out of bounds: {}", index));
+                        }
+                        let remaining = if 1 < nibbles.len() {
+                            nibbles.slice(1..)
+                        } else {
+                            Nibbles::default()
+                        };
+                        let new_child_rlp = self
+                            .insert_recursive_rlp(branch.stack[index].clone(), remaining, value)
+                            .await?;
+                        branch.stack[index] = new_child_rlp;
+                        MyTrieNode::Branch(branch)
+                    }
+                }
+            };
+
+            self.store_node(new_node)
+        }.boxed()
     }
 
-    fn insert_recursive_rlp(&mut self, rlp_node: ChildNode, nibbles: Nibbles, value: Vec<u8>) -> anyhow::Result<ChildNode> {
-        if let Some(hash) = rlp_node.as_hash() {
-            let new_hash = self.insert_recursive(hash, nibbles, value)?;
-            Ok(ChildNode::word_rlp(&new_hash))
-        } else {
-            let mut data = rlp_node.as_slice();
-            let node = if data.is_empty() {
-                MyTrieNode::EmptyRoot
+    fn insert_recursive_rlp(
+        &mut self,
+        rlp_node: ChildNode,
+        nibbles: Nibbles,
+        value: Vec<u8>,
+    ) -> BoxFuture<'_, anyhow::Result<ChildNode>> {
+        async move {
+            if let Some(hash) = rlp_node.as_hash() {
+                let new_hash = self.insert_recursive(hash, nibbles, value).await?;
+                Ok(ChildNode::word_rlp(&new_hash))
             } else {
-                MyTrieNode::decode(&mut data)?
-            };
-            let dummy_hash = self.store_node(node)?;
-            let new_hash = self.insert_recursive(dummy_hash, nibbles, value)?;
-            let new_node = self.get_node(new_hash)?;
-            Ok(self.store_node_to_rlp(new_node)?)
-        }
+                let mut data = rlp_node.as_slice();
+                let node = if data.is_empty() {
+                    MyTrieNode::EmptyRoot
+                } else {
+                    MyTrieNode::decode(&mut data)?
+                };
+                let dummy_hash = self.store_node(node)?;
+                let new_hash = self.insert_recursive(dummy_hash, nibbles, value).await?;
+                let new_node = self.get_node(new_hash).await?;
+                Ok(self.store_node_to_rlp(new_node)?)
+            }
+        }.boxed()
     }
 
     fn store_node(&mut self, node: MyTrieNode) -> anyhow::Result<B256> {
@@ -563,7 +678,7 @@ impl<'a, S: StateProvider + StateWriter> EthTrie<'a, S> {
         }
     }
 
-    fn get_node(&mut self, hash: B256) -> anyhow::Result<MyTrieNode> {
+    async fn get_node(&mut self, hash: B256) -> anyhow::Result<MyTrieNode> {
         if hash == EMPTY_ROOT_HASH {
             return Ok(MyTrieNode::EmptyRoot);
         }
@@ -574,7 +689,7 @@ impl<'a, S: StateProvider + StateWriter> EthTrie<'a, S> {
         let data = if let Some(dirty_data) = self.dirty.get(&hash) {
             dirty_data.clone()
         } else {
-            match self.state.trie_node(hash)? {
+            match self.state.trie_node(hash).await? {
                 Some(bytes) => bytes.to_vec(),
                 None => {
                     return Err(anyhow::anyhow!("Trie node not found: {:?}", hash));
@@ -588,130 +703,167 @@ impl<'a, S: StateProvider + StateWriter> EthTrie<'a, S> {
         Ok(node)
     }
 
-    pub fn delete(&mut self, key: B256) -> anyhow::Result<()> {
+    pub async fn delete(&mut self, key: B256) -> anyhow::Result<()> {
         let nibbles = Nibbles::unpack(key);
-        self.delete_nibbles(nibbles)
+        self.delete_nibbles(nibbles).await
     }
 
-    fn delete_recursive(&mut self, node_hash: B256, nibbles: Nibbles) -> anyhow::Result<B256> {
-        // debug!("[Trie] delete_recursive: hash={:?}, nibbles={:?}", node_hash, nibbles);
-        if node_hash == EMPTY_ROOT_HASH {
-            return Ok(EMPTY_ROOT_HASH);
-        }
-
-        let node = self.get_node(node_hash)?;
-        let new_node = self.delete_recursive_node(node, nibbles)?;
-
-        if matches!(new_node, MyTrieNode::EmptyRoot) {
-            Ok(EMPTY_ROOT_HASH)
-        } else {
-            self.store_node(new_node)
-        }
-    }
-
-    fn delete_recursive_node(&mut self, node: MyTrieNode, nibbles: Nibbles) -> anyhow::Result<MyTrieNode> {
-        match node {
-            MyTrieNode::EmptyRoot => Ok(MyTrieNode::EmptyRoot),
-            MyTrieNode::Leaf(leaf) => {
-                if leaf.key == nibbles {
-                    Ok(MyTrieNode::EmptyRoot)
-                } else {
-                    Ok(MyTrieNode::Leaf(leaf))
-                }
+    fn delete_recursive(&mut self, node_hash: B256, nibbles: Nibbles) -> BoxFuture<'_, anyhow::Result<B256>> {
+        async move {
+            // debug!("[Trie] delete_recursive: hash={:?}, nibbles={:?}", node_hash, nibbles);
+            if node_hash == EMPTY_ROOT_HASH {
+                return Ok(EMPTY_ROOT_HASH);
             }
-            MyTrieNode::Extension(mut ext) => {
-                if nibbles.starts_with(&ext.key) {
-                    let remaining = if ext.key.len() < nibbles.len() { nibbles.slice(ext.key.len()..) } else { Nibbles::default() };
-                    let new_child_rlp = self.delete_recursive_rlp(ext.child, remaining)?;
-                    if new_child_rlp.is_empty() {
+
+            let node = self.get_node(node_hash).await?;
+            let new_node = self.delete_recursive_node(node, nibbles).await?;
+
+            if matches!(new_node, MyTrieNode::EmptyRoot) {
+                Ok(EMPTY_ROOT_HASH)
+            } else {
+                self.store_node(new_node)
+            }
+        }.boxed()
+    }
+
+    fn delete_recursive_node(
+        &mut self,
+        node: MyTrieNode,
+        nibbles: Nibbles,
+    ) -> BoxFuture<'_, anyhow::Result<MyTrieNode>> {
+        async move {
+            match node {
+                MyTrieNode::EmptyRoot => Ok(MyTrieNode::EmptyRoot),
+                MyTrieNode::Leaf(leaf) => {
+                    if leaf.key == nibbles {
                         Ok(MyTrieNode::EmptyRoot)
                     } else {
-                        ext.child = new_child_rlp;
-                        // Collapse extension
-                        let child_node = self.get_node_from_rlp(&ext.child)?;
-                        match child_node {
-                            MyTrieNode::Extension(child_ext) => {
-                                let mut new_key = ext.key.clone();
-                                new_key.extend(&child_ext.key);
-                                Ok(MyTrieNode::Extension(MyExtensionNode::new(new_key, child_ext.child)))
+                        Ok(MyTrieNode::Leaf(leaf))
+                    }
+                }
+                MyTrieNode::Extension(mut ext) => {
+                    if nibbles.starts_with(&ext.key) {
+                        let remaining = if ext.key.len() < nibbles.len() {
+                            nibbles.slice(ext.key.len()..)
+                        } else {
+                            Nibbles::default()
+                        };
+                        let new_child_rlp = self.delete_recursive_rlp(ext.child, remaining).await?;
+                        if new_child_rlp.is_empty() {
+                            Ok(MyTrieNode::EmptyRoot)
+                        } else {
+                            ext.child = new_child_rlp;
+                            // Collapse extension
+                            let child_node = self.get_node_from_rlp(&ext.child).await?;
+                            match child_node {
+                                MyTrieNode::Extension(child_ext) => {
+                                    let mut new_key = ext.key.clone();
+                                    new_key.extend(&child_ext.key);
+                                    Ok(MyTrieNode::Extension(MyExtensionNode::new(
+                                        new_key,
+                                        child_ext.child,
+                                    )))
+                                }
+                                _ => Ok(MyTrieNode::Extension(ext)),
                             }
-                            _ => Ok(MyTrieNode::Extension(ext)),
                         }
+                    } else {
+                        Ok(MyTrieNode::Extension(ext))
                     }
-                } else {
-                    Ok(MyTrieNode::Extension(ext))
+                }
+                MyTrieNode::Branch(mut branch) => {
+                    if !nibbles.is_empty() {
+                        let index = nibbles
+                            .get(0)
+                            .ok_or_else(|| anyhow::anyhow!("Index error"))? as usize;
+                        if index >= 16 {
+                            return Err(anyhow::anyhow!("Branch index out of bounds: {}", index));
+                        }
+                        let remaining = if 1 < nibbles.len() {
+                            nibbles.slice(1..)
+                        } else {
+                            Nibbles::default()
+                        };
+                        let new_child_rlp = self
+                            .delete_recursive_rlp(branch.stack[index].clone(), remaining)
+                            .await?;
+                        branch.stack[index] = new_child_rlp;
+                    } else {
+                        branch.value = None;
+                    }
+
+                    // Check if branch can be collapsed
+                    let children_count = branch.stack.iter().filter(|c| !c.is_empty()).count();
+                    let has_value = branch.value.is_some();
+
+                    if children_count == 0 && !has_value {
+                        Ok(MyTrieNode::EmptyRoot)
+                    } else if children_count == 1 && !has_value {
+                        let (index, child_rlp) = branch
+                            .stack
+                            .iter()
+                            .enumerate()
+                            .find(|(_, c)| !c.is_empty())
+                            .ok_or_else(|| anyhow::anyhow!("Child not found"))?;
+                        let child_node = self.get_node_from_rlp(child_rlp).await?;
+                        match child_node {
+                            MyTrieNode::Leaf(mut leaf) => {
+                                let mut new_key = Nibbles::from_nibbles([index as u8]);
+                                new_key.extend(&leaf.key);
+                                leaf.key = new_key;
+                                Ok(MyTrieNode::Leaf(leaf))
+                            }
+                            MyTrieNode::Extension(mut ext) => {
+                                let mut new_key = Nibbles::from_nibbles([index as u8]);
+                                new_key.extend(&ext.key);
+                                ext.key = new_key;
+                                Ok(MyTrieNode::Extension(ext))
+                            }
+                            MyTrieNode::Branch(_) => {
+                                let new_key = Nibbles::from_nibbles([index as u8]);
+                                Ok(MyTrieNode::Extension(MyExtensionNode::new(
+                                    new_key,
+                                    child_rlp.clone(),
+                                )))
+                            }
+                            _ => Ok(MyTrieNode::Branch(branch)),
+                        }
+                    } else {
+                        Ok(MyTrieNode::Branch(branch))
+                    }
                 }
             }
-            MyTrieNode::Branch(mut branch) => {
-                if !nibbles.is_empty() {
-                    let index = nibbles.get(0).ok_or_else(|| anyhow::anyhow!("Index error"))? as usize;
-                    if index >= 16 {
-                        return Err(anyhow::anyhow!("Branch index out of bounds: {}", index));
-                    }
-                    let remaining = if 1 < nibbles.len() { nibbles.slice(1..) } else { Nibbles::default() };
-                    let new_child_rlp = self.delete_recursive_rlp(branch.stack[index].clone(), remaining)?;
-                    branch.stack[index] = new_child_rlp;
-                } else {
-                    branch.value = None;
-                }
-
-                // Check if branch can be collapsed
-                let children_count = branch.stack.iter().filter(|c| !c.is_empty()).count();
-                let has_value = branch.value.is_some();
-
-                if children_count == 0 && !has_value {
-                    Ok(MyTrieNode::EmptyRoot)
-                } else if children_count == 1 && !has_value {
-                    let (index, child_rlp) = branch.stack.iter().enumerate().find(|(_, c)| !c.is_empty()).ok_or_else(|| anyhow::anyhow!("Child not found"))?;
-                    let child_node = self.get_node_from_rlp(child_rlp)?;
-                    match child_node {
-                        MyTrieNode::Leaf(mut leaf) => {
-                            let mut new_key = Nibbles::from_nibbles([index as u8]);
-                            new_key.extend(&leaf.key);
-                            leaf.key = new_key;
-                            Ok(MyTrieNode::Leaf(leaf))
-                        }
-                        MyTrieNode::Extension(mut ext) => {
-                            let mut new_key = Nibbles::from_nibbles([index as u8]);
-                            new_key.extend(&ext.key);
-                            ext.key = new_key;
-                            Ok(MyTrieNode::Extension(ext))
-                        }
-                        MyTrieNode::Branch(_) => {
-                            let new_key = Nibbles::from_nibbles([index as u8]);
-                            Ok(MyTrieNode::Extension(MyExtensionNode::new(new_key, child_rlp.clone())))
-                        }
-                        _ => Ok(MyTrieNode::Branch(branch)),
-                    }
-                } else {
-                    Ok(MyTrieNode::Branch(branch))
-                }
-            }
-        }
+        }.boxed()
     }
 
-    fn delete_recursive_rlp(&mut self, rlp_node: ChildNode, nibbles: Nibbles) -> anyhow::Result<ChildNode> {
-        if let Some(hash) = rlp_node.as_hash() {
-            let new_hash = self.delete_recursive(hash, nibbles)?;
-            if new_hash == EMPTY_ROOT_HASH {
-                Ok(ChildNode::default())
+    fn delete_recursive_rlp(
+        &mut self,
+        rlp_node: ChildNode,
+        nibbles: Nibbles,
+    ) -> BoxFuture<'_, anyhow::Result<ChildNode>> {
+        async move {
+            if let Some(hash) = rlp_node.as_hash() {
+                let new_hash = self.delete_recursive(hash, nibbles).await?;
+                if new_hash == EMPTY_ROOT_HASH {
+                    Ok(ChildNode::default())
+                } else {
+                    Ok(ChildNode::word_rlp(&new_hash))
+                }
             } else {
-                Ok(ChildNode::word_rlp(&new_hash))
+                let mut data = rlp_node.as_slice();
+                if data.is_empty() {
+                    return Ok(ChildNode::default());
+                }
+                let node = MyTrieNode::decode(&mut data)?;
+                let new_node = self.delete_recursive_node(node, nibbles).await?;
+                self.store_node_to_rlp(new_node)
             }
-        } else {
-            let mut data = rlp_node.as_slice();
-            if data.is_empty() {
-                return Ok(ChildNode::default());
-            }
-            let node = MyTrieNode::decode(&mut data)?;
-            let new_node = self.delete_recursive_node(node, nibbles)?;
-            self.store_node_to_rlp(new_node)
-        }
+        }.boxed()
     }
 
-    fn get_node_from_rlp(&mut self, rlp_node: &ChildNode) -> anyhow::Result<MyTrieNode> {
+    async fn get_node_from_rlp(&mut self, rlp_node: &ChildNode) -> anyhow::Result<MyTrieNode> {
         if let Some(hash) = rlp_node.as_hash() {
-            self.get_node(hash)
+            self.get_node(hash).await
         } else {
             let mut data = rlp_node.as_slice();
             if data.is_empty() {
@@ -722,64 +874,84 @@ impl<'a, S: StateProvider + StateWriter> EthTrie<'a, S> {
         }
     }
 
-    pub fn all_entries(&mut self) -> anyhow::Result<Vec<(B256, Vec<u8>)>> {
+    pub async fn all_entries(&mut self) -> anyhow::Result<Vec<(B256, Vec<u8>)>> {
         let mut entries = Vec::new();
         if self.root_hash == alloy_trie::EMPTY_ROOT_HASH {
             return Ok(entries);
         }
-        self.walk_recursive(self.root_hash, Nibbles::default(), &mut entries)?;
+        self.walk_recursive(self.root_hash, Nibbles::default(), &mut entries).await?;
         Ok(entries)
     }
 
-    fn walk_recursive(&mut self, hash: B256, path: Nibbles, entries: &mut Vec<(B256, Vec<u8>)>) -> anyhow::Result<()> {
-        let node = self.get_node(hash)?;
-        self.walk_recursive_node(node, path, entries)
+    async fn walk_recursive(
+        &mut self,
+        hash: B256,
+        path: Nibbles,
+        entries: &mut Vec<(B256, Vec<u8>)>,
+    ) -> anyhow::Result<()> {
+        let node = self.get_node(hash).await?;
+        self.walk_recursive_node(node, path, entries).await
     }
 
-    fn walk_recursive_rlp(&mut self, rlp_node: &ChildNode, path: Nibbles, entries: &mut Vec<(B256, Vec<u8>)>) -> anyhow::Result<()> {
-        let node = self.get_node_from_rlp(rlp_node)?;
-        self.walk_recursive_node(node, path, entries)
+    async fn walk_recursive_rlp(
+        &mut self,
+        rlp_node: &ChildNode,
+        path: Nibbles,
+        entries: &mut Vec<(B256, Vec<u8>)>,
+    ) -> anyhow::Result<()> {
+        let node = self.get_node_from_rlp(rlp_node).await?;
+        self.walk_recursive_node(node, path, entries).await
     }
 
-    fn walk_recursive_node(&mut self, node: MyTrieNode, path: Nibbles, entries: &mut Vec<(B256, Vec<u8>)>) -> anyhow::Result<()> {
-        match node {
-            MyTrieNode::Leaf(leaf) => {
-                let mut full_path = path;
-                full_path.extend(&leaf.key);
-                if full_path.len() == 16 {
-                    let key = B256::from_slice(&full_path.pack());
-                    entries.push((key, leaf.value));
-                }
-            }
-            MyTrieNode::Extension(ext) => {
-                let mut next_path = path;
-                next_path.extend(&ext.key);
-                self.walk_recursive_rlp(&ext.child, next_path, entries)?;
-            }
-            MyTrieNode::Branch(branch) => {
-                for i in 0..16 {
-                    let child_rlp = &branch.stack[i];
-                    if !child_rlp.is_empty() {
-                        let mut next_path = path.clone();
-                        next_path.push(i as u8);
-                        self.walk_recursive_rlp(child_rlp, next_path, entries)?;
+    fn walk_recursive_node<'b>(
+        &'b mut self,
+        node: MyTrieNode,
+        path: Nibbles,
+        entries: &'b mut Vec<(B256, Vec<u8>)>,
+    ) -> BoxFuture<'b, anyhow::Result<()>>
+    where
+        'a: 'b,
+    {
+        async move {
+            match node {
+                MyTrieNode::Leaf(leaf) => {
+                    let mut full_path = path;
+                    full_path.extend(&leaf.key);
+                    if full_path.len() == 64 {
+                        let key = B256::from_slice(&full_path.pack());
+                        entries.push((key, leaf.value));
                     }
                 }
-                if let Some(val) = branch.value {
-                    if path.len() == 16 {
-                        let key = B256::from_slice(&path.pack());
-                        entries.push((key, val));
+                MyTrieNode::Extension(ext) => {
+                    let mut next_path = path;
+                    next_path.extend(&ext.key);
+                    self.walk_recursive_rlp(&ext.child, next_path, entries).await?;
+                }
+                MyTrieNode::Branch(branch) => {
+                    for i in 0..16 {
+                        let child_rlp = &branch.stack[i];
+                        if !child_rlp.is_empty() {
+                            let mut next_path = path.clone();
+                            next_path.push(i as u8);
+                            self.walk_recursive_rlp(child_rlp, next_path, entries).await?;
+                        }
+                    }
+                    if let Some(val) = branch.value {
+                        if path.len() == 64 {
+                            let key = B256::from_slice(&path.pack());
+                            entries.push((key, val));
+                        }
                     }
                 }
+                _ => {}
             }
-            _ => {}
-        }
-        Ok(())
+            Ok(())
+        }.boxed()
     }
 
-    pub fn commit(&mut self) -> anyhow::Result<()> {
+    pub async fn commit(&mut self) -> anyhow::Result<()> {
         for (hash, data) in self.dirty.drain() {
-            self.state.update_trie_node(hash, data.into())?;
+            self.state.update_trie_node(hash, data.into()).await?;
         }
         Ok(())
     }

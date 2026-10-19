@@ -32,7 +32,7 @@ pub fn get_evm_config(chain_config: &ChainConfig, block_number: u64, timestamp: 
     config
 }
 
-pub fn prepare_execution_env(
+pub async fn prepare_execution_env(
     chain_id: u64,
     chain_config: &ChainConfig,
     header: &Header,

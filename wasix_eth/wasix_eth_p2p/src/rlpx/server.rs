@@ -96,7 +96,7 @@ impl P2pServer {
             peer_id: remote_id_hex.clone(),
             discovery_addr: addr,
             p2p_addr: addr,
-        }).ok();
+        }).await.ok();
         
         let gossip_tx = registry.get_gossip_tx().await;
         let session_id = registry.next_session_id();

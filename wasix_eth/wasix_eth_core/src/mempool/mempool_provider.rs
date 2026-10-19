@@ -67,13 +67,7 @@ impl MempoolProvider for Mempool {
         let base_fee = *self.inner.base_fee.read().await;
         let mempool_state = self.inner.state.load();
 
-        let process_address = |address: Address, to_remove: &mut Vec<B256>, addresses_to_promote: &mut Vec<Address>| {
-            let (current_nonce, current_balance) = if let Ok(Some(acc)) = state.account(address, None) {
-                (acc.nonce, acc.balance)
-            } else {
-                (0, U256::ZERO)
-            };
-
+        let revalidate_addr = |address: Address, to_remove: &mut Vec<B256>, addresses_to_promote: &mut Vec<Address>, current_nonce: u64, current_balance: U256| {
             // Check pending transactions
             if let Some(queue) = mempool_state.pending_transactions.get(&address) {
                 for tx in queue.iter() {
@@ -152,16 +146,31 @@ impl MempoolProvider for Mempool {
 
         if let Some(addrs) = addresses {
             for addr in addrs {
-                process_address(addr, &mut to_remove, &mut addresses_to_promote);
+                let (current_nonce, current_balance) = if let Ok(Some(acc)) = state.account(addr, None).await {
+                    (acc.nonce, acc.balance)
+                } else {
+                    (0, U256::ZERO)
+                };
+                revalidate_addr(addr, &mut to_remove, &mut addresses_to_promote, current_nonce, current_balance);
             }
         } else {
             // Full revalidation
             for (addr, _) in mempool_state.pending_transactions.iter() {
-                process_address(*addr, &mut to_remove, &mut addresses_to_promote);
+                let (current_nonce, current_balance) = if let Ok(Some(acc)) = state.account(*addr, None).await {
+                    (acc.nonce, acc.balance)
+                } else {
+                    (0, U256::ZERO)
+                };
+                revalidate_addr(*addr, &mut to_remove, &mut addresses_to_promote, current_nonce, current_balance);
             }
             for (addr, _) in mempool_state.queued_transactions.iter() {
                 if !mempool_state.pending_transactions.contains_key(addr) {
-                    process_address(*addr, &mut to_remove, &mut addresses_to_promote);
+                    let (current_nonce, current_balance) = if let Ok(Some(acc)) = state.account(*addr, None).await {
+                        (acc.nonce, acc.balance)
+                    } else {
+                        (0, U256::ZERO)
+                    };
+                    revalidate_addr(*addr, &mut to_remove, &mut addresses_to_promote, current_nonce, current_balance);
                 }
             }
         }
@@ -173,7 +182,7 @@ impl MempoolProvider for Mempool {
 
         // Try to promote queued transactions in case some were removed or new ones can be moved
         for address in addresses_to_promote {
-            let current_nonce = if let Ok(Some(acc)) = state.account(address, None) {
+            let current_nonce = if let Ok(Some(acc)) = state.account(address, None).await {
                 acc.nonce
             } else {
                 0

@@ -2,6 +2,7 @@ use crate::mempool::mempool_provider::MempoolProvider;
 use crate::{Consensus, EngineEvent};
 use std::sync::Arc;
 use tokio::sync::broadcast;
+use wasix_eth_execution::orchestrator::ExecutionOrchestrator;
 use wasix_eth_execution::execution_provider::ExecutionProvider;
 use wasix_eth_storage::read::DatabaseReadProvider;
 use wasix_eth_storage::read_traits::{BlockProvider, ChainProvider};
@@ -54,7 +55,7 @@ pub struct PayloadBuilder {
     pub consensus: Arc<dyn Consensus>,
     pub read_storage: DatabaseReadProvider,
     pub write_storage: DatabaseWriteProvider,
-    pub execution: Arc<dyn ExecutionProvider>,
+    pub execution: Arc<ExecutionOrchestrator>,
     pub mempool: Arc<dyn MempoolProvider>,
     pub event_tx: broadcast::Sender<EngineEvent>,
     pub build_lock: Arc<tokio::sync::Mutex<()>>,
@@ -93,7 +94,7 @@ impl PayloadBuilder {
         let id = self.generate_payload_id(&head_block_hash, &attr).await;
 
         // 1. Initial check without lock
-        if self.read_storage.get_payload(&id).is_some() {
+        if self.read_storage.get_payload(&id).await.is_some() {
             return Ok(Some(id));
         }
 
@@ -101,17 +102,17 @@ impl PayloadBuilder {
         let _guard = self.build_lock.lock().await;
 
         // 3. Re-check after acquiring lock
-        if self.read_storage.get_payload(&id).is_some() {
+        if self.read_storage.get_payload(&id).await.is_some() {
             return Ok(Some(id));
         }
 
         // Validate attributes
-        let parent_block = self.read_storage.block_by_hash(head_block_hash).map_err(|e| RpcError::Internal(e.to_string()))?
-            .or_else(|| {
+        let parent_block = self.read_storage.block_by_hash(head_block_hash).await.map_err(|e| RpcError::Internal(e.to_string()))?
+            .or(
                 // Fallback to payloads map if head is not in storage yet
-                self.read_storage.get_payload_by_block_hash(head_block_hash)
+                self.read_storage.get_payload_by_block_hash(head_block_hash).await
                     .map(|(b, _, _, _)| b)
-            })
+            )
             .ok_or_else(|| RpcError::InvalidForkchoiceState(format!("Head block not found for payload building: {:?}", head_block_hash)))?;
 
         if attr.timestamp <= parent_block.header.timestamp {
@@ -192,62 +193,37 @@ impl PayloadBuilder {
         attr: PayloadAttributes,
         id: PayloadId,
     ) -> RpcResult<()> {
-        let parent_block = self.read_storage.block_by_hash(head_block_hash).map_err(|e| RpcError::Internal(e.to_string()))?
-            .or_else(|| {
-                self.read_storage.get_payload_by_block_hash(head_block_hash)
+        let parent_block = self.read_storage.block_by_hash(head_block_hash).await.map_err(|e| RpcError::Internal(e.to_string()))?
+            .or(
+                self.read_storage.get_payload_by_block_hash(head_block_hash).await
                     .map(|(b, _, _, _)| b)
-            })
+            )
             .ok_or_else(|| RpcError::InvalidForkchoiceState(format!("Head block not found for empty payload building: {:?}", head_block_hash)))?;
 
-        let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_else(|| ChainConfig {
-            chain_id: self.read_storage.chain_id().unwrap_or(1),
-            ..Default::default()
+        let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_else(|| {
+            let chain_id = tokio::runtime::Handle::current().block_on(self.read_storage.chain_id()).unwrap_or(1);
+            ChainConfig {
+                chain_id,
+                ..Default::default()
+            }
         });
         let base_fee_per_gas = self.consensus.calculate_next_base_fee(&parent_block.header, &chain_config);
 
-        let execution = Arc::clone(&self.execution);
-        let parent_header_clone = parent_block.header.clone();
-        let attr_clone = attr.clone();
-        
-        let (finalized_block, receipts, metas, _, _) = match tokio::task::spawn_blocking(move || {
-            execution.execute_block_for_payload(
-                vec![], // Empty transaction set
-                &parent_header_clone,
-                &attr_clone,
-                base_fee_per_gas,
-            )
-        }).await {
-            Ok(Ok(res)) => res,
-            Ok(Err(e)) => {
-                warn!("[PayloadBuilder] Execution failed for empty payload building: {}", e);
-                return Err(RpcError::Internal(e.to_string()));
-            }
-            Err(e) => {
-                error!("[PayloadBuilder] Empty payload building task panicked: {}", e);
-                return Err(RpcError::Internal(e.to_string()));
-            }
-        };
+        let (finalized_block, receipts, metas, _, _) = self.execution.execute_block_for_payload(
+            vec![], // Empty transaction set
+            &parent_block.header,
+            &attr,
+            base_fee_per_gas,
+        ).await.map_err(|e| {
+            warn!("[PayloadBuilder] Execution failed for empty payload building: {}", e);
+            RpcError::Internal(e.to_string())
+        })?;
 
         let bundle = BlobsBundleV1::default();
-        let write_storage = self.write_storage.clone();
-        let finalized_block_clone = finalized_block.clone();
-        let receipts_clone = receipts.clone();
-        let metas_clone = metas.clone();
-        let id_clone = id.clone();
-
-        match tokio::task::spawn_blocking(move || {
-            write_storage.add_payload(id_clone, finalized_block_clone, receipts_clone, metas_clone, bundle)
-        }).await {
-            Ok(Ok(_)) => {},
-            Ok(Err(e)) => {
-                error!("[PayloadBuilder] Failed to persist empty payload: {}", e);
-                return Err(RpcError::Internal(e.to_string()));
-            }
-            Err(e) => {
-                error!("[PayloadBuilder] Empty payload persistence task panicked: {}", e);
-                return Err(RpcError::Internal(e.to_string()));
-            }
-        }
+        self.write_storage.add_payload(id.clone(), finalized_block, receipts, metas, bundle).await.map_err(|e| {
+            error!("[PayloadBuilder] Failed to persist empty payload: {}", e);
+            RpcError::Internal(e.to_string())
+        })?;
 
         info!("[PayloadBuilder] Created initial empty payload_id={:?} for block_number={}", id, parent_block.header.number + 1);
         Ok(())
@@ -257,7 +233,7 @@ impl PayloadBuilder {
         &self,
         payload_id: PayloadId,
     ) -> Result<()> {
-        let (payload_block, payload_receipts, _payload_metas, _payload_bundle) = match self.read_storage.get_payload(&payload_id) {
+        let (payload_block, payload_receipts, _payload_metas, _payload_bundle) = match self.read_storage.get_payload(&payload_id).await {
             Some(p) => p,
             None => return Ok(()),
         };
@@ -276,11 +252,11 @@ impl PayloadBuilder {
         };
 
         // 1. Validate attributes (check if parent block still exists)
-        let parent_block = self.read_storage.block_by_hash(head_hash).map_err(|e| RpcError::Internal(e.to_string()))?
-            .or_else(|| {
-                self.read_storage.get_payload_by_block_hash(head_hash)
+        let parent_block = self.read_storage.block_by_hash(head_hash).await.map_err(|e| RpcError::Internal(e.to_string()))?
+            .or(
+                self.read_storage.get_payload_by_block_hash(head_hash).await
                     .map(|(b, _, _, _)| b)
-            });
+            );
         
         let parent_block = match parent_block {
             Some(b) => b,
@@ -291,12 +267,15 @@ impl PayloadBuilder {
         };
 
         // 2. Compute base fees and max blobs
-        let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_else(|| ChainConfig {
-            chain_id: self.read_storage.chain_id().unwrap_or(1),
-            ..Default::default()
+        let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_else(|| {
+            let chain_id = tokio::runtime::Handle::current().block_on(self.read_storage.chain_id()).unwrap_or(1);
+            ChainConfig {
+                chain_id,
+                ..Default::default()
+            }
         });
         let base_fee_per_gas = self.consensus.calculate_next_base_fee(&parent_block.header, &chain_config);
-        let blob_base_fee = self.consensus.calculate_next_blob_base_fee(&parent_block.header, &chain_config);
+        let blob_base_fee = self.consensus.calculate_next_blob_base_fee(&parent_block.header, &chain_config).await;
 
         let active_fork = wasix_eth_types::Hardfork::get_active_fork(&chain_config, parent_block.header.number + 1, attr.timestamp);
         let max_blobs_per_block = active_fork.blob_params(&chain_config).map(|p| p.max_blob_count as u32);
@@ -333,18 +312,12 @@ impl PayloadBuilder {
 
         let write_storage = self.write_storage.clone();
         // 4. Re-run execution
-        let execution = Arc::clone(&self.execution);
-        let parent_header_clone = parent_block.header.clone();
-        let attr_clone = attr.clone();
-        let (finalized_block, receipts, metas, _, _) = tokio::task::spawn_blocking(move || {
-            execution.execute_block_for_payload(
-                transactions,
-                &parent_header_clone,
-                &attr_clone,
-                base_fee_per_gas,
-            )
-        }).await.map_err(|e| RpcError::Internal(format!("Payload rebuilding task panicked: {}", e)))?
-        .map_err(|e| RpcError::Internal(e.to_string()))?;
+        let (finalized_block, receipts, metas, _, _) = self.execution.execute_block_for_payload(
+            transactions,
+            &parent_block.header,
+            &attr,
+            base_fee_per_gas,
+        ).await.map_err(|e| RpcError::Internal(e.to_string()))?;
 
         // 5. Check if new block is better
         let new_value = self.calculate_block_value(&finalized_block, &receipts);
@@ -386,19 +359,13 @@ impl PayloadBuilder {
             }
         }
 
-        let finalized_block_clone = finalized_block.clone();
-        let receipts_clone = receipts.clone();
-        let metas_clone = metas.clone();
-        tokio::task::spawn_blocking(move || {
-            write_storage.add_payload(payload_id, finalized_block_clone, receipts_clone, metas_clone, bundle)
-        }).await.map_err(|e| RpcError::Internal(format!("Payload rebuilding task panicked: {}", e)))?
-        .map_err(|e| RpcError::Internal(e.to_string()))?;
+        self.write_storage.add_payload(payload_id, finalized_block, receipts.to_vec(), metas.to_vec(), bundle).await.map_err(|e| RpcError::Internal(e.to_string()))?;
 
         Ok(())
     }
 
-    pub fn get_payload(&self, payload_id: &PayloadId) -> RpcResult<(Block<Transaction>, Vec<Receipt>, Vec<wasix_eth_types::ReceiptMeta>, BlobsBundleV1)> {
-        let payload = self.read_storage.get_payload(payload_id)
+    pub async fn get_payload(&self, payload_id: &PayloadId) -> RpcResult<(Block<Transaction>, Vec<Receipt>, Vec<wasix_eth_types::ReceiptMeta>, BlobsBundleV1)> {
+        let payload = self.read_storage.get_payload(payload_id).await
             .ok_or_else(|| RpcError::BlockNotFound(wasix_eth_types::BlockId::Hash(B256::from_slice(&payload_id.0[..]).into())))?;
         
         info!("[PayloadBuilder] Returning payload {:?} with {} transactions", payload_id, payload.0.body.transactions.len());

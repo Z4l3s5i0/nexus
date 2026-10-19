@@ -45,11 +45,11 @@ impl AdminService {
             None
         };
         
-        let head_hash = self.read_provider.forkchoice("head")?
+        let head_hash = self.read_provider.forkchoice("head").await?
             .unwrap_or_default();
-        let head_td = self.read_provider.header_td(head_hash)?
+        let head_td = self.read_provider.header_td(head_hash).await?
             .unwrap_or(U256::ZERO);
-        let genesis_hash = self.read_provider.block_hash(0)?
+        let genesis_hash = self.read_provider.block_hash(0).await?
             .unwrap_or_default();
 
         let node_info = NodeInfo {

@@ -191,10 +191,11 @@ impl SyncController {
     async fn sync_range(&self, peer_id: &str, start: u64) -> anyhow::Result<()> {
         const BATCH_SIZE: u64 = 128;
         debug!("[Sync] Starting sync range from header {}", start);
-        let local_height = self.read_storage.latest_block_number()?.unwrap_or(0);
+        let local_height = self.read_storage.latest_block_number().await?.unwrap_or(0);
         
-        let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_else(|| ChainConfig {
-            chain_id: self.read_storage.chain_id().unwrap_or(1),
+        let chain_id_val = self.read_storage.chain_id().await.unwrap_or(1);
+        let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_else(|| ChainConfig {
+            chain_id: chain_id_val,
             ..Default::default()
         });
 
@@ -330,14 +331,15 @@ impl SyncController {
         let mut current_hash = hash;
         let mut to_process: Vec<Block<Transaction>> = Vec::new();
 
-        let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_else(|| ChainConfig {
-            chain_id: self.read_storage.chain_id().unwrap_or(1),
+        let chain_id_val = self.read_storage.chain_id().await.unwrap_or(1);
+        let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_else(|| ChainConfig {
+            chain_id: chain_id_val,
             ..Default::default()
         });
 
         while current_hash != B256::ZERO {
             // Check if we already have it
-            if self.read_storage.block_by_hash(current_hash)?.is_some() {
+            if self.read_storage.block_by_hash(current_hash).await.ok().flatten().is_some() {
                 break;
             }
 
@@ -500,7 +502,7 @@ impl SyncProvider for SyncController {
     }
 
     async fn get_block_by_hash(&self, hash: B256) -> anyhow::Result<Option<Block<Transaction>>> {
-        if let Ok(Some(block)) = self.read_storage.block_by_hash(hash) {
+        if let Ok(Some(block)) = self.read_storage.block_by_hash(hash).await {
             return Ok(Some(block));
         }
         let block = self.processor.engine.payload_processor.block_tree.get_block(hash).await;
@@ -539,7 +541,7 @@ impl SyncProvider for SyncController {
                     continue;
                 }
                 // Skip if already on-chain
-                if self.read_storage.transaction(hash).unwrap_or_default().is_some() {
+                if self.read_storage.transaction(hash).await.ok().flatten().is_some() {
                     continue;
                 }
                 // Skip if we've seen it recently

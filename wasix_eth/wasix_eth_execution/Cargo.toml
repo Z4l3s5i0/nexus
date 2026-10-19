@@ -24,6 +24,8 @@ alloy-trie = {workspace = true}
 alloy-eips = { workspace = true }
 sha2 = { workspace = true }
 alloy-network = { workspace = true}
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 serde_json = { workspace = true }

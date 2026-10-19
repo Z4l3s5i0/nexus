@@ -50,7 +50,7 @@ impl Node {
         };
         
         // This initializes the database with genesis
-        let _payload = StoragePayload::new(storage_config, genesis_config)?;
+        let _payload = StoragePayload::new(storage_config, genesis_config).await?;
         
         info!("[Node] Database initialized with genesis configuration");
         Ok(())
@@ -72,14 +72,14 @@ impl Node {
         let storage_payload = StoragePayload::new_no_init(storage_config)?;
         
         // Verify initialization
-        storage_payload.read_provider.chain_config()?
+        storage_payload.read_provider.chain_config().await?
             .ok_or("Chain config not found in database. Has the node been initialized?")?;
 
         // 2. Execution
         let execution_payload = ExecutionPayload::new(
             storage_payload.read_provider.clone(),
             storage_payload.write_provider.clone(),
-        );
+        ).await;
 
         Ok(Self {
             rpc_engine: execution_payload.rpc_engine.clone(),
@@ -112,16 +112,16 @@ impl Node {
         };
         
         let storage_payload = if let Some(config) = genesis_config {
-            StoragePayload::new(storage_config, config)?
+            StoragePayload::new(storage_config, config).await?
         } else {
             let payload = StoragePayload::new_no_init(storage_config)?;
             // Verify initialization
-            payload.read_provider.chain_config()?
+            payload.read_provider.chain_config().await?
                 .ok_or("Chain config not found in database. Node must be initialized with --genesis-path at least once.")?;
             payload
         };
 
-        let chain_config = storage_payload.read_provider.chain_config()?
+        let chain_config = storage_payload.read_provider.chain_config().await?
             .ok_or("Chain config not found in database")?;
         let chain_id = chain_config.chain_id;
 
@@ -129,7 +129,7 @@ impl Node {
         let execution_payload = ExecutionPayload::new(
             storage_payload.read_provider.clone(),
             storage_payload.write_provider.clone(),
-        );
+        ).await;
 
         // 3. Network
         let network_config = NetworkConfig {

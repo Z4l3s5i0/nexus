@@ -54,13 +54,13 @@ impl EvmExecutor {
     /// This includes both the intrinsic gas (base cost + calldata + optional contract creation surcharge)
     /// and the execution gas (gas consumed by EVM opcodes), after applying gas refunds.
     /// This value should directly correspond to the `gasUsed` field in an Ethereum transaction receipt.
-    pub fn execute_transaction(
+    pub async fn execute_transaction(
         &self,
         tx: &Transaction,
         batch: &BatchWriter,
         env: &InMemoryEnvironment,
         config: &Config,
-        invoker: &Invoker<EtableResolver<StandardPrecompileSet, Chained<GasometerEtable, ExecutionEtable>>>,
+        invoker: &Invoker<'_, '_, EtableResolver<'_, '_, StandardPrecompileSet, Chained<GasometerEtable<'_>, ExecutionEtable<'_>>>>,
         fork: Hardfork,
         beneficiary: Address,
         _base_fee: Option<u64>,
@@ -68,10 +68,10 @@ impl EvmExecutor {
         state_root: Option<B256>,
     ) -> Result<TransactionExecutionResult> {
         let executor = TransactionExecutor::new(batch, env, config, invoker, fork);
-        executor.execute_transaction(tx, beneficiary, cumulative_gas_used, state_root)
+        executor.execute_transaction(tx, beneficiary, cumulative_gas_used, state_root).await
     }
 
-    pub fn execute_system_call(
+    pub async fn execute_system_call(
         &self,
         caller: Address,
         to: Address,
@@ -79,15 +79,15 @@ impl EvmExecutor {
         batch: &BatchWriter,
         env: &InMemoryEnvironment,
         config: &Config,
-        invoker: &Invoker<EtableResolver<StandardPrecompileSet, Chained<GasometerEtable, ExecutionEtable>>>,
+        invoker: &Invoker<'_, '_, EtableResolver<'_, '_, StandardPrecompileSet, Chained<GasometerEtable<'_>, ExecutionEtable<'_>>>>,
         fork: Hardfork,
         state_root: Option<B256>,
     ) -> Result<SystemCallResult> {
         // EIP-7002: If there is no code at WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, the corresponding block MUST be marked invalid.
         let to_h160 = H160::from_slice(to.as_slice());
-        let account = batch.account(to, state_root)?;
+        let account = batch.account(to, state_root).await?;
         let code_hash = account.as_ref().map(|a| a.code_hash).unwrap_or(alloy_primitives::KECCAK256_EMPTY);
-        let code = batch.bytecode(code_hash)?;
+        let code = batch.bytecode(code_hash).await?;
 
         if code.is_none() || code.as_ref().unwrap().is_empty() {
             return Err(anyhow::anyhow!("System call target address {:?} has no code", to));
@@ -175,13 +175,13 @@ impl EvmExecutor {
         let eip161 = fork >= Hardfork::SpuriousDragon;
         let _coinbase = H160::from_slice(env.block_coinbase.as_bytes());
 
-        self.apply_changeset(batch, &filtered_changeset, eip161, state_root)?;
+        self.apply_changeset(batch, &filtered_changeset, eip161, state_root).await?;
 
         Ok(SystemCallResult { output: Bytes::from(retval), used_gas: result.used_gas.as_u64() })
     }
 
-pub fn apply_changeset(&self, batch: &BatchWriter, changeset: &OverlayedChangeSet, eip161: bool, state_root: Option<B256>) -> Result<()> {
+    pub async fn apply_changeset(&self, batch: &BatchWriter, changeset: &OverlayedChangeSet, eip161: bool, state_root: Option<B256>) -> Result<()> {
         let applier = StateApplier::new(batch);
-        applier.apply_changeset(changeset, eip161, state_root)
+        applier.apply_changeset(changeset, eip161, state_root).await
     }
 }

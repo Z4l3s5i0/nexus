@@ -1,15 +1,16 @@
-use wasix_eth_types::{Header, Block, Transaction, B256, U256, B64, EMPTY_OMMER_ROOT_HASH, Hardfork, ChainConfig, proofs, ConsensusTransaction, keccak256};
+use wasix_eth_types::{async_trait, Header, Block, Transaction, B256, U256, B64, EMPTY_OMMER_ROOT_HASH, Hardfork, ChainConfig, proofs, ConsensusTransaction, keccak256};
 use std::sync::Arc;
 use wasix_eth_storage::read::DatabaseReadProvider;
 use anyhow::Result;
 use wasix_eth_storage::read_traits::HeaderProvider;
 
+#[async_trait]
 pub trait Consensus: Send + Sync {
-    fn validate_header(&self, header: &Header, parent: &Header, chain_config: &ChainConfig) -> Result<(), String>;
-    fn validate_body(&self, block: &Block<Transaction>, chain_config: &ChainConfig) -> Result<(), String>;
+    async fn validate_header(&self, header: &Header, parent: &Header, chain_config: &ChainConfig) -> Result<(), String>;
+    async fn validate_body(&self, block: &Block<Transaction>, chain_config: &ChainConfig) -> Result<(), String>;
     fn validate_block_post_execution(&self, block: &Block<Transaction>, cumulative_gas_used: u64, receipts_root: B256, logs_bloom: alloy_primitives::Bloom, calculated_state_root: B256) -> Result<(), String>;
     fn calculate_next_base_fee(&self, parent: &Header, chain_config: &ChainConfig) -> Option<u64>;
-    fn calculate_next_blob_base_fee(&self, parent: &Header, chain_config: &ChainConfig) -> Option<u128>;
+    async fn calculate_next_blob_base_fee(&self, parent: &Header, chain_config: &ChainConfig) -> Option<u128>;
     fn validate_cancun(&self, block: &Block<Transaction>, expected_blob_versioned_hashes: Option<&[B256]>) -> Result<(), String>;
     fn validate_parent_beacon_block_root(&self, header: &Header, parent_beacon_block_root: Option<B256>) -> Result<(), String>;
 }
@@ -24,6 +25,7 @@ impl EthConsensus {
     }
 }
 
+#[async_trait]
 impl Consensus for EthConsensus {
     fn calculate_next_base_fee(&self, parent: &Header, _chain_config: &ChainConfig) -> Option<u64> {
         let parent_base_fee = parent.base_fee_per_gas?;
@@ -45,11 +47,11 @@ impl Consensus for EthConsensus {
         }
     }
 
-    fn calculate_next_blob_base_fee(&self, parent: &Header, chain_config: &ChainConfig) -> Option<u128> {
+    async fn calculate_next_blob_base_fee(&self, parent: &Header, chain_config: &ChainConfig) -> Option<u128> {
         let parent_excess_blob_gas = parent.excess_blob_gas?;
         let parent_blob_gas_used = parent.blob_gas_used?;
 
-        let td = self.read_storage.header_td(parent.hash_slow()).ok().flatten();
+        let td = self.read_storage.header_td(parent.hash_slow()).await.ok().flatten();
         let current_fork = Hardfork::get_active_fork_with_total_difficulty(chain_config, parent.number + 1, parent.timestamp + 1, td);
         
         let (target, update_fraction) = if let Some(params) = current_fork.blob_params(chain_config) {
@@ -62,7 +64,7 @@ impl Consensus for EthConsensus {
         Some(wasix_eth_types::calc_blob_gasprice(new_excess_blob_gas, update_fraction))
     }
 
-    fn validate_header(&self, header: &Header, parent: &Header, chain_config: &ChainConfig) -> Result<(), String> {
+    async fn validate_header(&self, header: &Header, parent: &Header, chain_config: &ChainConfig) -> Result<(), String> {
         // 1. Validate block number
         if header.number != parent.number + 1 {
             return Err(format!("Invalid block number: expected {}, got {}", parent.number + 1, header.number));
@@ -88,7 +90,7 @@ impl Consensus for EthConsensus {
             return Err(format!("Gas limit too low: {} < 5000", gas_limit));
         }
 
-        let td = self.read_storage.header_td(parent.hash_slow()).ok().flatten();
+        let td = self.read_storage.header_td(parent.hash_slow()).await.ok().flatten();
         let parent_fork = Hardfork::get_active_fork_with_total_difficulty(chain_config, parent.number, parent.timestamp, td);
         let current_fork = Hardfork::get_active_fork_with_total_difficulty(chain_config, header.number, header.timestamp, td);
 
@@ -217,12 +219,12 @@ impl Consensus for EthConsensus {
         Ok(())
     }
 
-    fn validate_body(&self, block: &Block<Transaction>, chain_config: &ChainConfig) -> Result<(), String> {
+    async fn validate_body(&self, block: &Block<Transaction>, chain_config: &ChainConfig) -> Result<(), String> {
         // 0. Resolve fork for Prague validation
         // Note: For post-merge blocks (which Engine API handles), TD is usually not needed for fork resolution
         // as forks are timestamp-based. If we don't have the parent TD, we assume merge has happened
         // if the block number/timestamp suggests a post-merge fork.
-        let td = self.read_storage.header_td(block.header.parent_hash).ok().flatten();
+        let td = self.read_storage.header_td(block.header.parent_hash).await.ok().flatten();
         let current_fork = Hardfork::get_active_fork_with_total_difficulty(chain_config, block.header.number, block.header.timestamp, td);
         let is_prague = current_fork >= Hardfork::Prague;
 

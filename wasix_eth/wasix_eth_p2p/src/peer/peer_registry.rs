@@ -51,7 +51,7 @@ pub struct PeerRegistry {
 #[async_trait]
 impl PeerProvider for PeerRegistry {
     async fn get_active_peers(&self) -> Result<Vec<PeerEntry>> {
-        let mut peers = self.read_provider.get_active_peers()?;
+        let mut peers = self.read_provider.get_active_peers().await?;
         let Some(sessions) = self.active_sessions_guard().await else {
             return Ok(peers);
         };
@@ -227,10 +227,10 @@ impl PeerRegistry {
     pub async fn get_fork_id(&self) -> wasix_eth_types::p2p::ForkId {
         let (head_hash, head_num) = self.chain_manager.head_block().await;
         
-        let head = self.read_provider.header(BlockId::Hash(head_hash.into())).ok().flatten();
+        let head = self.read_provider.header(BlockId::Hash(head_hash.into())).await.ok().flatten();
         let head_time = head.as_ref().map(|h| h.timestamp).unwrap_or(0);
 
-        let genesis = self.read_provider.header(BlockId::Hash(self.genesis_hash.into())).ok().flatten();
+        let genesis = self.read_provider.header(BlockId::Hash(self.genesis_hash.into())).await.ok().flatten();
         let genesis_time = genesis.as_ref().map(|h| h.timestamp).unwrap_or(0);
 
         wasix_eth_types::p2p::ForkId::new(self.genesis_hash, &self.chain_config, head_num, head_time, genesis_time)
@@ -342,7 +342,7 @@ impl PeerRegistry {
         }
     }
     pub async fn get_active_peers(&self) -> Result<Vec<PeerEntry>> {
-        let mut peers = self.read_provider.get_active_peers()?;
+        let mut peers = self.read_provider.get_active_peers().await?;
         let Some(sessions) = self.active_sessions_guard().await else {
             return Ok(peers);
         };
@@ -359,11 +359,11 @@ impl PeerRegistry {
         Ok(peers)
     }
 
-    pub fn register_peer(&self, entry: PeerEntry) -> Result<()> {
-        self.write_provider.register_peer(entry)
+    pub async fn register_peer(&self, entry: PeerEntry) -> Result<()> {
+        self.write_provider.register_peer(entry).await
     }
 
-    pub fn remove_peer(&self, peer_id: String) -> Result<()> {
-        self.write_provider.remove_peer(peer_id)
+    pub async fn remove_peer(&self, peer_id: String) -> Result<()> {
+        self.write_provider.remove_peer(peer_id).await
     }
 }

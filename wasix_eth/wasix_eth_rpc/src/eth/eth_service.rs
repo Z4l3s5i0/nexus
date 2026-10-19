@@ -68,9 +68,9 @@ impl EthService {
         let block = self.engine.get_block_by_id(id).await?;
         let (chain_config, td) = match &block {
             Some(b) => {
-                let config = self.engine.read_storage.chain_config().ok().flatten().unwrap_or_default();
+                let config = self.engine.read_storage.chain_config().await.ok().flatten().unwrap_or_default();
                 let hash = b.header.hash_slow();
-                let td = self.engine.read_storage.header_td(hash).ok().flatten();
+                let td = self.engine.read_storage.header_td(hash).await.ok().flatten();
                 (config, td)
             }
             None => (wasix_eth_types::ChainConfig::default(), None),
@@ -98,8 +98,10 @@ impl EthService {
         let result = self.engine.get_transaction_by_hash(hash).await?;
         match result {
             Some((t, block_ref)) => {
-                let header = block_ref
-                    .and_then(|(_, hash, _)| self.engine.read_storage.header(BlockId::hash(hash)).ok().flatten());
+                let mut header = None;
+                if let Some((_, block_hash, _)) = block_ref {
+                    header = self.engine.read_storage.header(wasix_eth_types::BlockId::Hash(block_hash.into())).await.ok().flatten();
+                }
                 Ok(Some(TransactionMapper::to_rpc_transaction(t, block_ref, header)))
             }
             None => Ok(None),
@@ -111,19 +113,19 @@ impl EthService {
         match result {
             Some((r, block_ref)) => {
                 let tx = self.engine.get_transaction_by_hash(hash).await?.map(|(t, _)| t);
-                let receipt = self.map_receipt(r, block_ref, tx.as_ref(), Some(hash))?;
+                let receipt = self.map_receipt(r, block_ref, tx.as_ref(), Some(hash)).await?;
                 Ok(Some(receipt))
             }
             None => Ok(None),
         }
     }
 
-    fn map_receipt(&self, r: wasix_eth_types::Receipt, block_ref: Option<(u64, B256, u64)>, tx: Option<&wasix_eth_types::Transaction>, tx_hash_override: Option<B256>) -> RpcResult<RpcTransactionReceipt> {
+    async fn map_receipt(&self, r: wasix_eth_types::Receipt, block_ref: Option<(u64, B256, u64)>, tx: Option<&wasix_eth_types::Transaction>, tx_hash_override: Option<B256>) -> RpcResult<RpcTransactionReceipt> {
         let (meta, gas_used, base_fee, blob_gas_price) = if let Some((_, block_hash, index)) = block_ref {
-            let meta = self.engine.read_storage.receipt_meta(block_hash, index)
+            let meta = self.engine.read_storage.receipt_meta(block_hash, index).await
                 .map_err(|e| RpcError::Internal(e.to_string()))?;
 
-            let header = self.engine.read_storage.header(BlockId::hash(block_hash)).ok().flatten();
+            let header = self.engine.read_storage.header(wasix_eth_types::BlockId::Hash(block_hash.into())).await.ok().flatten();
             let base_fee = header.as_ref().and_then(|h| h.base_fee_per_gas);
             let excess_blob_gas = header.as_ref().and_then(|h| h.excess_blob_gas);
             let blob_gas_price = excess_blob_gas.map(wasix_eth_types::eip4844::calc_blob_gasprice);
@@ -131,7 +133,7 @@ impl EthService {
             let gas_used = if index == 0 {
                 r.receipt.cumulative_gas_used as u64
             } else {
-                let prev_receipt = self.engine.read_storage.receipt(block_hash, index - 1)
+                let prev_receipt = self.engine.read_storage.receipt(block_hash, index - 1).await
                     .map_err(|e| RpcError::Internal(e.to_string()))?;
                 match prev_receipt {
                     Some(prev) => (r.receipt.cumulative_gas_used - prev.receipt.cumulative_gas_used) as u64,
@@ -165,7 +167,7 @@ impl EthService {
             for (i, r) in receipts.into_iter().enumerate() {
                 let tx = block.body.transactions.get(i);
                 let block_ref = Some((block_number, block_hash, i as u64));
-                rpc_receipts.push(self.map_receipt(r, block_ref, tx, None)?);
+                rpc_receipts.push(self.map_receipt(r, block_ref, tx, None).await?);
             }
             Ok(Some(rpc_receipts))
         } else {

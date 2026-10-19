@@ -8,10 +8,15 @@ use crate::engine::payload_builder::PayloadBuilder;
 use crate::engine::payload_processor::PayloadProcessor;
 use crate::mempool::mempool_provider::MempoolProvider;
 use crate::Consensus;
+use futures_util::TryFutureExt;
 use std::sync::Arc;
 use alloy_rlp::Encodable;
 use alloy_rpc_types::RpcBlockHash;
 use tokio::sync::broadcast;
+use wasix_eth_execution::evm::interpreter::etable::Chained;
+use wasix_eth_execution::evm::standard::{EtableResolver, ExecutionEtable, GasometerEtable, Invoker};
+use wasix_eth_execution::evm_precompile::StandardPrecompileSet;
+use wasix_eth_execution::orchestrator::ExecutionOrchestrator;
 use wasix_eth_execution::execution_provider::ExecutionProvider;
 use wasix_eth_storage::read::DatabaseReadProvider;
 use wasix_eth_storage::read_traits::BlockProvider;
@@ -73,7 +78,7 @@ pub struct Engine {
     pub read_storage: DatabaseReadProvider,
     pub write_storage: DatabaseWriteProvider,
     pub canonical: Arc<CanonicalState>,
-    pub execution: Arc<dyn ExecutionProvider>,
+    pub execution: Arc<ExecutionOrchestrator>,
     pub account_manager: Arc<AccountManager>,
     pub chain: Arc<dyn ChainManager>,
     pub mempool: Arc<dyn MempoolProvider>,
@@ -105,7 +110,7 @@ impl SyncProvider for Engine {
     }
 
     async fn get_block_by_hash(&self, hash: B256) -> wasix_eth_types::Result<Option<Block<Transaction>>> {
-        if let Ok(Some(block)) = self.read_storage.block_by_hash(hash) {
+        if let Ok(Some(block)) = self.read_storage.block_by_hash(hash).await {
             return Ok(Some(block));
         }
         let block = self.payload_processor.block_tree.get_block(hash).await;
@@ -141,7 +146,7 @@ impl Engine {
     pub fn new(
         read_storage: DatabaseReadProvider,
         write_storage: DatabaseWriteProvider,
-        execution: Arc<dyn ExecutionProvider>,
+        execution: Arc<ExecutionOrchestrator>,
         account_manager: Arc<AccountManager>,
         mempool: Arc<dyn MempoolProvider>,
         event_tx: broadcast::Sender<EngineEvent>,
@@ -208,13 +213,17 @@ impl Engine {
     pub async fn get_payload_bodies_by_hash(&self, hashes: Vec<B256>) -> RpcResult<Vec<Option<ExecutionPayloadBodyV1>>> {
         let mut bodies = Vec::new();
         for hash in hashes {
-            let body = self.read_storage.block_body_by_hash(hash).map(|body_opt| {
-                body_opt.and_then(|body| {
-                    let header = self.read_storage.header(BlockId::Hash(hash.into())).ok().flatten();
-                    header.map(|header| {
-                        let block = Block { header, body: body.into() };
-                        EngineMapper::to_execution_payload_body_v1(&block)
-                    })
+            let body = self.read_storage.block_body_by_hash(hash).await.map(|body_opt| {
+                tokio::runtime::Handle::current().block_on(async {
+                    if let Some(body) = body_opt {
+                        let header = self.read_storage.header(BlockId::Hash(hash.into())).await.ok().flatten();
+                        header.map(|header| {
+                            let block = Block { header, body: body.into() };
+                            EngineMapper::to_execution_payload_body_v1(&block)
+                        })
+                    } else {
+                        None
+                    }
                 })
             }).map_err(|e| RpcError::Internal(e.to_string()))?;
             bodies.push(body);
@@ -239,14 +248,18 @@ impl Engine {
         let mut bodies = Vec::with_capacity(actual_count as usize);
         for i in 0..actual_count {
             let number = start + i;
-            let body = self.read_storage.block_body(number)
+            let body = self.read_storage.block_body(number).await
                 .map(|body_opt| {
-                    body_opt.and_then(|body| {
-                        let header = self.read_storage.header(BlockId::Number(BlockNumberOrTag::Number(number))).ok().flatten();
-                        header.map(|header| {
-                            let block = Block { header, body: body.into() };
-                            EngineMapper::to_execution_payload_body_v1(&block)
-                        })
+                    tokio::runtime::Handle::current().block_on(async {
+                        if let Some(body) = body_opt {
+                            let header = self.read_storage.header(BlockId::Number(BlockNumberOrTag::Number(number))).await.ok().flatten();
+                            header.map(|header| {
+                                let block = Block { header, body: body.into() };
+                                EngineMapper::to_execution_payload_body_v1(&block)
+                            })
+                        } else {
+                            None
+                        }
                     })
                 })
                 .map_err(|e| RpcError::Internal(e.to_string()))?;
@@ -257,8 +270,8 @@ impl Engine {
 
     pub async fn get_payload_v1(&self, payload_id: PayloadId) -> RpcResult<ExecutionPayloadV1> {
         info!("[Engine] get_payload_v1: payload_id={:?}", payload_id);
-        let (block, _, _, _) = self.payload_builder.get_payload(&payload_id)?;
-        let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_default();
+        let (block, _, _, _) = self.payload_builder.get_payload(&payload_id).await?;
+        let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_default();
         let fork = Hardfork::get_active_fork(&chain_config, block.header.number, block.header.timestamp);
 
         // engine_getPayloadV1 must be used for forks before Cancun
@@ -271,8 +284,8 @@ impl Engine {
     
     pub async fn get_payload_v2(&self, payload_id: PayloadId) -> RpcResult<ExecutionPayloadEnvelopeV2> {
         info!("[Engine] get_payload_v2: payload_id={:?}", payload_id);
-        let (block, receipts, _, _) = self.payload_builder.get_payload(&payload_id)?;
-        let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_default();
+        let (block, receipts, _, _) = self.payload_builder.get_payload(&payload_id).await?;
+        let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_default();
         let fork = Hardfork::get_active_fork(&chain_config, block.header.number, block.header.timestamp);
 
         // engine_getPayloadV2 must be used for forks before Cancun
@@ -288,8 +301,8 @@ impl Engine {
 
     pub async fn get_payload_v3(&self, payload_id: PayloadId) -> RpcResult<ExecutionPayloadEnvelopeV3> {
         info!("[Engine] get_payload_v3: payload_id={:?}", payload_id);
-        let (block, receipts, _, bundle) = self.payload_builder.get_payload(&payload_id)?;
-        let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_default();
+        let (block, receipts, _, bundle) = self.payload_builder.get_payload(&payload_id).await?;
+        let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_default();
         let fork = Hardfork::get_active_fork(&chain_config, block.header.number, block.header.timestamp);
 
         // engine_getPayloadV3 and above must be used for Cancun and above
@@ -305,8 +318,8 @@ impl Engine {
 
     pub async fn get_payload_v4(&self, payload_id: PayloadId) -> RpcResult<ExecutionPayloadEnvelopeV4> {
         info!("[Engine] get_payload_v4: payload_id={:?}", payload_id);
-        let (block, receipts, _, bundle) = self.payload_builder.get_payload(&payload_id)?;
-        let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_default();
+        let (block, receipts, _, bundle) = self.payload_builder.get_payload(&payload_id).await?;
+        let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_default();
 
         let execution_payload = EngineMapper::to_execution_payload_v4(&block, &chain_config);
         let block_value = self.payload_builder.calculate_block_value(&block, &receipts);
@@ -314,7 +327,21 @@ impl Engine {
         let fork = Hardfork::get_active_fork(&chain_config, block.header.number, block.header.timestamp);
         let mut execution_requests = Vec::new();
         if fork >= Hardfork::Prague {
-            // Recalculate execution requests for Prague
+            // Prepare execution environment for system calls
+            let chain_id = self.read_storage.chain_id().await.unwrap_or(1);
+            let parent_td = if block.header.number == 0 {
+                Some(U256::ZERO)
+            } else {
+                self.read_storage.header_td(block.header.parent_hash).await.ok().flatten()
+            };
+            let (fork, config, env) = wasix_eth_execution::config::prepare_execution_env(chain_id, &chain_config, &block.header, parent_td).await;
+            
+            let batch = self.write_storage.begin_batch().map_err(|e| RpcError::Internal(e.to_string()))?;
+            let etable = Chained(GasometerEtable::new(), ExecutionEtable::new());
+            let precompiles = StandardPrecompileSet;
+            let resolver = EtableResolver::new(&precompiles, &etable);
+            let invoker = Invoker::new(&resolver);
+
             let provider = wasix_eth_execution::execution_provider::EthExecutionProvider::new(
                 self.read_storage.clone(),
                 self.write_storage.clone(),
@@ -335,7 +362,15 @@ impl Engine {
             }
 
             // For EIP-7002 withdrawal requests (type 1), we re-run the system call to retrieve them.
-            if let Ok(withdrawals) = provider.collect_withdrawal_requests(&block.header) {
+            if let Ok(withdrawals) = provider.collect_withdrawal_requests(
+                &block.header,
+                &batch,
+                &env,
+                &config,
+                &invoker,
+                fork,
+                Some(block.header.state_root),
+            ).await {
                 for withdrawal in withdrawals {
                     execution_requests.push(withdrawal.into());
                 }
@@ -344,7 +379,15 @@ impl Engine {
             }
 
             // For EIP-7251 consolidation requests (type 2), we re-run the system call to retrieve them.
-            if let Ok(consolidations) = provider.collect_consolidation_requests(&block.header) {
+            if let Ok(consolidations) = provider.collect_consolidation_requests(
+                &block.header,
+                &batch,
+                &env,
+                &config,
+                &invoker,
+                fork,
+                Some(block.header.state_root),
+            ).await {
                 for consolidation in consolidations {
                     execution_requests.push(consolidation.into());
                 }
@@ -426,8 +469,9 @@ impl Engine {
             });
         }
 
-        let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_else(|| ChainConfig {
-            chain_id: self.read_storage.chain_id().unwrap_or(1),
+        let chain_id_val = self.read_storage.chain_id().await.unwrap_or(1);
+        let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_else(|| ChainConfig {
+            chain_id: chain_id_val,
             ..Default::default()
         });
 
@@ -505,13 +549,13 @@ impl Engine {
         let mut head_number = 0;
         if forkchoice_state.head_block_hash != B256::ZERO {
             // Check if head block actually exists in our storage or payload map before checking ancestry.
-            let head_header = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(forkchoice_state.head_block_hash))).ok().flatten()
-                .or_else(|| self.read_storage.get_payload_by_block_hash(forkchoice_state.head_block_hash).map(|(p, _, _, _)| p.header.clone()))
+            let head_header = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(forkchoice_state.head_block_hash))).await.ok().flatten()
+                .or_else(|| tokio::runtime::Handle::current().block_on(self.read_storage.get_payload_by_block_hash(forkchoice_state.head_block_hash)).map(|(p, _, _, _)| p.header.clone()))
                 .or_else(|| {
                     // Manual check for genesis if header lookup by hash failed
-                    let genesis_hash = self.read_storage.block_hash(0).unwrap_or(None);
+                    let genesis_hash = tokio::runtime::Handle::current().block_on(self.read_storage.block_hash(0)).unwrap_or(None);
                     if genesis_hash == Some(forkchoice_state.head_block_hash) {
-                         self.read_storage.header(BlockId::Number(BlockNumberOrTag::Number(0))).ok().flatten()
+                         tokio::runtime::Handle::current().block_on(self.read_storage.header(BlockId::Number(BlockNumberOrTag::Number(0)))).ok().flatten()
                     } else {
                         None
                     }
@@ -528,7 +572,7 @@ impl Engine {
                 }
             } else {
                 if head_status.status == PayloadStatusEnum::Valid {
-                    if let Some(value) = self.forkchoice_validator.check_header_without_headheader(forkchoice_state) {
+                    if let Some(value) = self.forkchoice_validator.check_header_without_headheader(forkchoice_state).await {
                         return value;
                     }
                 }
@@ -540,7 +584,7 @@ impl Engine {
 
         // Update forkchoice in storage
         if head_number == 0 && forkchoice_state.head_block_hash != B256::ZERO {
-             head_number = self.read_storage.block_number(forkchoice_state.head_block_hash).ok().flatten().unwrap_or(0);
+             head_number = self.read_storage.block_number(forkchoice_state.head_block_hash).await.ok().flatten().unwrap_or(0);
         }
 
         let _ = self.canonical.update_state(forkchoice_state, head_number).await;
@@ -559,8 +603,8 @@ impl Engine {
 
         // Update metrics and handle canonical chain events if VALID or SYNCING
         if status.status == PayloadStatusEnum::Valid || status.status == PayloadStatusEnum::Syncing {
-            let head_header = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(forkchoice_state.head_block_hash))).ok().flatten()
-                .or_else(|| self.read_storage.get_payload_by_block_hash(forkchoice_state.head_block_hash).map(|(p, _, _, _)| p.header.clone()));
+            let head_header = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(forkchoice_state.head_block_hash))).await.ok().flatten()
+                .or_else(|| tokio::runtime::Handle::current().block_on(self.read_storage.get_payload_by_block_hash(forkchoice_state.head_block_hash)).map(|(p, _, _, _)| p.header.clone()));
 
             if let Some(header) = head_header {
                 if status.status == PayloadStatusEnum::Valid {
@@ -575,6 +619,7 @@ impl Engine {
                             if context.is_reorg {
                                 // Find common ancestor height
                                 let common_ancestor_height = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(context.common_ancestor_hash)))
+                                    .await
                                     .ok()
                                     .flatten()
                                     .map(|h| h.number)
@@ -598,12 +643,12 @@ impl Engine {
                                 // 3.1. Ensure all blocks in context are in main storage and their state is committed
                                 for block in &context.new_canonical_blocks {
                                     let hash = block.header.hash_slow();
-                                    if self.read_storage.block_body_by_hash(hash).ok().flatten().is_none() {
+                                    if self.read_storage.block_body_by_hash(hash).await.ok().flatten().is_none() {
                                         // Block is in Payloads but not in main storage.
                                         // We MUST re-execute and COMMIT the state changes to the database
                                         // so that subsequent transactions in the mempool see the correct nonces.
                                         debug!("[Engine] Re-executing and committing block {} from Payloads", hash);
-                                        self.execution.execute_block_with_commit(block.clone(), true)
+                                        self.execution.execute_block_with_commit(block.clone(), true).await
                                             .map_err(|e| RpcError::Internal(format!("Failed to execute block from payload during promotion: {}", e)))?;
                                     }
                                 }
@@ -638,9 +683,9 @@ impl Engine {
         }
 
         if let Some(attr) = &payload_attributes {
-            let head_block = self.read_storage.block_by_hash(forkchoice_state.head_block_hash).ok().flatten()
+            let head_block = self.read_storage.block_by_hash(forkchoice_state.head_block_hash).await.ok().flatten()
                 .or_else(|| {
-                    self.read_storage.get_payload_by_block_hash(forkchoice_state.head_block_hash)
+                    tokio::runtime::Handle::current().block_on(self.read_storage.get_payload_by_block_hash(forkchoice_state.head_block_hash))
                         .map(|(b, _, _, _)| b)
                 });
             
@@ -737,14 +782,14 @@ impl Engine {
         let mut discarded_hash = old_head;
         let mut all_discarded_txs = Vec::new();
         while discarded_hash != B256::ZERO && discarded_hash != common_ancestor_hash {
-            if let Ok(Some(block)) = self.read_storage.block_by_hash(discarded_hash) {
+            if let Ok(Some(block)) = self.read_storage.block_by_hash(discarded_hash).await {
                 info!("[Engine] Re-adding {} transactions from discarded block #{} hash {:?}",
                                     block.body.transactions.len(), block.header.number, discarded_hash);
                 
                 // Subtract transactions and block from committed metrics
                 TRANSACTIONS_COMMITTED_TOTAL.sub(block.body.transactions.len() as f64);
 
-                let blobs_bundle = self.read_storage.get_payload_by_block_hash(discarded_hash).map(|(_, _, _, b)| b);
+                let blobs_bundle = tokio::runtime::Handle::current().block_on(self.read_storage.get_payload_by_block_hash(discarded_hash)).map(|(_, _, _, b)| b);
                 let mut blob_idx = 0;
 
                 for tx in block.body.transactions {
@@ -819,8 +864,9 @@ impl Engine {
         parent_beacon_block_root: B256,
     ) -> RpcResult<PayloadStatus> {
         info!("[Engine] new_payload_v3: block_number={}, block_hash={:?}", payload.payload_inner.payload_inner.block_number, payload.payload_inner.payload_inner.block_hash);
-        let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_else(|| ChainConfig {
-            chain_id: self.read_storage.chain_id().unwrap_or(1),
+        let chain_id_val = self.read_storage.chain_id().await.unwrap_or(1);
+        let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_else(|| ChainConfig {
+            chain_id: chain_id_val,
             ..Default::default()
         });
 
@@ -846,8 +892,9 @@ impl Engine {
         execution_requests: Vec<Bytes>,
     ) -> RpcResult<PayloadStatus> {
         info!("[Engine] new_payload_v4: block_number={}, block_hash={:?}", payload.payload_inner.payload_inner.payload_inner.block_number, payload.payload_inner.payload_inner.payload_inner.block_hash);
-        let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_else(|| ChainConfig {
-            chain_id: self.read_storage.chain_id().unwrap_or(1),
+        let chain_id_val = self.read_storage.chain_id().await.unwrap_or(1);
+        let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_else(|| ChainConfig {
+            chain_id: chain_id_val,
             ..Default::default()
         });
 
@@ -867,8 +914,9 @@ impl Engine {
 
     pub async fn new_payload(&self, payload_v1: ExecutionPayloadV1, withdrawals: Option<Vec<alloy_rpc_types::Withdrawal>>) -> RpcResult<PayloadStatus> {
         info!("[Engine] new_payload: block_number={}, block_hash={:?}", payload_v1.block_number, payload_v1.block_hash);
-        let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_else(|| ChainConfig {
-            chain_id: self.read_storage.chain_id().unwrap_or(1),
+        let chain_id_val = self.read_storage.chain_id().await.unwrap_or(1);
+        let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_else(|| ChainConfig {
+            chain_id: chain_id_val,
             ..Default::default()
         });
 
@@ -925,7 +973,7 @@ impl Engine {
 
     // --- helper methods engine calls ---
     pub async fn get_payload(&self, payload_id: &PayloadId) -> RpcResult<(Block<Transaction>, Vec<Receipt>, Vec<wasix_eth_types::ReceiptMeta>, BlobsBundleV1)> {
-        self.payload_builder.get_payload(payload_id)
+        self.payload_builder.get_payload(payload_id).await
     }
 
     async fn build_new_payload(
@@ -944,7 +992,7 @@ impl Engine {
         let (head_hash, head_number) = self.chain.head_block().await;
         CURRENT_HEAD_BLOCK.set(head_number as f64);
 
-        if self.read_storage.header(BlockId::Hash(head_hash.into())).is_ok() {
+        if self.read_storage.header(BlockId::Hash(head_hash.into())).await.is_ok() {
             self.mempool_listener.handle_reorg(head_hash).await;
             // let _ = self.event_tx.send(EngineEvent::Reorg { hash: head_hash, number: head_number });
             debug!("[Engine] Reorg handled for height {}", height);
@@ -966,7 +1014,7 @@ impl Engine {
     async fn determine_payload_status(&self, head_block_hash: B256) -> PayloadStatus {
         // If the block is already officially imported in main storage, it's VALID.
         // This takes precedence over any SOFT invalidation (e.g. from a bad newPayload call).
-        if self.read_storage.block_body_by_hash(head_block_hash).ok().flatten().is_some() {
+        if self.read_storage.block_body_by_hash(head_block_hash).await.ok().flatten().is_some() {
             return PayloadStatus {
                 status: PayloadStatusEnum::Valid,
                 latest_valid_hash: Some(head_block_hash),

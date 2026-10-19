@@ -5,7 +5,8 @@ use wasix_eth_types::p2p::{GetBlockHeaders, BlockHashOrNumber, GetBlockBodies, R
 use alloy_consensus::Block as ConsensusBlock;
 use alloy_consensus::TxEnvelope as Transaction;
 use alloy_primitives::{B256, U256};
-use rand::seq::{IndexedRandom, SliceRandom};
+use rand::Rng;
+use rand::seq::IndexedRandom;
 use wasix_eth_utils::{debug, exp};
 
 pub struct Downloader {

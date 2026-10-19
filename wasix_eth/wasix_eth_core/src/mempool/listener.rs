@@ -141,7 +141,7 @@ impl MempoolListener {
 
     async fn process_reorg(mempool: Arc<dyn MempoolProvider>, read_storage: DatabaseReadProvider, head_hash: B256) {
         info!("[MempoolListener] Handling reorg to block {:?}", head_hash);
-        if let Ok(Some(header)) = read_storage.header(BlockId::Hash(head_hash.into())) {
+        if let Ok(Some(header)) = read_storage.header(BlockId::Hash(head_hash.into())).await {
             let base_fee = header.base_fee_per_gas.unwrap_or_default();
             mempool.update_base_fee(U256::from(base_fee), &read_storage).await;
             mempool.revalidate(&read_storage, None).await;

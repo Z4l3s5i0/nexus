@@ -179,9 +179,9 @@ impl SyncService {
 
         for _ in 0..req.message.amount {
             let header = match current_id {
-                wasix_eth_types::p2p::BlockHashOrNumber::Number(n) => self.read_provider.header(wasix_eth_types::BlockId::Number(wasix_eth_types::BlockNumberOrTag::Number(n))),
+                wasix_eth_types::p2p::BlockHashOrNumber::Number(n) => self.read_provider.header(wasix_eth_types::BlockId::Number(wasix_eth_types::BlockNumberOrTag::Number(n))).await,
                 wasix_eth_types::p2p::BlockHashOrNumber::Hash(h) => {
-                    let h_res = self.read_provider.header(wasix_eth_types::BlockId::Hash(h.into()));
+                    let h_res = self.read_provider.header(wasix_eth_types::BlockId::Hash(h.into())).await;
                     if let Ok(Some(header)) = h_res {
                         Ok(Some(header))
                     } else {
@@ -194,11 +194,11 @@ impl SyncService {
                             },
                             Ok(None) => {
                                 debug!("[Sync Service] Header for {:?} not found in SyncProvider", h);
-                                h_res
+                                Ok(None)
                             }
                             Err(e) => {
                                 error!("[Sync Service] Error getting block for {:?} from SyncProvider: {}", h, e);
-                                h_res
+                                Err(e)
                             }
                         }
                     }
@@ -236,7 +236,7 @@ impl SyncService {
 
         let mut bodies = Vec::new();
         for hash in req.message.0 {
-            if let Ok(Some(body)) = self.read_provider.block_body_by_hash(hash) {
+            if let Ok(Some(body)) = self.read_provider.block_body_by_hash(hash).await {
                 bodies.push(body);
             } else {
                 debug!("[Sync Service] Body for {:?} not found in storage, trying SyncProvider", hash);
@@ -289,7 +289,7 @@ impl SyncService {
                 continue;
             }
 
-            let tx_opt = if let Ok(Some(tx)) = self.read_provider.transaction(hash) {
+            let tx_opt = if let Ok(Some(tx)) = self.read_provider.transaction(hash).await {
                 Some(tx)
             } else {
                 self.mempool.get_transaction(hash).await
@@ -371,10 +371,10 @@ impl SyncService {
 
         let mut receipts = Vec::new();
         for hash in req.message.0 {
-            if let Ok(Some(block)) = self.read_provider.block_by_hash(hash) {
+            if let Ok(Some(block)) = self.read_provider.block_by_hash(hash).await {
                 let mut block_receipts = Vec::new();
                 for (i, _) in block.body.transactions.iter().enumerate() {
-                    if let Ok(Some(receipt)) = self.read_provider.receipt(hash, i as u64) {
+                    if let Ok(Some(receipt)) = self.read_provider.receipt(hash, i as u64).await {
                         block_receipts.push(receipt);
                     }
                 }
@@ -397,7 +397,7 @@ impl SyncService {
 
         let mut data = Vec::new();
         for hash in req.message.0 {
-            if let Ok(Some(node)) = self.read_provider.trie_node(hash) {
+            if let Ok(Some(node)) = self.read_provider.trie_node(hash).await {
                 data.push(node);
             }
         }
@@ -425,15 +425,15 @@ impl SyncService {
     }
 
     pub async fn get_block(&self, id: BlockId) -> Result<Option<Block<Transaction>>> {
-        self.read_provider.block(id)
+        self.read_provider.block(id).await
     }
 
     pub async fn get_block_hash(&self, number: u64) -> Result<Option<B256>> {
-        self.read_provider.block_hash(number)
+        self.read_provider.block_hash(number).await
     }
 
     pub async fn get_block_by_hash(&self, hash: B256) -> Result<Option<Block<Transaction>>> {
-        if let Ok(Some(block)) = self.read_provider.block_by_hash(hash) {
+        if let Ok(Some(block)) = self.read_provider.block_by_hash(hash).await {
             return Ok(Some(block));
         }
         if let Some(sync) = self.sync_provider().await {
@@ -443,7 +443,7 @@ impl SyncService {
     }
 
     pub async fn latest_block_number(&self) -> Result<Option<u64>> {
-        self.read_provider.latest_block_number()
+        self.read_provider.latest_block_number().await
     }
     pub async fn broadcast_gossip(&self, data: Vec<u8>) {
         self.broadcast_raw(data).await;

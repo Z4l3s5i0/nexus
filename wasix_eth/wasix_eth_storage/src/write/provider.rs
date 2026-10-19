@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 use std::collections::{HashSet, HashMap};
 use redb::{Database, WriteTransaction, ReadableTable, ReadableDatabase};
@@ -97,166 +98,154 @@ impl DatabaseWriteProvider {
     }
 }
 
+#[async_trait]
 impl HeaderWriter for DatabaseWriteProvider {
-    fn insert_header(&self, hash: B256, header: Header) -> Result<()> {
+    async fn insert_header(&self, hash: B256, header: Header) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::InsertHeader { hash, header, resp: tx }, rx))
+        self.send_request(WriteRequest::InsertHeader { hash, header, resp: tx }, rx).await
     }
 
-    fn insert_block_hash(&self, hash: B256, number: u64) -> Result<()> {
+    async fn insert_block_hash(&self, hash: B256, number: u64) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::InsertHeaderNumber { hash, number, resp: tx }, rx))
+        self.send_request(WriteRequest::InsertHeaderNumber { hash, number, resp: tx }, rx).await
     }
 
-    fn insert_header_td(&self, hash: B256, td: U256) -> Result<()> {
+    async fn insert_header_td(&self, hash: B256, td: U256) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::InsertHeaderTD { hash, td, resp: tx }, rx))
+        self.send_request(WriteRequest::InsertHeaderTD { hash, td, resp: tx }, rx).await
     }
 
-    fn insert_header_number(&self, hash: B256, number: u64) -> Result<()> {
+    async fn insert_header_number(&self, hash: B256, number: u64) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::InsertHeaderNumber { hash, number, resp: tx }, rx))
+        self.send_request(WriteRequest::InsertHeaderNumber { hash, number, resp: tx }, rx).await
     }
 }
 
+#[async_trait]
 impl BlockWriter for DatabaseWriteProvider {
-    fn set_canonical(&self, number: u64, hash: B256) -> Result<()> {
+    async fn set_canonical(&self, number: u64, hash: B256) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::SetCanonical { number, hash, resp: tx }, rx))
+        self.send_request(WriteRequest::SetCanonical { number, hash, resp: tx }, rx).await
     }
 
-    fn remove_canonical(&self, number: u64) -> Result<()> {
+    async fn remove_canonical(&self, number: u64) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::RemoveCanonical { number, resp: tx }, rx))
+        self.send_request(WriteRequest::RemoveCanonical { number, resp: tx }, rx).await
     }
 
-    fn insert_block_body(&self, hash: B256, number: u64, body: BlockBody<Transaction>) -> Result<()> {
+    async fn insert_block_body(&self, hash: B256, number: u64, body: BlockBody<Transaction>) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::InsertBlockBody { hash, number, body, resp: tx }, rx))
+        self.send_request(WriteRequest::InsertBlockBody { hash, number, body, resp: tx }, rx).await
     }
 
-    fn update_forkchoice(&self, head: B256, safe: Option<B256>, finalized: Option<B256>) -> Result<()> {
+    async fn update_forkchoice(&self, head: B256, safe: Option<B256>, finalized: Option<B256>) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::UpdateForkchoice { head, safe, finalized, resp: tx }, rx))
+        self.send_request(WriteRequest::UpdateForkchoice { head, safe, finalized, resp: tx }, rx).await
     }
 
-    fn add_payload(&self, id: PayloadId, block: Block<Transaction>, receipts: Vec<Receipt>, metas: Vec<ReceiptMeta>, bundle: BlobsBundleV1) -> Result<()> {
+    async fn add_payload(&self, id: PayloadId, block: Block<Transaction>, receipts: Vec<Receipt>, metas: Vec<ReceiptMeta>, bundle: BlobsBundleV1) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::AddPayload { id, block, receipts, metas, bundle, resp: tx }, rx))
+        self.send_request(WriteRequest::AddPayload { id, block, receipts, metas, bundle, resp: tx }, rx).await
     }
 
-    fn remove_payload_by_block_hash(&self, hash: B256) -> Result<()> {
+    async fn remove_payload_by_block_hash(&self, hash: B256) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::RemovePayloadByBlockHash { hash, resp: tx }, rx))
+        self.send_request(WriteRequest::RemovePayloadByBlockHash { hash, resp: tx }, rx).await
     }
 
-    fn insert_block(&self, block: Block<Transaction>, receipts: Vec<Receipt>, metas: Vec<ReceiptMeta>) -> Result<()> {
+    async fn insert_block(&self, block: Block<Transaction>, receipts: Vec<Receipt>, metas: Vec<ReceiptMeta>) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::InsertBlock { block, receipts, metas, resp: tx }, rx))
+        self.send_request(WriteRequest::InsertBlock { block, receipts, metas, resp: tx }, rx).await
     }
 }
 
+#[async_trait]
 impl TransactionWriter for DatabaseWriteProvider {
-    fn insert_transaction(&self, hash: B256, tx: Transaction) -> Result<()> {
+    async fn insert_transaction(&self, hash: B256, tx: Transaction) -> Result<()> {
         let (otx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::InsertTransaction { hash, tx, resp: otx }, rx))
+        self.send_request(WriteRequest::InsertTransaction { hash, tx, resp: otx }, rx).await
     }
 
-    fn insert_receipt(&self, block_hash: B256, index: u64, receipt: Receipt) -> Result<()> {
+    async fn insert_receipt(&self, block_hash: B256, index: u64, receipt: Receipt) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::InsertReceipt { block_hash, index, receipt, resp: tx }, rx))
+        self.send_request(WriteRequest::InsertReceipt { block_hash, index, receipt, resp: tx }, rx).await
     }
 
-    fn insert_receipt_meta(&self, block_hash: B256, index: u64, meta: ReceiptMeta) -> Result<()> {
+    async fn insert_receipt_meta(&self, block_hash: B256, index: u64, meta: ReceiptMeta) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::InsertReceiptMeta { block_hash, index, meta, resp: tx }, rx))
+        self.send_request(WriteRequest::InsertReceiptMeta { block_hash, index, meta, resp: tx }, rx).await
     }
 
-    fn remove_receipt_meta(&self, block_hash: B256, index: u64) -> Result<()> {
+    async fn remove_receipt_meta(&self, block_hash: B256, index: u64) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::RemoveReceiptMeta { block_hash, index, resp: tx }, rx))
+        self.send_request(WriteRequest::RemoveReceiptMeta { block_hash, index, resp: tx }, rx).await
     }
 
-    fn insert_transaction_lookup(&self, hash: B256, block_hash: B256, index: u64) -> Result<()> {
+    async fn insert_transaction_lookup(&self, hash: B256, block_hash: B256, index: u64) -> Result<()> {
         let (otx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::InsertTransactionLookup { hash, block_hash, index, resp: otx }, rx))
+        self.send_request(WriteRequest::InsertTransactionLookup { hash, block_hash, index, resp: otx }, rx).await
     }
 }
 
+#[async_trait]
 impl AccountProvider for DatabaseWriteProvider {
-    fn account(&self, address: Address, _state_root: Option<B256>) -> Result<Option<TrieAccount>> {
+    async fn account(&self, address: Address, _state_root: Option<B256>) -> Result<Option<TrieAccount>> {
         let read = DatabaseReadProvider::new(self.db.clone());
-        read.account(address, None)
+        read.account(address, None).await
     }
 
-    fn accounts(&self) -> Result<Vec<(Address, TrieAccount)>> {
+    async fn accounts(&self) -> Result<Vec<(Address, TrieAccount)>> {
         let read = DatabaseReadProvider::new(self.db.clone());
-        read.accounts()
+        read.accounts().await
     }
 
-    fn addresses(&self) -> Result<Vec<Address>> {
+    async fn addresses(&self) -> Result<Vec<Address>> {
         let read = DatabaseReadProvider::new(self.db.clone());
-        read.addresses()
+        read.addresses().await
     }
 
-    fn transaction_count(&self, address: Address, block_id: BlockId, state_root: Option<B256>) -> Result<u64> {
+    async fn transaction_count(&self, address: Address, block_id: BlockId, state_root: Option<B256>) -> Result<u64> {
         let read = DatabaseReadProvider::new(self.db.clone());
-        read.transaction_count(address, block_id, state_root)
+        read.transaction_count(address, block_id, state_root).await
     }
 }
 
+#[async_trait]
 impl StorageProvider for DatabaseWriteProvider {
-    fn storage(&self, address: Address, slot: B256, state_root: Option<B256>) -> Result<U256> {
+    async fn storage(&self, address: Address, slot: B256, state_root: Option<B256>) -> Result<U256> {
         let read = DatabaseReadProvider::new(self.db.clone());
-        read.storage(address, slot, state_root)
+        read.storage(address, slot, state_root).await
     }
 
-    fn account_storages(&self, address: Address, state_root: Option<B256>) -> Result<Vec<(B256, U256)>> {
+    async fn account_storages(&self, address: Address, state_root: Option<B256>) -> Result<Vec<(B256, U256)>> {
         let read = DatabaseReadProvider::new(self.db.clone());
-        read.account_storages(address, state_root)
+        read.account_storages(address, state_root).await
     }
 }
 
+#[async_trait]
 impl AccountWriter for DatabaseWriteProvider {
-    fn update_account(&self, address: Address, account: TrieAccount) -> Result<()> {
+    async fn update_account(&self, address: Address, account: TrieAccount) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::UpdateAccount { address, account, resp: tx }, rx))
+        self.send_request(WriteRequest::UpdateAccount { address, account, resp: tx }, rx).await
     }
 
-    fn remove_account(&self, address: Address) -> Result<()> {
+    async fn remove_account(&self, address: Address) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::RemoveAccount { address, resp: tx }, rx))
+        self.send_request(WriteRequest::RemoveAccount { address, resp: tx }, rx).await
     }
 
-    fn calculate_state_root(&self, is_eip161: bool, state_root: Option<B256>) -> Result<B256> {
+    async fn calculate_state_root(&self, is_eip161: bool, state_root: Option<B256>) -> Result<B256> {
         // Calculate root requires a full batch commit
         let batch = self.begin_batch()?;
-        let root = batch.calculate_state_root(is_eip161, state_root)?;
+        let root = batch.calculate_state_root(is_eip161, state_root).await?;
         batch.commit()?;
         Ok(root)
     }
 
-    fn calculate_storage_root(&self, address: Address, state_root: Option<B256>) -> Result<B256> {
+    async fn calculate_storage_root(&self, address: Address, state_root: Option<B256>) -> Result<B256> {
         let batch = self.begin_batch()?;
-        let root = batch.calculate_storage_root(address, state_root)?;
+        let root = batch.calculate_storage_root(address, state_root).await?;
         batch.commit()?;
         Ok(root)
     }
@@ -267,109 +256,119 @@ impl AccountWriter for DatabaseWriteProvider {
     }
 }
 
+#[async_trait]
 impl StorageWriter for DatabaseWriteProvider {
-    fn update_storage(&self, address: Address, slot: B256, value: U256) -> Result<()> {
+    async fn update_storage(&self, address: Address, slot: B256, value: U256) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::UpdateStorage { address, slot, value, resp: tx }, rx))
+        self.send_request(WriteRequest::UpdateStorage { address, slot, value, resp: tx }, rx).await
     }
 
-    fn reset_storage(&self, address: Address) -> Result<()> {
+    async fn reset_storage(&self, address: Address) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::ResetStorage { address, resp: tx }, rx))
+        self.send_request(WriteRequest::ResetStorage { address, resp: tx }, rx).await
     }
 }
 
-impl BytecodeWriter for DatabaseWriteProvider {
-    fn insert_bytecode(&self, code_hash: B256, bytecode: Bytes) -> Result<()> {
-        let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::InsertBytecode { code_hash, bytecode, resp: tx }, rx))
+#[async_trait]
+impl BytecodeProvider for DatabaseWriteProvider {
+    async fn bytecode(&self, code_hash: B256) -> Result<Option<Bytes>> {
+        let read = DatabaseReadProvider::new(self.db.clone());
+        read.bytecode(code_hash).await
     }
 }
 
+#[async_trait]
+impl HeaderProvider for DatabaseWriteProvider {
+    async fn header(&self, number: BlockId) -> anyhow::Result<Option<Header>> {
+        let read = DatabaseReadProvider::new(self.db.clone());
+        read.header(number).await
+    }
+    async fn header_td(&self, hash: B256) -> anyhow::Result<Option<U256>> {
+        let read = DatabaseReadProvider::new(self.db.clone());
+        read.header_td(hash).await
+    }
+    async fn latest_header_td(&self) -> anyhow::Result<Option<U256>> {
+        let read = DatabaseReadProvider::new(self.db.clone());
+        read.latest_header_td().await
+    }
+}
+
+#[async_trait]
 impl StateProvider for DatabaseWriteProvider {
-    fn plain_state(&self, address: Address) -> Result<Option<Bytes>> {
+    async fn plain_state(&self, address: Address) -> Result<Option<Bytes>> {
         let read = DatabaseReadProvider::new(self.db.clone());
-        read.plain_state(address)
+        read.plain_state(address).await
     }
 
-    fn hashed_state(&self, hash: B256) -> Result<Option<Bytes>> {
+    async fn hashed_state(&self, hash: B256) -> Result<Option<Bytes>> {
         let read = DatabaseReadProvider::new(self.db.clone());
-        read.hashed_state(hash)
+        read.hashed_state(hash).await
     }
 
-    fn trie_node(&self, hash: B256) -> Result<Option<Bytes>> {
+    async fn trie_node(&self, hash: B256) -> Result<Option<Bytes>> {
         let read = DatabaseReadProvider::new(self.db.clone());
-        read.trie_node(hash)
+        read.trie_node(hash).await
     }
 }
 
+#[async_trait]
 impl StateWriter for DatabaseWriteProvider {
-    fn update_plain_state(&self, address: Address, state: Bytes) -> Result<()> {
+    async fn update_plain_state(&self, address: Address, state: Bytes) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::UpdatePlainState { address, state, resp: tx }, rx))
+        self.send_request(WriteRequest::UpdatePlainState { address, state, resp: tx }, rx).await
     }
 
-    fn remove_plain_state(&self, address: Address) -> Result<()> {
+    async fn remove_plain_state(&self, address: Address) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::RemovePlainState { address, resp: tx }, rx))
+        self.send_request(WriteRequest::RemovePlainState { address, resp: tx }, rx).await
     }
 
-    fn update_hashed_state(&self, hash: B256, state: Bytes) -> Result<()> {
+    async fn update_hashed_state(&self, hash: B256, state: Bytes) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::UpdateHashedState { hash, state, resp: tx }, rx))
+        self.send_request(WriteRequest::UpdateHashedState { hash, state, resp: tx }, rx).await
     }
 
-    fn update_trie_node(&self, hash: B256, node: Bytes) -> Result<()> {
+    async fn update_trie_node(&self, hash: B256, node: Bytes) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::UpdateTrieNode { hash, node, resp: tx }, rx))
+        self.send_request(WriteRequest::UpdateTrieNode { hash, node, resp: tx }, rx).await
     }
 }
 
+#[async_trait]
 impl MetadataWriter for DatabaseWriteProvider {
-    fn set_metadata(&self, key: String, value: Bytes) -> Result<()> {
+    async fn set_metadata(&self, key: String, value: Bytes) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::SetMetadata { key, value, resp: tx }, rx))
+        self.send_request(WriteRequest::SetMetadata { key, value, resp: tx }, rx).await
     }
 }
 
+#[async_trait]
 impl PeerDiscoveryWriter for DatabaseWriteProvider {
-    fn register_peer(&self, peer: PeerEntry) -> Result<()> {
+    async fn register_peer(&self, peer: PeerEntry) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::RegisterPeer { peer, resp: tx }, rx))
+        self.send_request(WriteRequest::RegisterPeer { peer, resp: tx }, rx).await
     }
 
-    fn remove_peer(&self, peer_id: String) -> Result<()> {
+    async fn remove_peer(&self, peer_id: String) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::RemovePeer { peer_id, resp: tx }, rx))
+        self.send_request(WriteRequest::RemovePeer { peer_id, resp: tx }, rx).await
     }
 }
 
+#[async_trait]
 impl ChangeSetWriter for DatabaseWriteProvider {
-    fn insert_account_change_set(&self, number: u64, change_set: Vec<(Address, Option<Bytes>)>) -> Result<()> {
+    async fn insert_account_change_set(&self, number: u64, change_set: Vec<(Address, Option<Bytes>)>) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::InsertAccountChangeSet { number, change_set, resp: tx }, rx))
+        self.send_request(WriteRequest::InsertAccountChangeSet { number, change_set, resp: tx }, rx).await
     }
 
-    fn insert_storage_change_set(&self, number: u64, change_set: Vec<(Address, B256, U256)>) -> Result<()> {
+    async fn insert_storage_change_set(&self, number: u64, change_set: Vec<(Address, B256, U256)>) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::InsertStorageChangeSet { number, change_set, resp: tx }, rx))
+        self.send_request(WriteRequest::InsertStorageChangeSet { number, change_set, resp: tx }, rx).await
     }
 
-    fn remove_change_set(&self, number: u64) -> Result<()> {
+    async fn remove_change_set(&self, number: u64) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.send_request(WriteRequest::RemoveChangeSet { number, resp: tx }, rx))
+        self.send_request(WriteRequest::RemoveChangeSet { number, resp: tx }, rx).await
     }
 }

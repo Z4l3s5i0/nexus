@@ -75,7 +75,7 @@ impl ChainManager for ChainManagerImpl {
 
     async fn has_block(&self, hash: B256) -> bool {
         // Check if header exists in storage
-        match self.read_storage.header(BlockId::Hash(hash.into())) {
+        match self.read_storage.header(BlockId::Hash(hash.into())).await {
             Ok(Some(_)) => return true,
             Ok(None) => {},
             Err(e) => {
@@ -89,7 +89,7 @@ impl ChainManager for ChainManagerImpl {
         }
 
         // Check payload map (persistent but not yet canonical)
-        if self.read_storage.get_payload_by_block_hash(hash).is_some() {
+        if self.read_storage.get_payload_by_block_hash(hash).await.is_some() {
             return true;
         }
 
@@ -118,7 +118,7 @@ impl ChainManager for ChainManagerImpl {
         }
 
         // Fast path: if it's canonical, it's valid
-        if let Ok(true) = self.read_storage.is_canonical(hash) {
+        if let Ok(true) = self.read_storage.is_canonical(hash).await {
             return Some(hash);
         }
         // If it's the current head from FCU, and not known invalid, it's a valid candidate
@@ -135,7 +135,7 @@ impl ChainManager for ChainManagerImpl {
             if self.has_block(current).await {
                 return Some(current);
             }
-            if let Ok(Some(genesis_hash)) = self.read_storage.block_hash(0) {
+            if let Ok(Some(genesis_hash)) = self.read_storage.block_hash(0).await {
                 if current == genesis_hash {
                     return Some(current);
                 }
@@ -154,9 +154,9 @@ impl ChainManager for ChainManagerImpl {
             // we might be able to find a canonical ancestor faster.
             let current_number = if let Some(block) = self.block_tree.get_block(current).await {
                 Some(block.header.number)
-            } else if let Ok(Some(header)) = self.read_storage.header(BlockId::Hash(current.into())) {
+            } else if let Ok(Some(header)) = self.read_storage.header(BlockId::Hash(current.into())).await {
                 Some(header.number)
-            } else if let Some((payload, _, _, _)) = self.read_storage.get_payload_by_block_hash(current) {
+            } else if let Some((payload, _, _, _)) = self.read_storage.get_payload_by_block_hash(current).await {
                 Some(payload.header.number)
             } else {
                 None
@@ -165,7 +165,7 @@ impl ChainManager for ChainManagerImpl {
             if let Some(num) = current_number {
                 // Find the highest canonical block below this invalid block
                 // and check if it's an ancestor.
-                if let Ok(Some(canonical_hash)) = self.read_storage.block_hash(num.saturating_sub(1) as u64) {
+                if let Ok(Some(canonical_hash)) = self.read_storage.block_hash(num.saturating_sub(1) as u64).await {
                     // Check if this canonical block is an ancestor of 'current'
                     if self.is_ancestor(current, canonical_hash).await {
                          debug!("[ChainManager] get_latest_valid_ancestor: found canonical ancestor {:?} via is_ancestor check at height {}", canonical_hash, num.saturating_sub(1));
@@ -180,9 +180,9 @@ impl ChainManager for ChainManagerImpl {
             if parent_hash.is_none() {
                 if let Some(block) = self.block_tree.get_block(current).await {
                     parent_hash = Some(block.header.parent_hash);
-                } else if let Ok(Some(header)) = self.read_storage.header(BlockId::Hash(current.into())) {
+                } else if let Ok(Some(header)) = self.read_storage.header(BlockId::Hash(current.into())).await {
                     parent_hash = Some(header.parent_hash);
-                } else if let Some((block, _, _, _)) = self.read_storage.get_payload_by_block_hash(current) {
+                } else if let Some((block, _, _, _)) = self.read_storage.get_payload_by_block_hash(current).await {
                     parent_hash = Some(block.header.parent_hash);
                 }
             }
@@ -194,7 +194,7 @@ impl ChainManager for ChainManagerImpl {
                 }
                 
                 // if parent is canonical, it MUST be valid and not invalid.
-                if let Ok(true) = self.read_storage.is_canonical(parent) {
+                if let Ok(true) = self.read_storage.is_canonical(parent).await {
                     debug!("[ChainManager] get_latest_valid_ancestor: reached canonical block {:?} during walk", parent);
                     return Some(parent);
                 }
@@ -219,7 +219,7 @@ impl ChainManager for ChainManagerImpl {
         }
 
         // Final fallbacks
-        if let Ok(Some(genesis_hash)) = self.read_storage.block_hash(0) {
+        if let Ok(Some(genesis_hash)) = self.read_storage.block_hash(0).await {
             if current == genesis_hash {
                 return Some(current);
             }
@@ -235,7 +235,7 @@ impl ChainManager for ChainManagerImpl {
 
     async fn total_difficulty(&self) -> U256 {
         let (head_hash, _) = self.head_block().await;
-        self.read_storage.header_td(head_hash).ok().flatten().unwrap_or(U256::ZERO)
+        self.read_storage.header_td(head_hash).await.ok().flatten().unwrap_or(U256::ZERO)
     }
 
     async fn determine_payload_status(&self, head_block_hash: B256) -> wasix_eth_types::PayloadStatus {
@@ -250,7 +250,7 @@ impl ChainManager for ChainManagerImpl {
             };
         }
 
-        if let Ok(Some(_)) = self.read_storage.header(BlockId::Hash(head_block_hash.into())) {
+        if let Ok(Some(_)) = self.read_storage.header(BlockId::Hash(head_block_hash.into())).await {
             return wasix_eth_types::PayloadStatus {
                 status: wasix_eth_types::PayloadStatusEnum::Valid,
                 latest_valid_hash: Some(head_block_hash),
@@ -258,7 +258,7 @@ impl ChainManager for ChainManagerImpl {
         }
 
         // Check if it's in the payloads map (processed but not yet canonical)
-        if let Some(_) = self.read_storage.get_payload_by_block_hash(head_block_hash) {
+        if let Some(_) = self.read_storage.get_payload_by_block_hash(head_block_hash).await {
             return wasix_eth_types::PayloadStatus {
                 status: wasix_eth_types::PayloadStatusEnum::Valid,
                 latest_valid_hash: Some(head_block_hash),
@@ -280,21 +280,21 @@ impl ChainManager for ChainManagerImpl {
         }
 
         // Get block numbers to optimize search
-        let head_number = if let Ok(Some(n)) = self.read_storage.block_number(head) {
+        let head_number = if let Ok(Some(n)) = self.read_storage.block_number(head).await {
             Some(n)
         } else if let Some(block) = self.block_tree.get_block(head).await {
             Some(block.header.number)
-        } else if let Some((payload, _, _, _)) = self.read_storage.get_payload_by_block_hash(head) {
+        } else if let Some((payload, _, _, _)) = self.read_storage.get_payload_by_block_hash(head).await {
             Some(payload.header.number)
         } else {
             None
         };
 
-        let target_number = if let Ok(Some(n)) = self.read_storage.block_number(target) {
+        let target_number = if let Ok(Some(n)) = self.read_storage.block_number(target).await {
             Some(n)
         } else if let Some(block) = self.block_tree.get_block(target).await {
             Some(block.header.number)
-        } else if let Some((payload, _, _, _)) = self.read_storage.get_payload_by_block_hash(target) {
+        } else if let Some((payload, _, _, _)) = self.read_storage.get_payload_by_block_hash(target).await {
             Some(payload.header.number)
         } else {
             None
@@ -306,9 +306,9 @@ impl ChainManager for ChainManagerImpl {
             }
 
             // Optimization: if target is canonical, we just check if head's ancestor at t_num is target
-            if let Ok(true) = self.read_storage.is_canonical(target) {
+            if let Ok(true) = self.read_storage.is_canonical(target).await {
                 // If head is also canonical, it's an ancestor if head_number >= target_number
-                if let Ok(true) = self.read_storage.is_canonical(head) {
+                if let Ok(true) = self.read_storage.is_canonical(head).await {
                     return h_num >= t_num;
                 }
                 // If head is not canonical, we still need to check if its ancestor at t_num is target
@@ -334,21 +334,21 @@ impl ChainManager for ChainManagerImpl {
                 }
                 
                 // If current is canonical, we can do a fast check
-                if let Ok(true) = self.read_storage.is_canonical(current) {
-                    if let Ok(Some(canonical_hash_at_t_num)) = self.read_storage.block_hash(t_num) {
+                if let Ok(true) = self.read_storage.is_canonical(current).await {
+                    if let Ok(Some(canonical_hash_at_t_num)) = self.read_storage.block_hash(t_num).await {
                         return canonical_hash_at_t_num == target;
                     }
                 }
             }
 
-            let parent_info = if let Ok(Some(header)) = self.read_storage.header(wasix_eth_types::BlockId::Hash(current.into())) {
+            let parent_info = if let Ok(Some(header)) = self.read_storage.header(wasix_eth_types::BlockId::Hash(current.into())).await {
                 Some((header.parent_hash, header.number.saturating_sub(1)))
-            } else if let Some((payload, _, _, _)) = self.read_storage.get_payload_by_block_hash(current) {
+            } else if let Some((payload, _, _, _)) = self.read_storage.get_payload_by_block_hash(current).await {
                 Some((payload.header.parent_hash, payload.header.number.saturating_sub(1)))
             } else if let Some(block) = self.block_tree.get_block(current).await {
                 Some((block.header.parent_hash, block.header.number.saturating_sub(1)))
             } else {
-                let genesis_hash = self.read_storage.block_hash(0).unwrap_or(None);
+                let genesis_hash = self.read_storage.block_hash(0).await.unwrap_or(None);
                 if Some(current) == genesis_hash {
                     Some((B256::ZERO, 0))
                 } else {

@@ -1,12 +1,14 @@
 use dashmap::{DashMap, DashSet};
 use futures_util::{future::BoxFuture, FutureExt};
 use crate::engine::canonicality_tracker::CanonicalState;
-use crate::engine::sidechain_tracker::{BlockTree};
+use crate::engine::sidechain_tracker::BlockTree;
 use crate::sync::registry::SyncRegistry;
 use crate::Consensus;
 use std::sync::Arc;
 use tokio::sync::broadcast;
+use wasix_eth_execution::orchestrator::ExecutionOrchestrator;
 use wasix_eth_execution::execution_provider::ExecutionProvider;
+use wasix_eth_execution::executor::TransactionExecutionResult;
 use wasix_eth_storage::read::DatabaseReadProvider;
 use wasix_eth_storage::read_traits::{BlockProvider, ChainProvider, HeaderProvider};
 use wasix_eth_storage::write::DatabaseWriteProvider;
@@ -26,7 +28,7 @@ pub struct PayloadProcessor {
     pub consensus: Arc<dyn Consensus>,
     pub read_storage: DatabaseReadProvider,
     pub write_storage: DatabaseWriteProvider,
-    pub execution: Arc<dyn ExecutionProvider>,
+    pub execution: Arc<ExecutionOrchestrator>,
     pub chain: Arc<dyn ChainManager>,
     pub sync_registry: Arc<SyncRegistry>,
     pub event_tx: broadcast::Sender<EngineEvent>,
@@ -53,7 +55,7 @@ impl PayloadProcessor {
             debug!("[PayloadProcessor] block hash mismatch: actual={}, expected={}", actual_hash, expected_block_hash);
             
             // Check if it's already in storage before marking it invalid.
-            if let Ok(Some(_)) = self.read_storage.block_body_by_hash(actual_hash) {
+            if let Ok(Some(_)) = self.read_storage.block_body_by_hash(actual_hash).await {
                  return Ok(PayloadStatus {
                     status: PayloadStatusEnum::Invalid { validation_error: "INVALID_BLOCK_HASH".to_string() },
                     latest_valid_hash: Some(actual_hash),
@@ -67,9 +69,12 @@ impl PayloadProcessor {
             });
         }
 
-        let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_else(|| ChainConfig {
-            chain_id: self.read_storage.chain_id().unwrap_or(31133),
-            ..Default::default()
+        let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_else(|| {
+            let chain_id = tokio::runtime::Handle::current().block_on(self.read_storage.chain_id()).unwrap_or(31133);
+            ChainConfig {
+                chain_id,
+                ..Default::default()
+            }
         });
         let active_fork = Hardfork::get_active_fork(&chain_config, block.header.number, block.header.timestamp);
 
@@ -142,7 +147,7 @@ impl PayloadProcessor {
                 // We mark it as Soft invalid so FCU returns SYNCING, but it's not permanently rejected.
                 
                 // If it's already in main storage, it's officially valid. Don't overwrite with SOFT invalidation.
-                if self.read_storage.block_body_by_hash(actual_hash).ok().flatten().is_none() {
+                if self.read_storage.block_body_by_hash(actual_hash).await.ok().flatten().is_none() {
                     self.chain.add_invalid_block(actual_hash, block.header.parent_hash, InvalidationReason::Soft).await;
                 }
                 
@@ -160,7 +165,7 @@ impl PayloadProcessor {
                 // but it's safer to use Soft invalidation or none.
                 
                 // If it's already in main storage, it's officially valid. Don't overwrite with SOFT invalidation.
-                if self.read_storage.block_body_by_hash(actual_hash).ok().flatten().is_none() {
+                if self.read_storage.block_body_by_hash(actual_hash).await.ok().flatten().is_none() {
                     self.chain.add_invalid_block(actual_hash, block.header.parent_hash, InvalidationReason::Soft).await;
                 }
 
@@ -173,7 +178,7 @@ impl PayloadProcessor {
         }
 
         // Idempotency check: If block is in storage, it's VALID
-        if let Ok(Some(_)) = self.read_storage.block_body_by_hash(actual_hash) {
+        if let Ok(Some(_)) = self.read_storage.block_body_by_hash(actual_hash).await {
             return cleanup(Ok(PayloadStatus {
                 status: PayloadStatusEnum::Valid,
                 latest_valid_hash: Some(actual_hash)
@@ -243,12 +248,12 @@ impl PayloadProcessor {
 
     pub async fn get_header_from_anywhere(&self, hash: B256) -> Option<Header> {
         // 1. Check storage
-        if let Ok(Some(header)) = self.read_storage.header(BlockId::Hash(hash.into())) {
+        if let Ok(Some(header)) = self.read_storage.header(BlockId::Hash(hash.into())).await {
             return Some(header);
         }
         
         // 2. Check payload map
-        if let Some((payload, _, _, _)) = self.read_storage.get_payload_by_block_hash(hash) {
+        if let Some((payload, _, _, _)) = self.read_storage.get_payload_by_block_hash(hash).await {
             return Some(payload.header.clone());
         }
         
@@ -292,8 +297,8 @@ impl PayloadProcessor {
             }
         }
 
-        let is_genesis = self.read_storage.is_canonical(parent_hash).unwrap_or(false) &&
-            self.read_storage.block_number(parent_hash).ok().flatten() == Some(0);
+        let is_genesis = self.read_storage.is_canonical(parent_hash).await.unwrap_or(false) &&
+            self.read_storage.block_number(parent_hash).await.ok().flatten() == Some(0);
 
         // If parent is not known (not in storage AND not in block_tree), it's SYNCING/ACCEPTED.
         // todo check if it is processing as well
@@ -314,9 +319,12 @@ impl PayloadProcessor {
 
         // 2. Check if ANY ancestor is invalid by walking back and validating headers
         let mut current_hash = parent_hash;
-        let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_else(|| ChainConfig {
-            chain_id: self.read_storage.chain_id().unwrap_or(1),
-            ..Default::default()
+        let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_else(|| {
+            let chain_id = tokio::runtime::Handle::current().block_on(self.read_storage.chain_id()).unwrap_or(1);
+            ChainConfig {
+                chain_id,
+                ..Default::default()
+            }
         });
 
         for i in 0..32 {
@@ -345,7 +353,7 @@ impl PayloadProcessor {
 
                 // Check if this block is invalid relative to its parent header if we can find it
                 if let Some(p_header) = self.get_header_from_anywhere(p_hash).await {
-                    if let Err(e) = self.consensus.validate_header(&current_header, &p_header, &chain_config) {
+                    if let Err(e) = self.consensus.validate_header(&current_header, &p_header, &chain_config).await {
                         // Only mark and return INVALID if both blocks are known,
                         // otherwise it might be a temporary side-chain inconsistency during sync.
                         let current_exists = self.chain.has_block(current_hash).await;
@@ -398,9 +406,12 @@ impl PayloadProcessor {
             wasix_eth_utils::exp!("[EXP] BLOCK_RPC_RECV hash={:?}", actual_hash);
         }
 
-        let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_else(|| ChainConfig {
-            chain_id: self.read_storage.chain_id().unwrap_or(31133),
-            ..Default::default()
+        let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_else(|| {
+            let chain_id = tokio::runtime::Handle::current().block_on(self.read_storage.chain_id()).unwrap_or(31133);
+            ChainConfig {
+                chain_id,
+                ..Default::default()
+            }
         });
         
         let active_fork = Hardfork::get_active_fork(&chain_config, block_number, block.header.timestamp);
@@ -416,11 +427,11 @@ impl PayloadProcessor {
                 // We mark it as Soft invalid so FCU returns SYNCING, but it's not permanently rejected.
 
                 // If it's already in main storage, it's officially valid. Don't overwrite with SOFT invalidation.
-                if self.read_storage.block_body_by_hash(actual_hash).ok().flatten().is_none() {
+                if self.read_storage.block_body_by_hash(actual_hash).await.ok().flatten().is_none() {
                     self.chain.add_invalid_block(actual_hash, parent_hash, InvalidationReason::Soft).await;
                 }
 
-                if let Ok(Some(existing_header)) = self.read_storage.header(BlockId::Hash(actual_hash.into())) {
+                if let Ok(Some(existing_header)) = self.read_storage.header(BlockId::Hash(actual_hash.into())).await {
                     if existing_header.hash_slow() == actual_hash {
                         let latest_valid = self.chain.get_latest_valid_ancestor(parent_hash).await;
                         return Ok(PayloadStatus {
@@ -440,12 +451,12 @@ impl PayloadProcessor {
         }
 
         // 2. Structural validation (Body)
-        if let Err(e) = self.consensus.validate_body(&block, &chain_config) {
+        if let Err(e) = self.consensus.validate_body(&block, &chain_config).await {
             error!("[PayloadProcessor] Body validation failed for block {}: {}", actual_hash, e);
 
                 // Structural failures are Hard invalid.
                 // But we don't call add_invalid_block if it's already in storage.
-                if let Ok(Some(existing_header)) = self.read_storage.header(BlockId::Hash(actual_hash.into())) {
+                if let Ok(Some(existing_header)) = self.read_storage.header(BlockId::Hash(actual_hash.into())).await {
                     if existing_header.hash_slow() == actual_hash {
                         let latest_valid = self.chain.get_latest_valid_ancestor(parent_hash).await;
                         return Ok(PayloadStatus {
@@ -458,7 +469,7 @@ impl PayloadProcessor {
                 // We mark it as invalid to preserve the parent hash and allow walk-back.
                 self.chain.add_invalid_block(actual_hash, parent_hash, InvalidationReason::Hard).await;
 
-                let _ = self.write_storage.remove_payload_by_block_hash(actual_hash);
+                let _ = self.write_storage.remove_payload_by_block_hash(actual_hash).await;
                 let latest_valid = self.chain.get_latest_valid_ancestor(parent_hash).await;
                 return Ok(PayloadStatus {
                     status: PayloadStatusEnum::Invalid { validation_error: e.to_string() },
@@ -473,11 +484,11 @@ impl PayloadProcessor {
 
                 // If the block is already officially imported in main storage, it's officially valid.
                 // Don't overwrite with SOFT invalidation.
-                if self.read_storage.block_body_by_hash(actual_hash).ok().flatten().is_none() {
+                if self.read_storage.block_body_by_hash(actual_hash).await.ok().flatten().is_none() {
                     self.chain.add_invalid_block(actual_hash, parent_hash, InvalidationReason::Soft).await;
                 }
 
-                if let Ok(Some(existing_header)) = self.read_storage.header(BlockId::Hash(actual_hash.into())) {
+                if let Ok(Some(existing_header)) = self.read_storage.header(BlockId::Hash(actual_hash.into())).await {
                     if existing_header.hash_slow() == actual_hash {
                         let latest_valid = self.chain.get_latest_valid_ancestor(parent_hash).await;
                         return Ok(PayloadStatus {
@@ -530,7 +541,7 @@ impl PayloadProcessor {
         // We already checked this at the very beginning of new_payload_internal.
 
         // Before executing, check if parent header is available in storage or Payloads table.
-        let parent_header = self.read_storage.header(BlockId::Hash(parent_hash.into())).ok().flatten();
+        let parent_header = self.read_storage.header(BlockId::Hash(parent_hash.into())).await.ok().flatten();
             // .or_else(|| {
             //     // Fallback: Check Payloads table if not in main Headers table
             //     self.read_storage.get_payload_by_block_hash(parent_hash).map(|(b, _, _)| b.header)
@@ -553,7 +564,7 @@ impl PayloadProcessor {
                   info!("[PayloadProcessor] Parent block {:?} found in orphan pool. Buffering block {:?} and returning ACCEPTED.", parent_hash, actual_hash);
                   
                   // Even if we don't execute, we should validate the header if we have the parent header to return INVALID early if possible.
-                  if let Err(e) = self.consensus.validate_header(&block.header, &anywhere_header, &chain_config) {
+                  if let Err(e) = self.consensus.validate_header(&block.header, &anywhere_header, &chain_config).await {
                       error!("[PayloadProcessor] Header validation failed for buffered block {}: {}", actual_hash, e);
                       self.chain.add_invalid_block(actual_hash, parent_hash, InvalidationReason::Hard).await;
                       let latest_valid = self.chain.get_latest_valid_ancestor(parent_hash).await;
@@ -585,13 +596,13 @@ impl PayloadProcessor {
         }
 
         if let Some(parent) = &parent_header {
-            if let Err(e) = self.consensus.validate_header(&block.header, parent, &chain_config) {
+            if let Err(e) = self.consensus.validate_header(&block.header, parent, &chain_config).await {
                 error!("[PayloadProcessor] Header validation failed: {}", e);
                 // Header validation is structural/independent of state.
                 // We SHOULD blacklist if header validation fails, as it's inherent to the block.
                 self.chain.add_invalid_block(actual_hash, parent_hash, InvalidationReason::Hard).await;
                 
-                let _ = self.write_storage.remove_payload_by_block_hash(actual_hash);
+                let _ = self.write_storage.remove_payload_by_block_hash(actual_hash).await;
                 let latest_valid = self.chain.get_latest_valid_ancestor(parent_hash).await;
                 return Ok(PayloadStatus {
                     status: PayloadStatusEnum::Invalid { validation_error: e.to_string() },
@@ -606,9 +617,7 @@ impl PayloadProcessor {
         let block_clone = block.clone();
         
         let start_time = std::time::Instant::now();
-        let exec_result = tokio::task::spawn_blocking(move || {
-            execution.execute_block_with_state_root(block_clone, false, parent_state_root)
-        }).await.map_err(|e| RpcError::Internal(format!("Execution task panicked: {}", e)))?;
+        let exec_result = execution.execute_block(block_clone, parent_state_root, false).await;
         let elapsed = start_time.elapsed();
         info!("[PayloadProcessor] Block {} executed in {:?}", block.header.number, elapsed);
 
@@ -626,7 +635,7 @@ impl PayloadProcessor {
                 info!("[PayloadProcessor] Marking block {} as INVALID (execution failure)", actual_hash);
                 self.chain.add_invalid_block(actual_hash, parent_hash, InvalidationReason::Hard).await;
                 
-                let _ = self.write_storage.remove_payload_by_block_hash(actual_hash);
+                let _ = self.write_storage.remove_payload_by_block_hash(actual_hash).await;
                 let latest_valid = self.chain.get_latest_valid_ancestor(parent_hash).await;
                 return Ok(PayloadStatus {
                     status: PayloadStatusEnum::Invalid { validation_error: e.to_string() },
@@ -656,7 +665,7 @@ impl PayloadProcessor {
             info!("[PayloadProcessor] Marking block {} as INVALID (post-execution failure)", actual_hash);
             self.chain.add_invalid_block(actual_hash, parent_hash, InvalidationReason::Hard).await;
             
-            let _ = self.write_storage.remove_payload_by_block_hash(actual_hash);
+            let _ = self.write_storage.remove_payload_by_block_hash(actual_hash).await;
             let latest_valid = self.chain.get_latest_valid_ancestor(parent_hash).await;
             return Ok(PayloadStatus {
                 status: PayloadStatusEnum::Invalid { validation_error: e },
@@ -677,7 +686,7 @@ impl PayloadProcessor {
         let parent_td = if block_number == 0 {
             U256::ZERO
         } else {
-            match self.read_storage.header_td(final_block.header.parent_hash) {
+            match self.read_storage.header_td(final_block.header.parent_hash).await {
                 Ok(Some(td)) => td,
                 Ok(None) => return Err(RpcError::Internal(format!("Parent TD not found for block {} (parent: {})", block_number, final_block.header.parent_hash))),
                 Err(e) => return Err(RpcError::Internal(format!("Failed to retrieve parent TD for block {}: {}", block_number, e))),

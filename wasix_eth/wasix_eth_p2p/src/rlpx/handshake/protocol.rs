@@ -37,7 +37,7 @@ pub async fn create_local_status<S: AsyncReadExt + AsyncWriteExt + Unpin>(
     
     wasix_eth_utils::info!("[P2P Handshake] Creating local status: head_hash={:?}, latest_height={}, genesis_hash={:?}", head_hash, latest_height, registry.genesis_hash);
 
-    let head_td = registry.read_provider.header_td(head_hash).ok().flatten()
+    let head_td = registry.read_provider.header_td(head_hash).await.ok().flatten()
         .unwrap_or_default();
 
     let negotiated_version_u8 = stream.shared_capabilities.iter()
@@ -62,7 +62,7 @@ pub async fn create_local_status<S: AsyncReadExt + AsyncWriteExt + Unpin>(
             chain: registry.network_id,
             genesis: registry.genesis_hash,
             forkid: registry.get_fork_id().await,
-            earliest: registry.read_provider.header(BlockId::Number(BlockNumberOrTag::Earliest)).ok().flatten().map(|h| h.number).unwrap_or(0),
+            earliest: registry.read_provider.header(BlockId::Number(BlockNumberOrTag::Earliest)).await.ok().flatten().map(|h| h.number).unwrap_or(0),
             latest: latest_height,
             blockhash: head_hash,
         }))
@@ -232,10 +232,10 @@ pub async fn do_eth_handshake<S: AsyncReadExt + AsyncWriteExt + Unpin>(
     }
 
     let (head_hash, head_num) = registry.chain_manager.head_block().await;
-    let head = registry.read_provider.header(BlockId::Hash(head_hash.into())).ok().flatten();
+    let head = registry.read_provider.header(BlockId::Hash(head_hash.into())).await.ok().flatten();
     let head_time = head.as_ref().map(|h| h.timestamp).unwrap_or(0);
 
-    let genesis = registry.read_provider.header(BlockId::Hash(registry.genesis_hash.into())).ok().flatten();
+    let genesis = registry.read_provider.header(BlockId::Hash(registry.genesis_hash.into())).await.ok().flatten();
     let genesis_time = genesis.as_ref().map(|h| h.timestamp).unwrap_or(0);
 
     if let Err(e) = remote_fork_id.validate(registry.genesis_hash, &registry.chain_config, head_num, head_time, genesis_time) {

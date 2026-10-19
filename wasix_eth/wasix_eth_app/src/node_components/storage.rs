@@ -16,10 +16,10 @@ pub struct StoragePayload {
 }
 
 impl StoragePayload {
-    pub fn new(config: StorageConfig, genesis_config: GenesisConfiguration) -> Result<Self, Box<dyn Error>> {
+    pub async fn new(config: StorageConfig, genesis_config: GenesisConfiguration) -> Result<Self, Box<dyn Error>> {
         let db_path = config.data_dir.join(&config.storage_name);
         let eth_db = EthDatabase::open(&db_path)?;
-        eth_db.init_genesis(genesis_config)?;
+        eth_db.init_genesis(genesis_config).await?;
 
         let read_provider = Arc::new(DatabaseReadProvider::new(eth_db.inner()));
         let write_provider = Arc::new(DatabaseWriteProvider::new(eth_db.inner()));

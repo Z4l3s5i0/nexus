@@ -208,7 +208,7 @@ impl PeerDialer {
 
         info!("[P2P Dialer] Dialing peer at {} (attempt {})", addr, attempts + 1);
 
-        let peer_pool = if let Ok(pool) = self.registry.read_provider.get_active_peers() {
+        let peer_pool = if let Ok(pool) = self.registry.read_provider.get_active_peers().await {
             pool
         } else {
             return Ok(());
@@ -261,7 +261,7 @@ impl PeerDialer {
                                 discovery_addr: addr,
                                 p2p_addr: addr,
                             }
-                        ) {
+                        ).await {
                             error!("[P2P Dialer] Failed to register peer in DB: {}", e);
                         }
 

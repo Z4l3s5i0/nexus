@@ -259,7 +259,7 @@ impl App {
             common_args.eth_rpc_port);
 
         use wasix_eth_storage::read_traits::ChainProvider;
-        let chain_id = node.read_provider.chain_id().unwrap_or(1);
+        let chain_id = node.read_provider.chain_id().await.unwrap_or(1);
 
         let register_req = RegisterNodeRequest {
             id: node_id_raw.to_string(),
@@ -324,7 +324,7 @@ impl App {
                         }
                         if let Some(enode_str) = node_info.enode {
                             info!("[Bootstrap] Adding bootstrap node: {}", enode_str);
-                            network_payload.peer_manager.dial_enode(&enode_str);
+                            let _ = network_payload.peer_manager.dial_enode(&enode_str);
                         }
                     }
                 } else {

@@ -41,7 +41,7 @@ impl NetworkPayload {
         let identity = Identity::new(Some(&config.data_dir), Some(&config.storage_name))
             .map_err(|e| format!("Failed to create identity: {}", e))?;
 
-        let genesis_hash = read_provider.block_hash(0)?.unwrap_or_default();
+        let genesis_hash = read_provider.block_hash(0).await?.unwrap_or_default();
 
         let peer_manager = Arc::new(PeerManager::new(
             (*read_provider).clone(),

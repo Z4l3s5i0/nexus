@@ -3,9 +3,13 @@ use crate::account_manager::AccountManager;
 use crate::mempool::mempool_provider::MempoolProvider;
 use crate::{Consensus, EngineEvent};
 use alloy_rlp::{Decodable, Encodable};
+use futures_util::TryFutureExt;
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use wasix_eth_execution::execution_provider::{ExecutionProvider, TransactValueCallCreate};
+use wasix_eth_execution::evm::standard::TransactValueCallCreate;
+use wasix_eth_execution::orchestrator::ExecutionOrchestrator;
+use wasix_eth_execution::execution_provider::ExecutionProvider;
+use wasix_eth_execution::executor::{EvmExecutor, TransactionExecutionResult};
 use wasix_eth_storage::read::DatabaseReadProvider;
 use wasix_eth_storage::read_traits::AccountProvider;
 use wasix_eth_storage::read_traits::BlockProvider;
@@ -49,7 +53,7 @@ pub struct RPCEngine {
     pub mempool: Arc<dyn MempoolProvider>,
     pub event_tx: broadcast::Sender<EngineEvent>,
     pub consensus: Arc<dyn Consensus>,
-    pub execution: Arc<dyn ExecutionProvider>,
+    pub execution: Arc<ExecutionOrchestrator>,
     pub canonical: Arc<CanonicalState>,
 }
 
@@ -63,7 +67,7 @@ impl RPCEngine {
         mempool: Arc<dyn MempoolProvider>,
         event_tx: broadcast::Sender<EngineEvent>,
         consensus: Arc<dyn Consensus>,
-        execution: Arc<dyn ExecutionProvider>,
+        execution: Arc<ExecutionOrchestrator>,
         canonical: Arc<CanonicalState>,
     ) -> Self {
         Self {
@@ -91,7 +95,7 @@ impl RPCEngine {
         }
 
         // Chain ID validation
-        let network_chain_id = self.read_storage.chain_id().map_err(|e| RpcError::Internal(e.to_string()))?;
+        let network_chain_id = self.read_storage.chain_id().await.map_err(|e| RpcError::Internal(e.to_string()))?;
         if let Some(tx_chain_id) = tx.chain_id() {
             if tx_chain_id != network_chain_id {
                 warn!("[Engine] Rejected transaction {:?} due to invalid chain ID: expected {}, got {}", hash, network_chain_id, tx_chain_id);
@@ -101,11 +105,11 @@ impl RPCEngine {
 
         // EIP-7702 validation
         if let Transaction::Eip7702(_) = tx {
-            let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_else(|| ChainConfig {
+            let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_else(|| ChainConfig {
                 chain_id: network_chain_id,
                 ..Default::default()
             });
-            let latest_header = self.read_storage.header(BlockId::Number(BlockNumberOrTag::Latest)).ok().flatten();
+            let latest_header = self.read_storage.header(BlockId::Number(BlockNumberOrTag::Latest)).await.ok().flatten();
             if let Some(header) = latest_header {
                 let current_fork = Hardfork::get_active_fork(&chain_config, header.number, header.timestamp);
                 if current_fork < Hardfork::Prague {
@@ -116,11 +120,11 @@ impl RPCEngine {
         }
 
         // EIP-3860 validation
-        let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_else(|| ChainConfig {
+        let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_else(|| ChainConfig {
             chain_id: network_chain_id,
             ..Default::default()
         });
-        let latest_header = self.read_storage.header(BlockId::Number(BlockNumberOrTag::Latest)).ok().flatten();
+        let latest_header = self.read_storage.header(BlockId::Number(BlockNumberOrTag::Latest)).await.ok().flatten();
         if let Some(header) = latest_header {
             let current_fork = Hardfork::get_active_fork(&chain_config, header.number, header.timestamp);
             if current_fork >= Hardfork::Shanghai {
@@ -136,7 +140,7 @@ impl RPCEngine {
         let (head_hash, _head_number) = self.canonical.get_head();
         
         // Robust nonce lookup: use the state nonce at the current head and sync with mempool.
-        let state_nonce = self.read_storage.transaction_count(from, BlockId::Hash(head_hash.into()), None).unwrap_or_default();
+        let state_nonce = self.read_storage.transaction_count(from, BlockId::Hash(head_hash.into()), None).await.unwrap_or_default();
         let (current_state_nonce, next_pending_nonce) = self.mempool.nonce_lookup(from, state_nonce).await;
         let expected_nonce = std::cmp::max(current_state_nonce, next_pending_nonce);
         
@@ -148,7 +152,7 @@ impl RPCEngine {
         } else {
             if is_local {
                 // Fetch the latest state nonce again to check if the transaction was just included
-                let latest_state_nonce = self.read_storage.transaction_count(from, BlockId::Hash(head_hash.into()), None).unwrap_or(state_nonce);
+                let latest_state_nonce = self.read_storage.transaction_count(from, BlockId::Hash(head_hash.into()), None).await.unwrap_or(state_nonce);
                 if tx.nonce() < latest_state_nonce {
                      warn!("[Engine] Rejected local transaction {:?} because it was already included (nonce: {}, state_nonce: {})", hash, tx.nonce(), latest_state_nonce);
                      return Err(RpcError::InvalidParams(format!("Nonce too low: expected {}, got {}", latest_state_nonce, tx.nonce())));
@@ -175,11 +179,11 @@ impl RPCEngine {
     }
 
     pub async fn get_account_addresses(&self) -> RpcResult<Vec<Address>> {
-        self.read_storage.addresses().map_err(|e| RpcError::Internal(e.to_string()))
+        self.read_storage.addresses().await.map_err(|e| RpcError::Internal(e.to_string()))
     }
 
     pub async fn get_gas_price(&self) -> RpcResult<u128> {
-        if let Ok(Some(header)) = self.read_storage.header(BlockId::Number(BlockNumberOrTag::Latest)) {
+        if let Ok(Some(header)) = self.read_storage.header(BlockId::Number(BlockNumberOrTag::Latest)).await {
             if let Some(base_fee) = header.base_fee_per_gas {
                 // Return base_fee + 1.5 Gwei priority fee as a reasonable default
                 let priority_fee = 1_500_000_000u64;
@@ -192,20 +196,21 @@ impl RPCEngine {
 
     pub async fn estimate_gas(&self, request: TransactionRequest, block_id: Option<BlockId>) -> RpcResult<U256> {
         let block_id = block_id.unwrap_or(BlockId::Number(BlockNumberOrTag::Latest));
-        let header = self.read_storage.header(block_id)
+        let header = self.read_storage.header(block_id).await
             .map_err(|e| RpcError::Internal(e.to_string()))?
             .ok_or(RpcError::BlockNotFound(block_id))?;
-        let block = self.read_storage.block(block_id)
+        let block = self.read_storage.block(block_id).await
             .map_err(|e| RpcError::Internal(e.to_string()))?
             .ok_or(RpcError::BlockNotFound(block_id))?;
 
         let signature = Signature::test_signature();
         let hash = B256::ZERO;
 
-        let tx_envelope = self.build_transaction_envelope(request, signature, hash)
+        let tx_envelope = self.build_transaction_envelope(request, signature, hash).await
             .map_err(|e| RpcError::Internal(format!("Failed to build transaction envelope: {:?}", e)))?;
 
-        let result = self.execution.run_simulation_with_state_root(vec![tx_envelope], block, Some(header.state_root)).map(|v| v.0.into_iter().next().unwrap())
+        let result = self.execution.run_simulation_with_state_root(vec![tx_envelope], block, Some(header.state_root)).await
+            .map(|v| v.0.into_iter().next().unwrap())
             .map_err(|e| RpcError::Internal(e.to_string()))?;
         Ok(U256::from(result.gas_used))
     }
@@ -213,10 +218,10 @@ impl RPCEngine {
 
     pub async fn call(&self, request: TransactionRequest, block_id: Option<BlockId>) -> RpcResult<Bytes> {
         let block_id = block_id.unwrap_or(BlockId::Number(BlockNumberOrTag::Latest));
-        let header = self.read_storage.header(block_id)
+        let header = self.read_storage.header(block_id).await
             .map_err(|e| RpcError::Internal(e.to_string()))?
             .ok_or(RpcError::BlockNotFound(block_id))?;
-        let block = self.read_storage.block(block_id)
+        let block = self.read_storage.block(block_id).await
             .map_err(|e| RpcError::Internal(e.to_string()))?
             .ok_or(RpcError::BlockNotFound(block_id))?;
 
@@ -224,11 +229,12 @@ impl RPCEngine {
         let signature = Signature::test_signature();
         let hash = B256::ZERO;
 
-        let tx_envelope = self.build_transaction_envelope(request, signature, hash)
+        let tx_envelope = self.build_transaction_envelope(request, signature, hash).await
             .map_err(|e| RpcError::Internal(format!("Failed to build transaction envelope: {:?}", e)))?;
 
-        let result = self.execution.run_simulation_with_state_root(vec![tx_envelope], block, Some(header.state_root))
-            .map(|v| v.0.into_iter().next().unwrap()).map_err(|e| RpcError::Internal(e.to_string()))?;
+        let result = self.execution.run_simulation_with_state_root(vec![tx_envelope], block, Some(header.state_root)).await
+            .map(|v| v.0.into_iter().next().unwrap())
+            .map_err(|e| RpcError::Internal(e.to_string()))?;
 
         match result.call_create {
             TransactValueCallCreate::Call { retval, .. } => Ok(retval.into()),
@@ -241,7 +247,7 @@ impl RPCEngine {
             return Err(RpcError::AccountNotFound(from));
         }
 
-        let chain_id = self.read_storage.chain_id().map_err(|e| RpcError::Internal(e.to_string()))?;
+        let chain_id_val = self.read_storage.chain_id().await.map_err(|e| RpcError::Internal(e.to_string()))?;
         let nonce = if let Some(n) = request.nonce {
             n
         } else {
@@ -263,7 +269,7 @@ impl RPCEngine {
         let tx = if let (Some(max_fee), Some(max_priority)) = (request.max_fee_per_gas, request.max_priority_fee_per_gas) {
             // EIP-1559
             let tx_1559 = TxEip1559 {
-                chain_id,
+                chain_id: chain_id_val,
                 nonce,
                 gas_limit,
                 max_fee_per_gas: max_fee,
@@ -284,7 +290,7 @@ impl RPCEngine {
                 self.get_gas_price().await?
             };
             let tx_legacy = TxLegacy {
-                chain_id: Some(chain_id),
+                chain_id: Some(chain_id_val),
                 nonce,
                 gas_price,
                 gas_limit,
@@ -374,7 +380,7 @@ impl RPCEngine {
             request.nonce = Some(self.get_transaction_count(from, BlockId::Number(BlockNumberOrTag::Pending)).await?);
         }
 
-        let signed_tx: Transaction = self.build_transaction_envelope(request, Signature::test_signature(), B256::ZERO)
+        let signed_tx: Transaction = self.build_transaction_envelope(request, Signature::test_signature(), B256::ZERO).await
             .map_err(|e| RpcError::Internal(format!("Failed to build transaction envelope: {:?}", e)))?;
 
         let mut rlp_data = Vec::new();
@@ -395,7 +401,7 @@ impl RPCEngine {
     }
 
     pub async fn get_block_by_id(&self, id: BlockId) -> RpcResult<Option<Block<Transaction>>> {
-        let block = self.read_storage.block(id).map_err(|e| {
+        let block = self.read_storage.block(id).await.map_err(|e| {
             e.downcast_ref::<RpcError>().cloned().unwrap_or_else(|| RpcError::Internal(e.to_string()))
         })?;
 
@@ -405,7 +411,7 @@ impl RPCEngine {
                 if self.chain.is_invalid(hash).await {
                     return Ok(None);
                 }
-                if let Some((payload_block, _, _, _)) = self.read_storage.get_payload_by_block_hash(hash) {
+                if let Some((payload_block, _, _, _)) = self.read_storage.get_payload_by_block_hash(hash).await {
                     return Ok(Some(payload_block));
                 }
             }
@@ -420,24 +426,24 @@ impl RPCEngine {
     }
 
     pub async fn chain_id(&self) -> RpcResult<u64> {
-        self.read_storage.chain_id().map_err(|e| RpcError::Internal(e.to_string()))
+        self.read_storage.chain_id().await.map_err(|e| RpcError::Internal(e.to_string()))
     }
 
     pub async fn get_block_transaction_count(&self, id: BlockId) -> RpcResult<Option<u64>> {
-        let block = self.read_storage.block(id).map_err(|e| {
+        let block = self.read_storage.block(id).await.map_err(|e| {
             e.downcast_ref::<RpcError>().cloned().unwrap_or_else(|| RpcError::Internal(e.to_string()))
         })?;
         Ok(block.map(|b| b.body.transactions.len() as u64))
     }
 
     pub async fn get_logs(&self, filter: Filter) -> RpcResult<Vec<Log>> {
-        self.read_storage.logs(filter).map_err(|e| RpcError::Internal(e.to_string()))
+        self.read_storage.logs(filter).await.map_err(|e| RpcError::Internal(e.to_string()))
     }
 
     pub async fn get_transaction_by_hash(&self, hash: B256) -> RpcResult<Option<(Transaction, Option<(u64, B256, u64)>)>> {
-        let tx = self.read_storage.transaction(hash).map_err(|e| RpcError::Internal(e.to_string()))?;
+        let tx = self.read_storage.transaction(hash).await.map_err(|e| RpcError::Internal(e.to_string()))?;
         if let Some(t) = tx {
-            let block_ref = self.read_storage.transaction_block_reference(hash).map_err(|e| RpcError::Internal(e.to_string()))?;
+            let block_ref = self.read_storage.transaction_block_reference(hash).await.map_err(|e| RpcError::Internal(e.to_string()))?;
             return Ok(Some((t, block_ref)));
         }
 
@@ -450,9 +456,9 @@ impl RPCEngine {
     }
 
     pub async fn get_transaction_receipt(&self, hash: B256) -> RpcResult<Option<(Receipt, Option<(u64, B256, u64)>)>> {
-        let block_ref = self.read_storage.transaction_block_reference(hash).map_err(|e| RpcError::Internal(e.to_string()))?;
+        let block_ref = self.read_storage.transaction_block_reference(hash).await.map_err(|e| RpcError::Internal(e.to_string()))?;
         if let Some(br) = block_ref {
-            let receipt = self.read_storage.receipt(br.1, br.2).map_err(|e| RpcError::Internal(e.to_string()))?;
+            let receipt = self.read_storage.receipt(br.1, br.2).await.map_err(|e| RpcError::Internal(e.to_string()))?;
             return Ok(receipt.map(|r| (r, Some(br))));
         }
         Ok(None)
@@ -468,7 +474,7 @@ impl RPCEngine {
 
         let mut receipts = Vec::new();
         for tx in block.body.transactions {
-            let receipt = self.read_storage.transaction_receipt(*tx.hash())
+            let receipt = self.read_storage.transaction_receipt(*tx.hash()).await
                 .map_err(|e| RpcError::Internal(e.to_string()))?
                 .ok_or_else(|| RpcError::Internal(format!("Receipt not found for transaction {}", tx.hash())))?;
             receipts.push(receipt);
@@ -480,13 +486,13 @@ impl RPCEngine {
     pub async fn get_balance(&self, address: Address, block_id: BlockId) -> RpcResult<U256> {
         let is_pending = matches!(block_id, BlockId::Number(BlockNumberOrTag::Pending));
 
-        let header = self.read_storage.header(block_id)
+        let header = self.read_storage.header(block_id).await
             .map_err(|e| {
                 e.downcast_ref::<RpcError>().cloned().unwrap_or_else(|| RpcError::Internal(e.to_string()))
             })?;
         let state_root = header.map(|h| h.state_root);
 
-        let account = self.read_storage.account(address, state_root)
+        let account = self.read_storage.account(address, state_root).await
             .map_err(|e| RpcError::Internal(e.to_string()))?;
 
         let mut balance = account.map(|a| a.balance).unwrap_or_default();
@@ -510,13 +516,13 @@ impl RPCEngine {
     pub async fn get_transaction_count(&self, address: Address, block_id: BlockId) -> RpcResult<u64> {
         let is_pending = matches!(block_id, BlockId::Number(BlockNumberOrTag::Pending));
         
-        let header = self.read_storage.header(block_id)
+        let header = self.read_storage.header(block_id).await
             .map_err(|e| {
                 e.downcast_ref::<RpcError>().cloned().unwrap_or_else(|| RpcError::Internal(e.to_string()))
             })?;
         let state_root = header.map(|h| h.state_root);
 
-        let count = self.read_storage.transaction_count(address, block_id, state_root).map_err(|e| RpcError::Internal(e.to_string()))?;
+        let count = self.read_storage.transaction_count(address, block_id, state_root).await.map_err(|e| RpcError::Internal(e.to_string()))?;
 
         if is_pending {
             Ok(self.mempool.next_expected_nonce(address, count).await)
@@ -526,34 +532,34 @@ impl RPCEngine {
     }
 
     pub async fn get_code(&self, address: Address, block_id: BlockId) -> RpcResult<Bytes> {
-        let header = self.read_storage.header(block_id)
+        let header = self.read_storage.header(block_id).await
             .map_err(|e| {
                 e.downcast_ref::<RpcError>().cloned().unwrap_or_else(|| RpcError::Internal(e.to_string()))
             })?;
         let state_root = header.map(|h| h.state_root);
 
-        let account = self.read_storage.account(address, state_root).map_err(|e| RpcError::Internal(e.to_string()))?;
+        let account = self.read_storage.account(address, state_root).await.map_err(|e| RpcError::Internal(e.to_string()))?;
         if let Some(account) = account {
-            let code = self.read_storage.bytecode(account.code_hash).map_err(|e| RpcError::Internal(e.to_string()))?;
+            let code = self.read_storage.bytecode(account.code_hash).await.map_err(|e| RpcError::Internal(e.to_string()))?;
             return Ok(code.unwrap_or_default());
         }
         Ok(Bytes::default())
     }
 
     pub async fn get_storage_at(&self, address: Address, slot: B256, block_id: BlockId) -> RpcResult<B256> {
-        let header = self.read_storage.header(block_id)
+        let header = self.read_storage.header(block_id).await
             .map_err(|e| {
                 e.downcast_ref::<RpcError>().cloned().unwrap_or_else(|| RpcError::Internal(e.to_string()))
             })?;
         let state_root = header.map(|h| h.state_root);
 
-        let value = self.read_storage.storage(address, slot, state_root).map_err(|e| RpcError::Internal(e.to_string()))?;
+        let value = self.read_storage.storage(address, slot, state_root).await.map_err(|e| RpcError::Internal(e.to_string()))?;
         Ok(B256::from(value.to_be_bytes()))
     }
-    fn build_transaction_envelope(&self, request: TransactionRequest, signature: Signature, hash: FixedBytes<32>) -> Result<Transaction, RpcError> {
+    async fn build_transaction_envelope(&self, request: TransactionRequest, signature: Signature, hash: FixedBytes<32>) -> Result<Transaction, RpcError> {
         let tx_envelope = if let (Some(max_fee), Some(max_priority)) = (request.max_fee_per_gas, request.max_priority_fee_per_gas) {
             let tx = TxEip1559 {
-                chain_id: self.read_storage.chain_id().map_err(|e| RpcError::Internal(e.to_string()))?,
+                chain_id: self.read_storage.chain_id().await.map_err(|e| RpcError::Internal(e.to_string()))?,
                 nonce: request.nonce.unwrap_or_default(),
                 gas_limit: request.gas.unwrap_or(30_000_000), // Use block gas limit or a high enough value
                 max_fee_per_gas: max_fee,
@@ -565,8 +571,9 @@ impl RPCEngine {
             };
             Transaction::Eip1559(Signed::new_unchecked(tx, signature, hash))
         } else {
+            let chain_id_val = self.read_storage.chain_id().await.map_err(|e| RpcError::Internal(e.to_string()))?;
             let tx = TxLegacy {
-                chain_id: Some(self.read_storage.chain_id().map_err(|e| RpcError::Internal(e.to_string()))?),
+                chain_id: Some(chain_id_val),
                 nonce: request.nonce.unwrap_or_default(),
                 gas_price: request.gas_price.unwrap_or(1_000_000_000u128),
                 gas_limit: request.gas.unwrap_or(30_000_000),

@@ -9,7 +9,7 @@ use wasix_eth_core::engine::sidechain_tracker::BlockTree;
 use wasix_eth_core::engine::reorg_manager::ReorgHandler;
 use wasix_eth_core::{ChainManagerImpl, Engine, EthConsensus};
 use wasix_eth_core::sync::registry::SyncRegistry;
-use wasix_eth_execution::execution_provider::EthExecutionProvider;
+use wasix_eth_execution::orchestrator::ExecutionOrchestrator;
 use wasix_eth_storage::{read::DatabaseReadProvider, write::DatabaseWriteProvider};
 use wasix_eth_types::{ChainManager, U256};
 
@@ -23,17 +23,17 @@ pub struct ExecutionPayload {
 }
 
 impl ExecutionPayload {
-    pub fn new(
+    pub async fn new(
         read_provider: Arc<DatabaseReadProvider>,
         write_provider: Arc<DatabaseWriteProvider>,
     ) -> Self {
         let mempool = Arc::new(Mempool::new(U256::ZERO));
         let (engine_event_tx, _) = tokio::sync::broadcast::channel(2000);
 
-        let execution_provider = Arc::new(EthExecutionProvider::new((*read_provider).clone(), (*write_provider).clone()));
+        let execution_provider = Arc::new(ExecutionOrchestrator::new((*read_provider).clone(), (*write_provider).clone()));
         let account_manager = Arc::new(AccountManager::new_with_dev_keys());
 
-        let canonical = Arc::new(CanonicalState::new((*read_provider).clone(), (*write_provider).clone()));
+        let canonical = Arc::new(CanonicalState::new((*read_provider).clone(), (*write_provider).clone()).await);
         let block_tree = Arc::new(BlockTree::new());
         let reorg_handler = Arc::new(ReorgHandler::new((*read_provider).clone(), (*write_provider).clone(), canonical.clone()));
 

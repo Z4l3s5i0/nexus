@@ -21,6 +21,7 @@ use wasix_eth_types::TrieAccount;
 use wasix_eth_types::B256;
 use wasix_eth_types::U256;
 use std::sync::Arc;
+use async_trait::async_trait;
 use alloy_rlp::Decodable;
 use crate::trie::MyTrieNode;
 use anyhow::Error;
@@ -43,47 +44,48 @@ impl DatabaseReadProvider {
     }
 }
 
+#[async_trait]
 impl HeaderProvider for DatabaseReadProvider {
-    fn header(&self, id: BlockId) -> Result<Option<Header>> {
+    async fn header(&self, id: BlockId) -> Result<Option<Header>> {
         let hash = match id {
             BlockId::Hash(hash) => Some(hash.block_hash),
             BlockId::Number(n) => match n {
-                BlockNumberOrTag::Number(n) => self.block_hash(n)?,
+                BlockNumberOrTag::Number(n) => self.block_hash(n).await?,
                 BlockNumberOrTag::Latest => {
-                    let head_hash = self.forkchoice("head")?;
+                    let head_hash = self.forkchoice("head").await?;
                     if let Some(h) = head_hash {
                         Some(h)
-                    } else if let Some(n) = self.latest_block_number()? {
-                        self.block_hash(n)?
+                    } else if let Some(n) = self.latest_block_number().await? {
+                        self.block_hash(n).await?
                     } else {
                         None
                     }
                 },
                 BlockNumberOrTag::Safe => {
-                    let hash = self.forkchoice("safe")?;
+                    let hash = self.forkchoice("safe").await?;
                     match hash {
                         Some(h) if h != B256::ZERO => Some(h),
                         _ => return Err(RpcError::BlockNotFound(BlockId::Number(n)).into()),
                     }
                 },
                 BlockNumberOrTag::Finalized => {
-                    let hash = self.forkchoice("finalized")?;
+                    let hash = self.forkchoice("finalized").await?;
                     match hash {
                         Some(h) if h != B256::ZERO => Some(h),
                         _ => return Err(RpcError::BlockNotFound(BlockId::Number(n)).into()),
                     }
                 },
                 BlockNumberOrTag::Pending => {
-                    let head_hash = self.forkchoice("head")?;
+                    let head_hash = self.forkchoice("head").await?;
                     if let Some(h) = head_hash {
                         Some(h)
-                    } else if let Some(n) = self.latest_block_number()? {
-                        self.block_hash(n)?
+                    } else if let Some(n) = self.latest_block_number().await? {
+                        self.block_hash(n).await?
                     } else {
                         None
                     }
                 },
-                BlockNumberOrTag::Earliest => self.block_hash(0)?,
+                BlockNumberOrTag::Earliest => self.block_hash(0).await?,
             },
         };
 
@@ -98,29 +100,30 @@ impl HeaderProvider for DatabaseReadProvider {
         Ok(value.map(|v| v.value()))
     }
 
-    fn header_td(&self, hash: B256) -> Result<Option<U256>> {
+    async fn header_td(&self, hash: B256) -> Result<Option<U256>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(HeaderTD::definition())?;
         let value = table.get(hash)?;
         Ok(value.map(|v| v.value()))
     }
 
-    fn latest_header_td(&self) -> Result<Option<U256>> {
-        if let Some(number) = self.latest_block_number()? {
-            if let Some(hash) = self.block_hash(number)? {
-                return self.header_td(hash);
+    async fn latest_header_td(&self) -> Result<Option<U256>> {
+        if let Some(number) = self.latest_block_number().await? {
+            if let Some(hash) = self.block_hash(number).await? {
+                return self.header_td(hash).await;
             }
         }
         Ok(None)
     }
 }
 
+#[async_trait]
 impl BlockProvider for DatabaseReadProvider {
-    fn block(&self, id: BlockId) -> Result<Option<Block<Transaction>>> {
-        let header = self.header(id)?;
+    async fn block(&self, id: BlockId) -> Result<Option<Block<Transaction>>> {
+        let header = self.header(id).await?;
         if let Some(header) = header {
             let hash = header.hash_slow();
-            let body = self.block_body_by_hash(hash)?;
+            let body = self.block_body_by_hash(hash).await?;
             if let Some(body) = body {
                 return Ok(Some(Block {
                     header,
@@ -131,46 +134,46 @@ impl BlockProvider for DatabaseReadProvider {
         Ok(None)
     }
 
-    fn block_hash(&self, number: u64) -> Result<Option<B256>> {
+    async fn block_hash(&self, number: u64) -> Result<Option<B256>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(CanonicalHeads::definition())?;
         let value = table.get(number)?;
         Ok(value.map(|v| v.value()))
     }
 
-    fn block_number(&self, hash: B256) -> Result<Option<u64>> {
+    async fn block_number(&self, hash: B256) -> Result<Option<u64>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(HeaderNumbers::definition())?;
         let value = table.get(hash)?;
         Ok(value.map(|v| v.value()))
     }
 
-    fn block_body(&self, number: u64) -> Result<Option<BlockBody<Transaction>>> {
-        if let Some(hash) = self.block_hash(number)? {
-            return self.block_body_by_hash(hash);
+    async fn block_body(&self, number: u64) -> Result<Option<BlockBody<Transaction>>> {
+        if let Some(hash) = self.block_hash(number).await? {
+            return self.block_body_by_hash(hash).await;
         }
         Ok(None)
     }
 
-    fn block_body_by_hash(&self, hash: B256) -> Result<Option<BlockBody<Transaction>>> {
+    async fn block_body_by_hash(&self, hash: B256) -> Result<Option<BlockBody<Transaction>>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(BlockBodies::definition())?;
         let value = table.get(hash)?;
         Ok(value.map(|v| v.value()))
     }
 
-    fn block_by_hash(&self, hash: B256) -> Result<Option<Block<Transaction>>> {
-        self.block(BlockId::Hash(hash.into()))
+    async fn block_by_hash(&self, hash: B256) -> Result<Option<Block<Transaction>>> {
+        self.block(BlockId::Hash(hash.into())).await
     }
 
-    fn get_payload(&self, payload_id: &PayloadId) -> Option<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1)> {
+    async fn get_payload(&self, payload_id: &PayloadId) -> Option<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1)> {
         let tx = self.db.begin_read().ok()?;
         let table = tx.open_table(Payloads::definition()).ok()?;
         let value = table.get(*payload_id).ok()??;
         Some(value.value())
     }
 
-    fn get_payload_by_block_hash(&self, hash: B256) -> Option<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1)> {
+    async fn get_payload_by_block_hash(&self, hash: B256) -> Option<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1)> {
         let tx = self.db.begin_read().ok()?;
         let table = tx.open_table(Payloads::definition()).ok()?;
         for entry in table.iter().ok()? {
@@ -184,7 +187,7 @@ impl BlockProvider for DatabaseReadProvider {
         None
     }
 
-    fn all_payload_ids(&self) -> Vec<PayloadId> {
+    async fn all_payload_ids(&self) -> Vec<PayloadId> {
         let mut ids = Vec::new();
         if let Ok(tx) = self.db.begin_read() {
             if let Ok(table) = tx.open_table(Payloads::definition()) {
@@ -200,7 +203,7 @@ impl BlockProvider for DatabaseReadProvider {
         ids
     }
 
-    fn latest_block_number(&self) -> Result<Option<u64>> {
+    async fn latest_block_number(&self) -> Result<Option<u64>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(CanonicalHeads::definition())?;
         let last = table.iter()?.rev().next();
@@ -211,27 +214,27 @@ impl BlockProvider for DatabaseReadProvider {
         Ok(None)
     }
 
-    fn highest_block_number(&self) -> Result<u64> {
-        let latest = self.latest_block_number()?.unwrap_or(0);
-        let head_hash = self.forkchoice("head")?;
+    async fn highest_block_number(&self) -> Result<u64> {
+        let latest = self.latest_block_number().await?.unwrap_or(0);
+        let head_hash = self.forkchoice("head").await?;
         if let Some(hash) = head_hash {
-            if let Some(number) = self.block_number(hash)? {
+            if let Some(number) = self.block_number(hash).await? {
                 return Ok(std::cmp::max(latest, number));
             }
         }
         Ok(latest)
     }
 
-    fn forkchoice(&self, key: &str) -> Result<Option<B256>> {
+    async fn forkchoice(&self, key: &str) -> Result<Option<B256>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(Forkchoice::definition())?;
         let value = table.get(key.to_string())?;
         Ok(value.map(|v| v.value()))
     }
 
-    fn is_canonical(&self, hash: B256) -> Result<bool> {
-        if let Some(number) = self.block_number(hash)? {
-            if let Some(canonical_hash) = self.block_hash(number)? {
+    async fn is_canonical(&self, hash: B256) -> Result<bool> {
+        if let Some(number) = self.block_number(hash).await? {
+            if let Some(canonical_hash) = self.block_hash(number).await? {
                 return Ok(canonical_hash == hash);
             }
         }
@@ -239,8 +242,9 @@ impl BlockProvider for DatabaseReadProvider {
     }
 }
 
+#[async_trait]
 impl TransactionProvider for DatabaseReadProvider {
-    fn transaction(&self, hash: B256) -> Result<Option<Transaction>> {
+    async fn transaction(&self, hash: B256) -> Result<Option<Transaction>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(Transactions::definition())?;
         let value = table.get(hash)?;
@@ -248,39 +252,39 @@ impl TransactionProvider for DatabaseReadProvider {
     }
     
 
-    fn transaction_receipt(&self, hash: B256) -> Result<Option<Receipt>> {
-        if let Some((_number, block_hash, index)) = self.transaction_block_reference(hash)? {
-            return self.receipt(block_hash, index);
+    async fn transaction_receipt(&self, hash: B256) -> Result<Option<Receipt>> {
+        if let Some((_number, block_hash, index)) = self.transaction_block_reference(hash).await? {
+            return self.receipt(block_hash, index).await;
         }
         Ok(None)
     }
 
-    fn receipt(&self, block_hash: B256, index: u64) -> Result<Option<Receipt>> {
+    async fn receipt(&self, block_hash: B256, index: u64) -> Result<Option<Receipt>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(Receipts::definition())?;
         let value = table.get((block_hash, index))?;
         Ok(value.map(|v| v.value()))
     }
 
-    fn receipt_meta(&self, block_hash: B256, index: u64) -> Result<Option<ReceiptMeta>> {
+    async fn receipt_meta(&self, block_hash: B256, index: u64) -> Result<Option<ReceiptMeta>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(ReceiptsMeta::definition())?;
         let value = table.get((block_hash, index))?;
         Ok(value.map(|v| v.value()))
     }
 
-    fn transaction_lookup(&self, hash: B256) -> Result<Option<(B256, u64)>> {
+    async fn transaction_lookup(&self, hash: B256) -> Result<Option<(B256, u64)>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(TransactionLookup::definition())?;
         let value = table.get(hash)?;
         Ok(value.map(|v| v.value()))
     }
 
-    fn transaction_block(&self, hash: B256) -> Result<Option<u64>> {
-        if let Some((block_hash, _)) = self.transaction_lookup(hash)? {
-            if let Some(number) = self.block_number(block_hash)? {
+    async fn transaction_block(&self, hash: B256) -> Result<Option<u64>> {
+        if let Some((block_hash, _)) = self.transaction_lookup(hash).await? {
+            if let Some(number) = self.block_number(block_hash).await? {
                 // Verify if it's canonical
-                if let Some(canonical_hash) = self.block_hash(number)? {
+                if let Some(canonical_hash) = self.block_hash(number).await? {
                     if canonical_hash == block_hash {
                         return Ok(Some(number));
                     }
@@ -290,11 +294,11 @@ impl TransactionProvider for DatabaseReadProvider {
         Ok(None)
     }
 
-    fn transaction_block_reference(&self, hash: B256) -> Result<Option<(u64, B256, u64)>> {
-        if let Some((block_hash, index)) = self.transaction_lookup(hash)? {
-            if let Some(number) = self.block_number(block_hash)? {
+    async fn transaction_block_reference(&self, hash: B256) -> Result<Option<(u64, B256, u64)>> {
+        if let Some((block_hash, index)) = self.transaction_lookup(hash).await? {
+            if let Some(number) = self.block_number(block_hash).await? {
                 // Verify if it's canonical
-                if let Some(canonical_hash) = self.block_hash(number)? {
+                if let Some(canonical_hash) = self.block_hash(number).await? {
                     if canonical_hash == block_hash {
                         return Ok(Some((number, block_hash, index)));
                     }
@@ -305,11 +309,12 @@ impl TransactionProvider for DatabaseReadProvider {
     }
 }
 
+#[async_trait]
 impl LogProvider for DatabaseReadProvider {
-    fn logs(&self, filter: Filter) -> Result<Vec<Log>> {
+    async fn logs(&self, filter: Filter) -> Result<Vec<Log>> {
         let mut all_logs = Vec::new();
 
-        let latest_block = self.latest_block_number()?.unwrap_or(0);
+        let latest_block = self.latest_block_number().await?.unwrap_or(0);
         let from_block = match filter.block_option.get_from_block() {
             Some(BlockNumberOrTag::Number(n)) => *n,
             Some(BlockNumberOrTag::Latest) => latest_block,
@@ -324,19 +329,19 @@ impl LogProvider for DatabaseReadProvider {
         };
 
         for number in from_block..=to_block {
-            let block_hash = match self.block_hash(number)? {
+            let block_hash = match self.block_hash(number).await? {
                 Some(h) => h,
                 None => continue,
             };
 
-            let body = match self.block_body(number)? {
+            let body = match self.block_body(number).await? {
                 Some(b) => b,
                 None => continue,
             };
 
             for (tx_index, tx) in body.transactions.iter().enumerate() {
                 let tx_hash = tx.hash();
-                let receipt = match self.receipt(block_hash, tx_index as u64)? {
+                let receipt = match self.receipt(block_hash, tx_index as u64).await? {
                     Some(r) => r,
                     None => continue,
                 };
@@ -384,8 +389,9 @@ impl LogProvider for DatabaseReadProvider {
     }
 }
 
+#[async_trait]
 impl AccountProvider for DatabaseReadProvider {
-    fn account(&self, address: Address, state_root: Option<B256>) -> Result<Option<TrieAccount>> {
+    async fn account(&self, address: Address, state_root: Option<B256>) -> Result<Option<TrieAccount>> {
         if let Some(root) = state_root {
             if root == alloy_trie::EMPTY_ROOT_HASH {
                 return Ok(None);
@@ -394,7 +400,7 @@ impl AccountProvider for DatabaseReadProvider {
             let hashed_address = alloy_primitives::keccak256(address);
             
             // Proper trie traversal for historical queries
-            return self.get_account_from_trie(root, hashed_address);
+            return self.get_account_from_trie(root, hashed_address).await;
         }
         
         let tx = self.db.begin_read()?;
@@ -402,7 +408,7 @@ impl AccountProvider for DatabaseReadProvider {
         let value = table.get(address)?;
         Ok(value.map(|v| v.value()))
     }
-    fn accounts(&self) -> Result<Vec<(Address, TrieAccount)>> {
+    async fn accounts(&self) -> Result<Vec<(Address, TrieAccount)>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(Accounts::definition())?;
         let mut accounts = Vec::new();
@@ -415,7 +421,7 @@ impl AccountProvider for DatabaseReadProvider {
         Ok(accounts)
     }
 
-    fn addresses(&self) -> Result<Vec<Address>> {
+    async fn addresses(&self) -> Result<Vec<Address>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(Accounts::definition())?;
         let mut addresses = Vec::new();
@@ -428,20 +434,20 @@ impl AccountProvider for DatabaseReadProvider {
         Ok(addresses)
     }
 
-    fn transaction_count(&self, address: Address, _block_id: BlockId, state_root: Option<B256>) -> Result<u64> {
-        let account = self.account(address, state_root)?;
+    async fn transaction_count(&self, address: Address, _block_id: BlockId, state_root: Option<B256>) -> Result<u64> {
+        let account = self.account(address, state_root).await?;
         Ok(account.as_ref().map(|a| a.nonce).unwrap_or(0))
     }
 }
 
 impl DatabaseReadProvider {
-    fn get_account_from_trie(&self, root: B256, hashed_address: B256) -> Result<Option<TrieAccount>> {
+    async fn get_account_from_trie(&self, root: B256, hashed_address: B256) -> Result<Option<TrieAccount>> {
         let mut current_hash = root;
         let nibbles = alloy_trie::Nibbles::unpack(hashed_address);
         let mut cursor = 0;
 
         loop {
-            let node_bytes = match self.trie_node(current_hash)? {
+            let node_bytes = match self.trie_node(current_hash).await? {
                 Some(bytes) => bytes,
                 None => {
                     return Ok(None)
@@ -606,20 +612,20 @@ impl DatabaseReadProvider {
         }
     }
 
-    pub fn calculate_state_root(&self, _is_eip161: bool, state_root: Option<B256>) -> Result<B256> {
+    pub async fn calculate_state_root(&self, _is_eip161: bool, state_root: Option<B256>) -> Result<B256> {
         let mut trie_accounts = std::collections::HashMap::new();
 
         if let Some(root) = state_root {
             info!("[Storage] Loading historical state from root (read-only): {:?}", root);
-            let leaves = self.iterate_trie(root)?;
+            let leaves = self.iterate_trie(root).await?;
             for (hashed_addr, encoded_acc) in leaves {
                 trie_accounts.insert(hashed_addr, encoded_acc.to_vec());
             }
         } else {
-            let addresses = self.addresses()?;
+            let addresses = self.addresses().await?;
             for addr in addresses {
-                if let Some(acc) = self.account(addr, None)? {
-                    let storage_root = self.calculate_storage_root(addr, None)?;
+                if let Some(acc) = self.account(addr, None).await? {
+                    let storage_root = self.calculate_storage_root(addr, None).await?;
                     let trie_acc = TrieAccount {
                         nonce: acc.nonce,
                         balance: acc.balance,
@@ -638,25 +644,25 @@ impl DatabaseReadProvider {
 
         // Optimization: use the provided state_root as base if available to speed up calculation.
         let base_root = state_root.unwrap_or(alloy_trie::EMPTY_ROOT_HASH);
-        let root = crate::trie::calculate_trie_root_incremental(base_root, self, sorted_accounts)?;
+        let root = crate::trie::calculate_trie_root_incremental(base_root, self, sorted_accounts).await?;
         info!("[Storage] Calculated state root (read-only): {:?}", root);
         Ok(root)
     }
 
-    pub fn calculate_storage_root(&self, address: Address, state_root: Option<B256>) -> Result<B256> {
+    pub async fn calculate_storage_root(&self, address: Address, state_root: Option<B256>) -> Result<B256> {
         let mut trie_storages = std::collections::HashMap::new();
         let mut base_storage_root = alloy_trie::EMPTY_ROOT_HASH;
 
         if let Some(root) = state_root {
-            if let Some(acc) = self.account(address, Some(root))? {
+            if let Some(acc) = self.account(address, Some(root)).await? {
                 base_storage_root = acc.storage_root;
-                let leaves = self.iterate_trie(acc.storage_root)?;
+                let leaves = self.iterate_trie(acc.storage_root).await?;
                 for (hashed_key, encoded_val) in leaves {
                     trie_storages.insert(hashed_key, encoded_val.to_vec());
                 }
             }
         } else {
-            let storages = self.account_storages(address, None)?;
+            let storages = self.account_storages(address, None).await?;
             for (slot, value) in storages {
                 if value != U256::ZERO {
                     let mut buf = Vec::new();
@@ -673,13 +679,14 @@ impl DatabaseReadProvider {
         let mut sorted_storages: Vec<_> = trie_storages.into_iter().collect();
         sorted_storages.sort_by_key(|(h, _)| *h);
 
-        let root = crate::trie::calculate_trie_root_incremental(base_storage_root, self, sorted_storages)?;
+        let root = crate::trie::calculate_trie_root_incremental(base_storage_root, self, sorted_storages).await?;
         Ok(root)
     }
 }
 
+#[async_trait]
 impl ChainProvider for DatabaseReadProvider {
-    fn chain_id(&self) -> Result<u64> {
+    async fn chain_id(&self) -> Result<u64> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(Metadata::definition())?;
         if let Some(value) = table.get("chain_id".to_string())? {
@@ -715,7 +722,7 @@ impl ChainProvider for DatabaseReadProvider {
         Ok(31133)
     }
 
-    fn chain_config(&self) -> Result<Option<wasix_eth_types::ChainConfig>> {
+    async fn chain_config(&self) -> Result<Option<wasix_eth_types::ChainConfig>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(Metadata::definition())?;
         if let Some(value) = table.get("chain_config".to_string())? {
@@ -727,23 +734,25 @@ impl ChainProvider for DatabaseReadProvider {
     }
 }
 
+#[async_trait]
 impl StateWriter for DatabaseReadProvider {
-    fn update_plain_state(&self, _address: Address, _state: Bytes) -> anyhow::Result<()> {
+    async fn update_plain_state(&self, _address: Address, _state: Bytes) -> anyhow::Result<()> {
         Err(anyhow::anyhow!("DatabaseReadProvider is read-only"))
     }
-    fn remove_plain_state(&self, _address: Address) -> anyhow::Result<()> {
+    async fn remove_plain_state(&self, _address: Address) -> anyhow::Result<()> {
         Err(anyhow::anyhow!("DatabaseReadProvider is read-only"))
     }
-    fn update_hashed_state(&self, _hash: B256, _state: Bytes) -> anyhow::Result<()> {
+    async fn update_hashed_state(&self, _hash: B256, _state: Bytes) -> anyhow::Result<()> {
         Err(anyhow::anyhow!("DatabaseReadProvider is read-only"))
     }
-    fn update_trie_node(&self, _hash: B256, _node: Bytes) -> anyhow::Result<()> {
+    async fn update_trie_node(&self, _hash: B256, _node: Bytes) -> anyhow::Result<()> {
         Err(anyhow::anyhow!("DatabaseReadProvider is read-only"))
     }
 }
 
+#[async_trait]
 impl StorageProvider for DatabaseReadProvider {
-    fn storage(
+    async fn storage(
         &self,
         address: Address,
         slot: B256,
@@ -755,7 +764,7 @@ impl StorageProvider for DatabaseReadProvider {
             }
 
             // 1. Get account from trie
-            let account = self.account(address, Some(root))?;
+            let account = self.account(address, Some(root)).await?;
             if let Some(acc) = account {
                 if acc.storage_root == alloy_trie::EMPTY_ROOT_HASH {
                     return Ok(U256::ZERO);
@@ -764,7 +773,7 @@ impl StorageProvider for DatabaseReadProvider {
                 // 2. Get storage value from storage trie
                 let hashed_slot = alloy_primitives::keccak256(slot);
                 let mut trie = EthTrie::new(self, acc.storage_root);
-                let val_bytes = trie.get(hashed_slot).map_err(|e| anyhow::anyhow!("Storage trie lookup failed: {}", e))?;
+                let val_bytes = trie.get(hashed_slot).await.map_err(|e| anyhow::anyhow!("Storage trie lookup failed: {}", e))?;
                 if let Some(bytes) = val_bytes {
                     let mut slice = &bytes[..];
                     let val: U256 = alloy_rlp::Decodable::decode(&mut slice).map_err(|e| anyhow::anyhow!("RLP decode failed: {}", e))?;
@@ -780,10 +789,10 @@ impl StorageProvider for DatabaseReadProvider {
         Ok(value.map(|v| v.value()).unwrap_or_default())
     }
 
-    fn account_storages(&self, address: Address, state_root: Option<B256>) -> Result<Vec<(B256, U256)>> {
+    async fn account_storages(&self, address: Address, state_root: Option<B256>) -> Result<Vec<(B256, U256)>> {
         if let Some(root) = state_root {
             // 1. Get account from trie
-            let account = self.account(address, Some(root))?;
+            let account = self.account(address, Some(root)).await?;
             if let Some(acc) = account {
                 if acc.storage_root == alloy_trie::EMPTY_ROOT_HASH {
                     return Ok(Vec::new());
@@ -791,7 +800,7 @@ impl StorageProvider for DatabaseReadProvider {
                 
                 // 2. Walk the storage trie
                 let mut trie = EthTrie::new(self, acc.storage_root);
-                let entries = trie.all_entries().map_err(|e| anyhow::anyhow!("Storage trie walk failed: {}", e))?;
+                let entries = trie.all_entries().await.map_err(|e| anyhow::anyhow!("Storage trie walk failed: {}", e))?;
                 let mut storages = Vec::with_capacity(entries.len());
                 for (hashed_slot, val_bytes) in entries {
                     let mut slice = &val_bytes[..];
@@ -819,8 +828,9 @@ impl StorageProvider for DatabaseReadProvider {
     }
 }
 
+#[async_trait]
 impl BytecodeProvider for DatabaseReadProvider {
-    fn bytecode(&self, code_hash: B256) -> Result<Option<Bytes>> {
+    async fn bytecode(&self, code_hash: B256) -> Result<Option<Bytes>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(Bytecodes::definition())?;
         let value = table.get(code_hash)?;
@@ -828,22 +838,23 @@ impl BytecodeProvider for DatabaseReadProvider {
     }
 }
 
+#[async_trait]
 impl StateProvider for DatabaseReadProvider {
-    fn plain_state(&self, address: Address) -> Result<Option<Bytes>> {
+    async fn plain_state(&self, address: Address) -> Result<Option<Bytes>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(PlainState::definition())?;
         let value = table.get(address)?;
         Ok(value.map(|v| v.value()))
     }
 
-    fn hashed_state(&self, hash: B256) -> Result<Option<Bytes>> {
+    async fn hashed_state(&self, hash: B256) -> Result<Option<Bytes>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(HashedState::definition())?;
         let value = table.get(hash)?;
         Ok(value.map(|v| v.value()))
     }
 
-    fn trie_node(&self, hash: B256) -> Result<Option<Bytes>> {
+    async fn trie_node(&self, hash: B256) -> Result<Option<Bytes>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(TrieNodes::definition())?;
         
@@ -861,8 +872,9 @@ impl StateProvider for DatabaseReadProvider {
     }
 }
 
+#[async_trait]
 impl MetadataProvider for DatabaseReadProvider {
-    fn get_metadata(&self, key: String) -> Result<Option<Bytes>> {
+    async fn get_metadata(&self, key: String) -> Result<Option<Bytes>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(Metadata::definition())?;
         let value = table.get(key)?;
@@ -870,8 +882,9 @@ impl MetadataProvider for DatabaseReadProvider {
     }
 }
 
+#[async_trait]
 impl PeerDiscoveryProvider for DatabaseReadProvider {
-    fn get_active_peers(&self) -> Result<Vec<PeerEntry>> {
+    async fn get_active_peers(&self) -> Result<Vec<PeerEntry>> {
         let rtx = self.db.begin_read()?;
         let table = rtx.open_table(ActivePeers::definition())?;
         let mut peers = Vec::new();
@@ -883,15 +896,16 @@ impl PeerDiscoveryProvider for DatabaseReadProvider {
     }
 }
 
+#[async_trait]
 impl ChangeSetProvider for DatabaseReadProvider {
-    fn account_change_set(&self, number: u64) -> Result<Option<Vec<(Address, Option<Bytes>)>>> {
+    async fn account_change_set(&self, number: u64) -> Result<Option<Vec<(Address, Option<Bytes>)>>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(AccountChangeSets::definition())?;
         let value = table.get(number)?;
         Ok(value.map(|v| v.value()))
     }
 
-    fn storage_change_set(&self, number: u64) -> Result<Option<Vec<(Address, B256, U256)>>> {
+    async fn storage_change_set(&self, number: u64) -> Result<Option<Vec<(Address, B256, U256)>>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(StorageChangeSets::definition())?;
         let value = table.get(number)?;
