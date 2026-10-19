@@ -26,32 +26,36 @@ impl ForkchoiceValidator {
                 forkchoice_state.head_block_hash
             };
 
-            let finalized_header = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(forkchoice_state.finalized_block_hash))).await.ok().flatten()
-                .or_else(|| tokio::runtime::Handle::current().block_on(self.read_storage.get_payload_by_block_hash(forkchoice_state.finalized_block_hash)).map(|(p, _, _, _)| p.header.clone()))
-                .or_else(|| {
-                    let genesis_hash = tokio::runtime::Handle::current().block_on(self.read_storage.block_hash(0)).unwrap_or(None);
-                    if genesis_hash == Some(forkchoice_state.finalized_block_hash) {
-                        tokio::runtime::Handle::current().block_on(self.read_storage.header(BlockId::Number(BlockNumberOrTag::Number(0)))).ok().flatten()
-                    } else {
-                        None
-                    }
-                });
+            let finalized_header = if let Some(h) = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(forkchoice_state.finalized_block_hash))).await.ok().flatten() {
+                Some(h)
+            } else if let Some((p, _, _, _)) = self.read_storage.get_payload_by_block_hash(forkchoice_state.finalized_block_hash).await {
+                Some(p.header.clone())
+            } else {
+                let genesis_hash = self.read_storage.block_hash(0).await.unwrap_or(None);
+                if genesis_hash == Some(forkchoice_state.finalized_block_hash) {
+                    self.read_storage.header(BlockId::Number(BlockNumberOrTag::Number(0))).await.ok().flatten()
+                } else {
+                    None
+                }
+            };
 
             if let Some(fh) = finalized_header {
                 let target_num = if target_hash == forkchoice_state.head_block_hash {
                     header.number
                 } else {
-                    self.read_storage.header(BlockId::Hash(RpcBlockHash::from(target_hash))).await.ok().flatten().map(|h| h.number)
-                        .or_else(|| tokio::runtime::Handle::current().block_on(self.read_storage.get_payload_by_block_hash(target_hash)).map(|(p, _, _, _)| p.header.number))
-                        .or_else(|| {
-                            let genesis_hash = tokio::runtime::Handle::current().block_on(self.read_storage.block_hash(0)).unwrap_or(None);
-                            if genesis_hash == Some(target_hash) {
-                                Some(0)
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or(0) // Should be known if we reached here
+                    let h_opt = if let Some(h) = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(target_hash))).await.ok().flatten() {
+                        Some(h)
+                    } else if let Some((p, _, _, _)) = self.read_storage.get_payload_by_block_hash(target_hash).await {
+                        Some(p.header.clone())
+                    } else {
+                        let genesis_hash = self.read_storage.block_hash(0).await.unwrap_or(None);
+                        if genesis_hash == Some(target_hash) {
+                            self.read_storage.header(BlockId::Number(BlockNumberOrTag::Number(0))).await.ok().flatten()
+                        } else {
+                            None
+                        }
+                    };
+                    h_opt.map(|h| h.number).unwrap_or(0) // Should be known if we reached here
                 };
 
                 debug!("[Engine] Found finalized block #{} with target_num #{}", fh.number, target_num);
@@ -71,16 +75,18 @@ impl ForkchoiceValidator {
 
     pub(crate) async fn check_safe_block(&self, forkchoice_state: ForkchoiceState, header: &Header) -> Option<RpcResult<ForkchoiceUpdated>> {
         if forkchoice_state.safe_block_hash != B256::ZERO {
-            let safe_header = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(forkchoice_state.safe_block_hash))).await.ok().flatten()
-                .or_else(|| tokio::runtime::Handle::current().block_on(self.read_storage.get_payload_by_block_hash(forkchoice_state.safe_block_hash)).map(|(p, _, _, _)| p.header.clone()))
-                .or_else(|| {
-                    let genesis_hash = tokio::runtime::Handle::current().block_on(self.read_storage.block_hash(0)).unwrap_or(None);
-                    if genesis_hash == Some(forkchoice_state.safe_block_hash) {
-                        tokio::runtime::Handle::current().block_on(self.read_storage.header(BlockId::Number(BlockNumberOrTag::Number(0)))).ok().flatten()
-                    } else {
-                        None
-                    }
-                });
+            let safe_header = if let Some(h) = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(forkchoice_state.safe_block_hash))).await.ok().flatten() {
+                Some(h)
+            } else if let Some((p, _, _, _)) = self.read_storage.get_payload_by_block_hash(forkchoice_state.safe_block_hash).await {
+                Some(p.header.clone())
+            } else {
+                let genesis_hash = self.read_storage.block_hash(0).await.unwrap_or(None);
+                if genesis_hash == Some(forkchoice_state.safe_block_hash) {
+                    self.read_storage.header(BlockId::Number(BlockNumberOrTag::Number(0))).await.ok().flatten()
+                } else {
+                    None
+                }
+            };
 
             if let Some(sh) = safe_header {
                 debug!("[Engine] Found safe block #{}", sh.number);

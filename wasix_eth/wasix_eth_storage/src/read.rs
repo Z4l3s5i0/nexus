@@ -28,6 +28,7 @@ use anyhow::Error;
 use wasix_eth_types::error::RpcError;
 use wasix_eth_utils::info;
 use crate::read_traits::{AccountProvider, BlockProvider, BytecodeProvider, ChainProvider, ChangeSetProvider, HeaderProvider, LogProvider, MetadataProvider, PeerDiscoveryProvider, StateProvider, StorageProvider, TransactionProvider};
+use crate::{AccountProviderSync, BytecodeProviderSync, StateProviderSync, StorageProviderSync};
 use crate::write_traits::StateWriter;
 use crate::trie::EthTrie;
 
@@ -250,7 +251,7 @@ impl TransactionProvider for DatabaseReadProvider {
         let value = table.get(hash)?;
         Ok(value.map(|v| v.value()))
     }
-    
+
 
     async fn transaction_receipt(&self, hash: B256) -> Result<Option<Receipt>> {
         if let Some((_number, block_hash, index)) = self.transaction_block_reference(hash).await? {
@@ -389,24 +390,92 @@ impl LogProvider for DatabaseReadProvider {
     }
 }
 
-#[async_trait]
-impl AccountProvider for DatabaseReadProvider {
-    async fn account(&self, address: Address, state_root: Option<B256>) -> Result<Option<TrieAccount>> {
+impl AccountProviderSync for DatabaseReadProvider {
+    fn account_sync(&self, address: Address, state_root: Option<B256>) -> Result<Option<TrieAccount>> {
         if let Some(root) = state_root {
             if root == alloy_trie::EMPTY_ROOT_HASH {
                 return Ok(None);
             }
 
             let hashed_address = alloy_primitives::keccak256(address);
-            
+
             // Proper trie traversal for historical queries
-            return self.get_account_from_trie(root, hashed_address).await;
+            return self.get_account_from_trie_sync(root, hashed_address);
         }
-        
+
         let tx = self.db.begin_read()?;
         let table = tx.open_table(Accounts::definition())?;
         let value = table.get(address)?;
         Ok(value.map(|v| v.value()))
+    }
+}
+
+impl StorageProviderSync for DatabaseReadProvider {
+    fn storage_sync(&self, address: Address, slot: B256, state_root: Option<B256>) -> Result<U256> {
+        if let Some(root) = state_root {
+            if root == alloy_trie::EMPTY_ROOT_HASH {
+                return Ok(U256::ZERO);
+            }
+
+            // Proper trie traversal
+            let account = self.account_sync(address, Some(root))?;
+            if let Some(acc) = account {
+                if acc.storage_root == alloy_trie::EMPTY_ROOT_HASH {
+                    return Ok(U256::ZERO);
+                }
+
+                let hashed_slot = alloy_primitives::keccak256(slot);
+                let mut trie = EthTrie::new(self, acc.storage_root);
+                let val_bytes = trie.get_sync(hashed_slot).map_err(|e| anyhow::anyhow!("Storage trie lookup failed: {}", e))?;
+                if let Some(bytes) = val_bytes {
+                    let mut slice = &bytes[..];
+                    let val: U256 = alloy_rlp::Decodable::decode(&mut slice).map_err(|e| anyhow::anyhow!("RLP decode failed: {}", e))?;
+                    return Ok(val);
+                }
+            }
+            return Ok(U256::ZERO);
+        }
+
+        let tx = self.db.begin_read()?;
+        let table = tx.open_table(Storages::definition())?;
+        let value = table.get((address, slot))?;
+        Ok(value.map(|v| v.value()).unwrap_or_default())
+    }
+}
+
+impl BytecodeProviderSync for DatabaseReadProvider {
+    fn bytecode_sync(&self, code_hash: B256) -> Result<Option<Bytes>> {
+        let tx = self.db.begin_read()?;
+        let table = tx.open_table(Bytecodes::definition())?;
+        let value = table.get(code_hash)?;
+        Ok(value.map(|v| v.value()))
+    }
+}
+
+impl StateProviderSync for DatabaseReadProvider {
+    fn plain_state_sync(&self, address: Address) -> Result<Option<Bytes>> {
+        let tx = self.db.begin_read()?;
+        let table = tx.open_table(PlainState::definition())?;
+        let value = table.get(address)?;
+        Ok(value.map(|v| v.value()))
+    }
+    fn hashed_state_sync(&self, hash: B256) -> Result<Option<Bytes>> {
+        let tx = self.db.begin_read()?;
+        let table = tx.open_table(HashedState::definition())?;
+        let value = table.get(hash)?;
+        Ok(value.map(|v| v.value()))
+    }
+    fn trie_node_sync(&self, hash: B256) -> Result<Option<Bytes>> {
+        let tx = self.db.begin_read()?;
+        let table = tx.open_table(TrieNodes::definition())?;
+        Ok(table.get(hash)?.map(|v| v.value()))
+    }
+}
+
+#[async_trait]
+impl AccountProvider for DatabaseReadProvider {
+    async fn account(&self, address: Address, state_root: Option<B256>) -> Result<Option<TrieAccount>> {
+        self.account_sync(address, state_root)
     }
     async fn accounts(&self) -> Result<Vec<(Address, TrieAccount)>> {
         let tx = self.db.begin_read()?;
@@ -441,6 +510,177 @@ impl AccountProvider for DatabaseReadProvider {
 }
 
 impl DatabaseReadProvider {
+    fn get_account_from_trie_sync(&self, root: B256, hashed_address: B256) -> Result<Option<TrieAccount>> {
+        let mut current_hash = root;
+        let nibbles = alloy_trie::Nibbles::unpack(hashed_address);
+        let mut cursor = 0;
+
+        loop {
+            let node_bytes = match self.trie_node_sync(current_hash)? {
+                Some(bytes) => bytes,
+                None => {
+                    return Ok(None)
+                },
+            };
+
+            let mut data = &node_bytes.0[..];
+            let node = match MyTrieNode::decode(&mut data) {
+                Ok(n) => n,
+                Err(_) => {
+                    // If it's not a trie node, it might be the account RLP itself
+                    let mut buf = &node_bytes.0[..];
+                    if let Ok(acc) = TrieAccount::decode(&mut buf) {
+                        return Ok(Some(acc));
+                    }
+                    return Ok(None);
+                }
+            };
+
+            match node {
+                MyTrieNode::Branch(branch) => {
+                    if cursor == nibbles.len() {
+                        return Ok(branch.value.and_then(|v| {
+                            let mut slice = &v[..];
+                            TrieAccount::decode(&mut slice).ok()
+                        }));
+                    }
+                    let nibble = nibbles.get(cursor).unwrap() as usize;
+                    let child = &branch.stack[nibble];
+                    if let Some(child_hash) = child.as_hash() {
+                        current_hash = child_hash;
+                        cursor += 1;
+                    } else if !child.is_empty() {
+                        // Embedded node
+                        let mut child_data = child.as_slice();
+                        let mut current_node = MyTrieNode::decode(&mut child_data)?;
+                        cursor += 1;
+                        loop {
+                            match current_node {
+                                MyTrieNode::Leaf(leaf) => {
+                                    if nibbles.slice(cursor..) == leaf.key {
+                                        let mut v = &leaf.value[..];
+                                        return Ok(Some(TrieAccount::decode(&mut v).map_err(|e| Error::msg(format!("Failed to decode account: {:?}", e)))?));
+                                    }
+                                    return Ok(None);
+                                }
+                                MyTrieNode::Extension(ext) => {
+                                    if nibbles.slice(cursor..).starts_with(&ext.key) {
+                                        cursor += ext.key.len();
+                                        if let Some(h) = ext.child.as_hash() {
+                                            current_hash = h;
+                                            break; // Back to outer loop to fetch from DB
+                                        } else {
+                                            let mut next_data = ext.child.as_slice();
+                                            current_node = MyTrieNode::decode(&mut next_data)?;
+                                        }
+                                    } else {
+                                        return Ok(None);
+                                    }
+                                }
+                                MyTrieNode::Branch(b) => {
+                                    if cursor == nibbles.len() {
+                                        return Ok(b.value.and_then(|v| {
+                                            let mut slice = &v[..];
+                                            TrieAccount::decode(&mut slice).ok()
+                                        }));
+                                    }
+                                    let n = nibbles.get(cursor).unwrap() as usize;
+                                    let c = &b.stack[n];
+                                    if let Some(h) = c.as_hash() {
+                                        current_hash = h;
+                                        cursor += 1;
+                                        break; // Back to outer loop
+                                    } else if !c.is_empty() {
+                                        let mut next_data = c.as_slice();
+                                        current_node = MyTrieNode::decode(&mut next_data)?;
+                                        cursor += 1;
+                                    } else {
+                                        return Ok(None);
+                                    }
+                                }
+                                _ => return Ok(None),
+                            }
+                        }
+                    } else {
+                        return Ok(None);
+                    }
+                }
+                MyTrieNode::Leaf(leaf) => {
+                    let leaf_nibbles = leaf.key.clone();
+                    if nibbles.slice(cursor..) == leaf_nibbles {
+                        let mut v = &leaf.value[..];
+                        return Ok(Some(TrieAccount::decode(&mut v).map_err(|e| Error::msg(format!("Failed to decode account: {:?}", e)))?))
+                    } else {
+                        return Ok(None);
+                    }
+                }
+                MyTrieNode::Extension(ext) => {
+                    let ext_nibbles = ext.key.clone();
+                    if nibbles.slice(cursor..).starts_with(&ext_nibbles) {
+                        cursor += ext_nibbles.len();
+                        if let Some(child_hash) = ext.child.as_hash() {
+                            current_hash = child_hash;
+                        } else {
+                            // Embedded node
+                            let mut child_data = ext.child.as_slice();
+                            let mut current_node = MyTrieNode::decode(&mut child_data)?;
+                            loop {
+                                match current_node {
+                                    MyTrieNode::Leaf(leaf) => {
+                                        if nibbles.slice(cursor..) == leaf.key {
+                                            let mut v = &leaf.value[..];
+                                            return Ok(Some(TrieAccount::decode(&mut v).map_err(|e| Error::msg(format!("Failed to decode account: {:?}", e)))?));
+                                        }
+                                        return Ok(None);
+                                    }
+                                    MyTrieNode::Extension(ext) => {
+                                        if nibbles.slice(cursor..).starts_with(&ext.key) {
+                                            cursor += ext.key.len();
+                                            if let Some(h) = ext.child.as_hash() {
+                                                current_hash = h;
+                                                break;
+                                            } else {
+                                                let mut next_data = ext.child.as_slice();
+                                                current_node = MyTrieNode::decode(&mut next_data)?;
+                                            }
+                                        } else {
+                                            return Ok(None);
+                                        }
+                                    }
+                                    MyTrieNode::Branch(b) => {
+                                        if cursor == nibbles.len() {
+                                            return Ok(b.value.and_then(|v| {
+                                                let mut slice = &v[..];
+                                                TrieAccount::decode(&mut slice).ok()
+                                            }));
+                                        }
+                                        let n = nibbles.get(cursor).unwrap() as usize;
+                                        let c = &b.stack[n];
+                                        if let Some(h) = c.as_hash() {
+                                            current_hash = h;
+                                            cursor += 1;
+                                            break;
+                                        } else if !c.is_empty() {
+                                            let mut next_data = c.as_slice();
+                                            current_node = MyTrieNode::decode(&mut next_data)?;
+                                            cursor += 1;
+                                        } else {
+                                            return Ok(None);
+                                        }
+                                    }
+                                    _ => return Ok(None),
+                                }
+                            }
+                        }
+                    } else {
+                        return Ok(None);
+                    }
+                }
+                _ => return Ok(None),
+            }
+        }
+    }
+
     async fn get_account_from_trie(&self, root: B256, hashed_address: B256) -> Result<Option<TrieAccount>> {
         let mut current_hash = root;
         let nibbles = alloy_trie::Nibbles::unpack(hashed_address);
@@ -691,7 +931,7 @@ impl ChainProvider for DatabaseReadProvider {
         let table = tx.open_table(Metadata::definition())?;
         if let Some(value) = table.get("chain_id".to_string())? {
             let chain_id_bytes = value.value();
-            
+
             // Try decoding as 8-byte big-endian first
             if chain_id_bytes.len() == 8 {
                 let mut b = [0u8; 8];
@@ -700,12 +940,12 @@ impl ChainProvider for DatabaseReadProvider {
             }
 
             let chain_id_str = String::from_utf8_lossy(&chain_id_bytes);
-            
+
             // Try parsing as decimal
             if let Ok(id) = chain_id_str.parse::<u64>() {
                 return Ok(id);
             }
-            
+
             // Try parsing as hex if it starts with 0x
             let s = chain_id_str.trim();
             if let Some(hex_str) = s.strip_prefix("0x") {
@@ -758,35 +998,7 @@ impl StorageProvider for DatabaseReadProvider {
         slot: B256,
         state_root: Option<B256>,
     ) -> Result<U256> {
-        if let Some(root) = state_root {
-            if root == alloy_trie::EMPTY_ROOT_HASH {
-                return Ok(U256::ZERO);
-            }
-
-            // 1. Get account from trie
-            let account = self.account(address, Some(root)).await?;
-            if let Some(acc) = account {
-                if acc.storage_root == alloy_trie::EMPTY_ROOT_HASH {
-                    return Ok(U256::ZERO);
-                }
-                
-                // 2. Get storage value from storage trie
-                let hashed_slot = alloy_primitives::keccak256(slot);
-                let mut trie = EthTrie::new(self, acc.storage_root);
-                let val_bytes = trie.get(hashed_slot).await.map_err(|e| anyhow::anyhow!("Storage trie lookup failed: {}", e))?;
-                if let Some(bytes) = val_bytes {
-                    let mut slice = &bytes[..];
-                    let val: U256 = alloy_rlp::Decodable::decode(&mut slice).map_err(|e| anyhow::anyhow!("RLP decode failed: {}", e))?;
-                    return Ok(val);
-                }
-            }
-            return Ok(U256::ZERO);
-        }
-
-        let tx = self.db.begin_read()?;
-        let table = tx.open_table(Storages::definition())?;
-        let value = table.get((address, slot))?;
-        Ok(value.map(|v| v.value()).unwrap_or_default())
+        self.storage_sync(address, slot, state_root)
     }
 
     async fn account_storages(&self, address: Address, state_root: Option<B256>) -> Result<Vec<(B256, U256)>> {
@@ -797,7 +1009,7 @@ impl StorageProvider for DatabaseReadProvider {
                 if acc.storage_root == alloy_trie::EMPTY_ROOT_HASH {
                     return Ok(Vec::new());
                 }
-                
+
                 // 2. Walk the storage trie
                 let mut trie = EthTrie::new(self, acc.storage_root);
                 let entries = trie.all_entries().await.map_err(|e| anyhow::anyhow!("Storage trie walk failed: {}", e))?;
@@ -818,7 +1030,7 @@ impl StorageProvider for DatabaseReadProvider {
         // Since the key is (Address, B256), we can use a range scan
         let start = (address, B256::ZERO);
         let end = (address, B256::repeat_byte(0xff));
-        
+
         for entry in table.range(start..=end)? {
             let (key, value) = entry?;
             let (_, slot) = key.value();
@@ -831,10 +1043,7 @@ impl StorageProvider for DatabaseReadProvider {
 #[async_trait]
 impl BytecodeProvider for DatabaseReadProvider {
     async fn bytecode(&self, code_hash: B256) -> Result<Option<Bytes>> {
-        let tx = self.db.begin_read()?;
-        let table = tx.open_table(Bytecodes::definition())?;
-        let value = table.get(code_hash)?;
-        Ok(value.map(|v| v.value()))
+        self.bytecode_sync(code_hash)
     }
 }
 
@@ -857,17 +1066,17 @@ impl StateProvider for DatabaseReadProvider {
     async fn trie_node(&self, hash: B256) -> Result<Option<Bytes>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(TrieNodes::definition())?;
-        
+
         // Standard lookup
         if let Some(value) = table.get(hash)? {
             return Ok(Some(value.value()));
         }
-        
+
         // If hash represents a combined key H(root || hash) used in BatchWriter,
         // it would have been found above. If we are looking for a node by its hash
         // but it was stored by combined key only, we'd need the root.
         // However, standard EthTrie uses hashes of RLP.
-        
+
         Ok(None)
     }
 }

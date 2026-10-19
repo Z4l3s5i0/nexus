@@ -1,0 +1,226 @@
+Oct 19 08:28:55.844 INFO  [App] Loading JWT secret from "/app/startup/jwt_0.hex"
+Oct 19 08:28:55.845 INFO  [Storage] Initializing genesis block
+Oct 19 08:28:56.438 INFO  [Storage] Genesis initialized with hash: 0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:28:56.497 INFO  [Node] Database initialized with genesis configuration
+Oct 19 08:28:56.497 INFO  [App] Genesis initialized. Exiting.
+Oct 19 08:28:58.634 INFO  [App] Loading JWT secret from "/app/startup/jwt_0.hex"
+Oct 19 08:28:58.646 INFO  [App] Setting up RPC servers addresses
+Oct 19 08:28:58.647 INFO  [App] Addresses: Eth RPC: 0.0.0.0:8545, Auth RPC: 0.0.0.0:8581
+Oct 19 08:28:58.647 INFO  [App] Setting up RPC services
+Oct 19 08:28:58.647 INFO  [App] RPC services set up
+Oct 19 08:28:58.647 INFO  [App] Setting up RPC servers
+Oct 19 08:28:58.647 INFO  [App] RPC servers started
+Oct 19 08:28:58.647 INFO  Setup complete...
+Oct 19 08:28:58.647 INFO  Bootstrap registry provided: http://metrics-server:9100
+Oct 19 08:28:58.648 INFO  Starting servers...
+Oct 19 08:28:58.648 INFO  Starting metrics server on http://0.0.0.0:9050...
+Oct 19 08:28:58.648 INFO  [Bootstrap] Registering node with registry... payload: RegisterNodeRequest { id: "5595dd63b0fb8e5e02ccab6f15db48492d2de72d4b2aca31c98e81bc59b53f5c04fea2ef1c85f0d122ebea1e4f639439839a598415ab9256042d55cab32f27a3", network: "1001", chain_id: Some(1001), client: "wasix-eth", rpc_url: "http://172.28.30.134:8545", metrics_url: Some("http://172.28.30.134:9050"), p2p_addr: Some("172.28.30.134:30304"), discovery_addr: Some("172.28.30.134:30303"), enode: Some("enode://5595dd63b0fb8e5e02ccab6f15db48492d2de72d4b2aca31c98e81bc59b53f5c04fea2ef1c85f0d122ebea1e4f639439839a598415ab9256042d55cab32f27a3@172.28.30.134:30304?discport=30303") }
+Oct 19 08:28:58.648 INFO  [Node] Starting services...
+Oct 19 08:28:58.648 INFO  [P2P Server] Starting server task on 0.0.0.0:30304
+Oct 19 08:28:58.648 INFO  [DiscoveryV4] Starting UDP service on 172.28.30.134:30303
+Oct 19 08:28:58.648 INFO  [P2P Server] Server task running
+Oct 19 08:28:58.648 INFO  [P2P Server] Listening on 172.28.30.134:30304
+Oct 19 08:28:58.656 INFO  [Bootstrap] Node registered successfully
+Oct 19 08:28:58.656 INFO  [Bootstrap] Fetching bootstrap nodes from registry...
+Oct 19 08:28:58.657 INFO  [Bootstrap] Received 1 bootstrap nodes
+Oct 19 08:28:58.657 INFO  [Bootstrap] Adding bootstrap node: enode://5595dd63b0fb8e5e02ccab6f15db48492d2de72d4b2aca31c98e81bc59b53f5c04fea2ef1c85f0d122ebea1e4f639439839a598415ab9256042d55cab32f27a3@172.28.30.134:30304?discport=30303
+Oct 19 08:28:58.658 INFO  [P2P Dialer] Dialing peer at 172.28.30.134:30304 (attempt 1)
+Oct 19 08:28:58.658 INFO  [P2P Dialer] TCP connection established to 172.28.30.134:30304
+Oct 19 08:28:58.658 INFO  [P2P Handshake] Outbound: starting ECIES handshake
+Oct 19 08:28:58.660 INFO  [P2P Server] Accepted TCP connection from 172.18.0.1:52451
+Oct 19 08:28:58.660 INFO  [P2P Server] Handling connection from 172.18.0.1:52451
+Oct 19 08:28:58.660 INFO  [P2P Handshake] Inbound: accepting RLPx stream
+Oct 19 08:28:58.660 INFO  [P2P Handshake] Inbound: starting ECIES handshake
+Oct 19 08:28:58.665 INFO  [P2P Handshake] Inbound: ECIES handshake completed
+Oct 19 08:28:58.665 INFO  [P2P Handshake] Inbound: starting P2P Hello handshake
+Oct 19 08:28:58.666 INFO  [P2P Handshake] Outbound: ECIES handshake completed
+Oct 19 08:28:58.666 INFO  [P2P Handshake] Outbound: starting P2P Hello handshake
+Oct 19 08:28:58.666 INFO  [P2P Handshake] Outbound: P2P Hello handshake completed
+Oct 19 08:28:58.666 INFO  [P2P Handshake] Inbound: P2P Hello handshake completed
+Oct 19 08:28:58.666 INFO  [P2P Handshake] Outbound: starting ETH Status handshake
+Oct 19 08:28:58.666 INFO  [P2P Handshake] Inbound: starting ETH Status handshake
+Oct 19 08:28:58.667 INFO  [P2P Handshake] Creating local status: head_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813, latest_height=0, genesis_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:28:58.667 INFO  [P2P Handshake] Creating local status: head_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813, latest_height=0, genesis_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:28:58.668 INFO  [P2P Handshake] Outbound: ETH Status handshake completed
+Oct 19 08:28:58.668 INFO  [P2P Handshake] Inbound: ETH Status handshake completed
+Oct 19 08:28:58.668 INFO  [P2P Server] Handshake successful with peer 0x5595dd63b0fb8e5e02ccab6f15db48492d2de72d4b2aca31c98e81bc59b53f5c04fea2ef1c85f0d122ebea1e4f639439839a598415ab9256042d55cab32f27a3. Remote head: 0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:28:58.720 INFO  [P2P Registry] Registering session for peer 0x5595dd63b0fb8e5e02ccab6f15db48492d2de72d4b2aca31c98e81bc59b53f5c04fea2ef1c85f0d122ebea1e4f639439839a598415ab9256042d55cab32f27a3 (session_id: 1)
+Oct 19 08:28:58.720 INFO  [P2P Registry] Registering session for peer 0x5595dd63b0fb8e5e02ccab6f15db48492d2de72d4b2aca31c98e81bc59b53f5c04fea2ef1c85f0d122ebea1e4f639439839a598415ab9256042d55cab32f27a3 (session_id: 2)
+Oct 19 08:28:58.720 INFO  [P2P Session] Started session for peer 0x5595dd63b0fb8e5e02ccab6f15db48492d2de72d4b2aca31c98e81bc59b53f5c04fea2ef1c85f0d122ebea1e4f639439839a598415ab9256042d55cab32f27a3
+Oct 19 08:28:58.720 INFO  [P2P Registry] Deterministic tie-break: replacing existing session for peer 0x5595dd63b0fb8e5e02ccab6f15db48492d2de72d4b2aca31c98e81bc59b53f5c04fea2ef1c85f0d122ebea1e4f639439839a598415ab9256042d55cab32f27a3 (local higher: false, existing initiator: true, new initiator: false)
+Oct 19 08:28:58.720 INFO  [P2P Session] Started session for peer 0x5595dd63b0fb8e5e02ccab6f15db48492d2de72d4b2aca31c98e81bc59b53f5c04fea2ef1c85f0d122ebea1e4f639439839a598415ab9256042d55cab32f27a3
+Oct 19 08:28:58.721 INFO  [P2P] Peer disconnected: 0x5595dd63b0fb8e5e02ccab6f15db48492d2de72d4b2aca31c98e81bc59b53f5c04fea2ef1c85f0d122ebea1e4f639439839a598415ab9256042d55cab32f27a3 (session: 1)
+Oct 19 08:28:58.721 INFO  [P2P Session] Received Disconnect from 0x5595dd63b0fb8e5e02ccab6f15db48492d2de72d4b2aca31c98e81bc59b53f5c04fea2ef1c85f0d122ebea1e4f639439839a598415ab9256042d55cab32f27a3: already connected
+Oct 19 08:28:58.721 INFO  [P2P Session] Protocol requested disconnect for 0x5595dd63b0fb8e5e02ccab6f15db48492d2de72d4b2aca31c98e81bc59b53f5c04fea2ef1c85f0d122ebea1e4f639439839a598415ab9256042d55cab32f27a3
+Oct 19 08:28:58.721 INFO  [P2P] Peer disconnected: 0x5595dd63b0fb8e5e02ccab6f15db48492d2de72d4b2aca31c98e81bc59b53f5c04fea2ef1c85f0d122ebea1e4f639439839a598415ab9256042d55cab32f27a3 (session: 2)
+Oct 19 08:28:58.721 INFO  [P2P] Peer disconnected: 0x5595dd63b0fb8e5e02ccab6f15db48492d2de72d4b2aca31c98e81bc59b53f5c04fea2ef1c85f0d122ebea1e4f639439839a598415ab9256042d55cab32f27a3 (session: 2)
+Oct 19 08:28:58.750 INFO  Servers are running, waiting for shutdown signal...
+Oct 19 08:28:58.750 INFO  [GossipBridge] Starting Engine-to-P2P event bridge
+Oct 19 08:28:58.750 INFO  [Gossip] Starting GossipHandler
+Oct 19 08:28:58.750 INFO  [Sync] Starting synchronization controller...
+Oct 19 08:28:58.750 INFO  [SyncOrchestrator] Starting background loop
+Oct 19 08:29:10.193 INFO  [P2P Server] Accepted TCP connection from 172.18.0.1:41164
+Oct 19 08:29:10.194 INFO  [P2P Server] Handling connection from 172.18.0.1:41164
+Oct 19 08:29:10.194 INFO  [P2P Handshake] Inbound: accepting RLPx stream
+Oct 19 08:29:10.194 INFO  [P2P Handshake] Inbound: starting ECIES handshake
+Oct 19 08:29:10.201 INFO  [P2P Handshake] Inbound: ECIES handshake completed
+Oct 19 08:29:10.201 INFO  [P2P Handshake] Inbound: starting P2P Hello handshake
+Oct 19 08:29:10.203 INFO  [P2P Handshake] Inbound: P2P Hello handshake completed
+Oct 19 08:29:10.203 INFO  [P2P Handshake] Inbound: starting ETH Status handshake
+Oct 19 08:29:10.203 INFO  [P2P Handshake] Creating local status: head_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813, latest_height=0, genesis_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:29:10.204 INFO  [P2P Handshake] Inbound: ETH Status handshake completed
+Oct 19 08:29:10.204 INFO  [P2P Server] Handshake successful with peer 0x375c55813e0b3ab521c2391a32e611af7ce78783e8c3c6517f0615537ab9973915eb9f5a40729b055ef3ebdfdafe477dcbb73ab46cf48e9d6ce2cb4d2a094130. Remote head: 0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:29:10.257 INFO  [P2P Registry] Registering session for peer 0x375c55813e0b3ab521c2391a32e611af7ce78783e8c3c6517f0615537ab9973915eb9f5a40729b055ef3ebdfdafe477dcbb73ab46cf48e9d6ce2cb4d2a094130 (session_id: 3)
+Oct 19 08:29:10.257 INFO  [P2P Session] Started session for peer 0x375c55813e0b3ab521c2391a32e611af7ce78783e8c3c6517f0615537ab9973915eb9f5a40729b055ef3ebdfdafe477dcbb73ab46cf48e9d6ce2cb4d2a094130
+Oct 19 08:29:18.753 INFO  [P2P Server] Accepted TCP connection from 172.18.0.1:39585
+Oct 19 08:29:18.754 INFO  [P2P Server] Handling connection from 172.18.0.1:39585
+Oct 19 08:29:18.754 INFO  [P2P Handshake] Inbound: accepting RLPx stream
+Oct 19 08:29:18.754 INFO  [P2P Handshake] Inbound: starting ECIES handshake
+Oct 19 08:29:18.763 INFO  [P2P Handshake] Inbound: ECIES handshake completed
+Oct 19 08:29:18.763 INFO  [P2P Handshake] Inbound: starting P2P Hello handshake
+Oct 19 08:29:18.765 INFO  [P2P Handshake] Inbound: P2P Hello handshake completed
+Oct 19 08:29:18.765 INFO  [P2P Handshake] Inbound: starting ETH Status handshake
+Oct 19 08:29:18.765 INFO  [P2P Handshake] Creating local status: head_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813, latest_height=0, genesis_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:29:18.768 INFO  [P2P Handshake] Inbound: ETH Status handshake completed
+Oct 19 08:29:18.768 INFO  [P2P Server] Handshake successful with peer 0xdacc6c7f1b464fdaffa7fa85b99d16b8b5b06d4c241140cdf6fb819429df9d3f4fdbe31cfc18f6f8e2fbcfa9c23a6dcaf455bdd779b9cf738a0a445a0311f6f1. Remote head: 0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:29:18.821 INFO  [P2P Registry] Registering session for peer 0xdacc6c7f1b464fdaffa7fa85b99d16b8b5b06d4c241140cdf6fb819429df9d3f4fdbe31cfc18f6f8e2fbcfa9c23a6dcaf455bdd779b9cf738a0a445a0311f6f1 (session_id: 4)
+Oct 19 08:29:18.822 INFO  [P2P Session] Started session for peer 0xdacc6c7f1b464fdaffa7fa85b99d16b8b5b06d4c241140cdf6fb819429df9d3f4fdbe31cfc18f6f8e2fbcfa9c23a6dcaf455bdd779b9cf738a0a445a0311f6f1
+Oct 19 08:29:27.138 INFO  [P2P Server] Accepted TCP connection from 172.18.0.1:39614
+Oct 19 08:29:27.138 INFO  [P2P Server] Handling connection from 172.18.0.1:39614
+Oct 19 08:29:27.138 INFO  [P2P Handshake] Inbound: accepting RLPx stream
+Oct 19 08:29:27.138 INFO  [P2P Handshake] Inbound: starting ECIES handshake
+Oct 19 08:29:27.146 INFO  [P2P Handshake] Inbound: ECIES handshake completed
+Oct 19 08:29:27.146 INFO  [P2P Handshake] Inbound: starting P2P Hello handshake
+Oct 19 08:29:27.147 INFO  [P2P Handshake] Inbound: P2P Hello handshake completed
+Oct 19 08:29:27.147 INFO  [P2P Handshake] Inbound: starting ETH Status handshake
+Oct 19 08:29:27.147 INFO  [P2P Handshake] Creating local status: head_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813, latest_height=0, genesis_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:29:27.148 INFO  [P2P Handshake] Inbound: ETH Status handshake completed
+Oct 19 08:29:27.148 INFO  [P2P Server] Handshake successful with peer 0xe3690081e38507c09f7c0ee69c0a5790a081e15c414088b024a62bcb5bfed2fc64c3ed3747896e16745500e5e486de23d6835e0b907465093e3a6f88ddd4773f. Remote head: 0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:29:27.201 INFO  [P2P Registry] Registering session for peer 0xe3690081e38507c09f7c0ee69c0a5790a081e15c414088b024a62bcb5bfed2fc64c3ed3747896e16745500e5e486de23d6835e0b907465093e3a6f88ddd4773f (session_id: 5)
+Oct 19 08:29:27.201 INFO  [P2P Session] Started session for peer 0xe3690081e38507c09f7c0ee69c0a5790a081e15c414088b024a62bcb5bfed2fc64c3ed3747896e16745500e5e486de23d6835e0b907465093e3a6f88ddd4773f
+Oct 19 08:29:35.842 INFO  [P2P Server] Accepted TCP connection from 172.18.0.1:52959
+Oct 19 08:29:35.842 INFO  [P2P Server] Handling connection from 172.18.0.1:52959
+Oct 19 08:29:35.842 INFO  [P2P Handshake] Inbound: accepting RLPx stream
+Oct 19 08:29:35.842 INFO  [P2P Handshake] Inbound: starting ECIES handshake
+Oct 19 08:29:35.850 INFO  [P2P Handshake] Inbound: ECIES handshake completed
+Oct 19 08:29:35.850 INFO  [P2P Handshake] Inbound: starting P2P Hello handshake
+Oct 19 08:29:35.852 INFO  [P2P Handshake] Inbound: P2P Hello handshake completed
+Oct 19 08:29:35.852 INFO  [P2P Handshake] Inbound: starting ETH Status handshake
+Oct 19 08:29:35.852 INFO  [P2P Handshake] Creating local status: head_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813, latest_height=0, genesis_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:29:35.853 INFO  [P2P Handshake] Inbound: ETH Status handshake completed
+Oct 19 08:29:35.853 INFO  [P2P Server] Handshake successful with peer 0x35b6d09f7c745ae7d46a266f4cd9a5859ad048e6939038020a945c956c92e37a74d9273791675bba88bf445d7270d2d132ffb66571ae8f224b746ce6b4c7c7c6. Remote head: 0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:29:35.908 INFO  [P2P Registry] Registering session for peer 0x35b6d09f7c745ae7d46a266f4cd9a5859ad048e6939038020a945c956c92e37a74d9273791675bba88bf445d7270d2d132ffb66571ae8f224b746ce6b4c7c7c6 (session_id: 6)
+Oct 19 08:29:35.908 INFO  [P2P Session] Started session for peer 0x35b6d09f7c745ae7d46a266f4cd9a5859ad048e6939038020a945c956c92e37a74d9273791675bba88bf445d7270d2d132ffb66571ae8f224b746ce6b4c7c7c6
+Oct 19 08:29:45.549 INFO  [P2P Server] Accepted TCP connection from 172.18.0.1:42679
+Oct 19 08:29:45.550 INFO  [P2P Server] Handling connection from 172.18.0.1:42679
+Oct 19 08:29:45.550 INFO  [P2P Handshake] Inbound: accepting RLPx stream
+Oct 19 08:29:45.550 INFO  [P2P Handshake] Inbound: starting ECIES handshake
+Oct 19 08:29:45.560 INFO  [P2P Handshake] Inbound: ECIES handshake completed
+Oct 19 08:29:45.560 INFO  [P2P Handshake] Inbound: starting P2P Hello handshake
+Oct 19 08:29:45.563 INFO  [P2P Handshake] Inbound: P2P Hello handshake completed
+Oct 19 08:29:45.563 INFO  [P2P Handshake] Inbound: starting ETH Status handshake
+Oct 19 08:29:45.563 INFO  [P2P Handshake] Creating local status: head_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813, latest_height=0, genesis_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:29:45.563 INFO  [P2P Handshake] Inbound: ETH Status handshake completed
+Oct 19 08:29:45.563 INFO  [P2P Server] Handshake successful with peer 0x4bd082af2e764f780540c7ab91228458a9693ff13098f59a67a0dbc6d37335d76b01e281e329704caca202adb6305ed1a0ad0a125afda85001b89773edd4d20c. Remote head: 0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:29:45.617 INFO  [P2P Registry] Registering session for peer 0x4bd082af2e764f780540c7ab91228458a9693ff13098f59a67a0dbc6d37335d76b01e281e329704caca202adb6305ed1a0ad0a125afda85001b89773edd4d20c (session_id: 7)
+Oct 19 08:29:45.618 INFO  [P2P Session] Started session for peer 0x4bd082af2e764f780540c7ab91228458a9693ff13098f59a67a0dbc6d37335d76b01e281e329704caca202adb6305ed1a0ad0a125afda85001b89773edd4d20c
+Oct 19 08:29:54.067 INFO  [P2P Server] Accepted TCP connection from 172.18.0.1:32399
+Oct 19 08:29:54.068 INFO  [P2P Server] Handling connection from 172.18.0.1:32399
+Oct 19 08:29:54.068 INFO  [P2P Handshake] Inbound: accepting RLPx stream
+Oct 19 08:29:54.068 INFO  [P2P Handshake] Inbound: starting ECIES handshake
+Oct 19 08:29:54.078 INFO  [P2P Handshake] Inbound: ECIES handshake completed
+Oct 19 08:29:54.078 INFO  [P2P Handshake] Inbound: starting P2P Hello handshake
+Oct 19 08:29:54.080 INFO  [P2P Handshake] Inbound: P2P Hello handshake completed
+Oct 19 08:29:54.080 INFO  [P2P Handshake] Inbound: starting ETH Status handshake
+Oct 19 08:29:54.080 INFO  [P2P Handshake] Creating local status: head_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813, latest_height=0, genesis_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:29:54.082 INFO  [P2P Handshake] Inbound: ETH Status handshake completed
+Oct 19 08:29:54.082 INFO  [P2P Server] Handshake successful with peer 0x8f08c981eb6407b7e086776aa0a4524d2d7257b151f129d46484eeb5e70e2274ebd66801b269735e928e80ad9913c7e964162d49f849df4ecbe8373786c37eaf. Remote head: 0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:29:54.136 INFO  [P2P Registry] Registering session for peer 0x8f08c981eb6407b7e086776aa0a4524d2d7257b151f129d46484eeb5e70e2274ebd66801b269735e928e80ad9913c7e964162d49f849df4ecbe8373786c37eaf (session_id: 8)
+Oct 19 08:29:54.136 INFO  [P2P Session] Started session for peer 0x8f08c981eb6407b7e086776aa0a4524d2d7257b151f129d46484eeb5e70e2274ebd66801b269735e928e80ad9913c7e964162d49f849df4ecbe8373786c37eaf
+Oct 19 08:30:02.781 INFO  [P2P Server] Accepted TCP connection from 172.18.0.1:62679
+Oct 19 08:30:02.781 INFO  [P2P Server] Handling connection from 172.18.0.1:62679
+Oct 19 08:30:02.781 INFO  [P2P Handshake] Inbound: accepting RLPx stream
+Oct 19 08:30:02.782 INFO  [P2P Handshake] Inbound: starting ECIES handshake
+Oct 19 08:30:02.791 INFO  [P2P Handshake] Inbound: ECIES handshake completed
+Oct 19 08:30:02.791 INFO  [P2P Handshake] Inbound: starting P2P Hello handshake
+Oct 19 08:30:02.793 INFO  [P2P Handshake] Inbound: P2P Hello handshake completed
+Oct 19 08:30:02.793 INFO  [P2P Handshake] Inbound: starting ETH Status handshake
+Oct 19 08:30:02.793 INFO  [P2P Handshake] Creating local status: head_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813, latest_height=0, genesis_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:30:02.796 INFO  [P2P Handshake] Inbound: ETH Status handshake completed
+Oct 19 08:30:02.796 INFO  [P2P Server] Handshake successful with peer 0x441b2c18c3bf2a0c5bd66b4a1c1da1fda6d0c728efa0dd1b7f8afcab50dddaba3d56f28a4ae9809446f60e4aabcda5e9fe71c3ffe48c02039a9cc1dbec8b6d1a. Remote head: 0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:30:02.849 INFO  [P2P Registry] Registering session for peer 0x441b2c18c3bf2a0c5bd66b4a1c1da1fda6d0c728efa0dd1b7f8afcab50dddaba3d56f28a4ae9809446f60e4aabcda5e9fe71c3ffe48c02039a9cc1dbec8b6d1a (session_id: 9)
+Oct 19 08:30:02.849 INFO  [P2P Session] Started session for peer 0x441b2c18c3bf2a0c5bd66b4a1c1da1fda6d0c728efa0dd1b7f8afcab50dddaba3d56f28a4ae9809446f60e4aabcda5e9fe71c3ffe48c02039a9cc1dbec8b6d1a
+Oct 19 08:30:11.621 INFO  [P2P Server] Accepted TCP connection from 172.18.0.1:63191
+Oct 19 08:30:11.621 INFO  [P2P Server] Handling connection from 172.18.0.1:63191
+Oct 19 08:30:11.621 INFO  [P2P Handshake] Inbound: accepting RLPx stream
+Oct 19 08:30:11.621 INFO  [P2P Handshake] Inbound: starting ECIES handshake
+Oct 19 08:30:11.633 INFO  [P2P Handshake] Inbound: ECIES handshake completed
+Oct 19 08:30:11.633 INFO  [P2P Handshake] Inbound: starting P2P Hello handshake
+Oct 19 08:30:11.634 INFO  [P2P Handshake] Inbound: P2P Hello handshake completed
+Oct 19 08:30:11.634 INFO  [P2P Handshake] Inbound: starting ETH Status handshake
+Oct 19 08:30:11.634 INFO  [P2P Handshake] Creating local status: head_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813, latest_height=0, genesis_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:30:11.636 INFO  [P2P Handshake] Inbound: ETH Status handshake completed
+Oct 19 08:30:11.636 INFO  [P2P Server] Handshake successful with peer 0x4ea9a8a22b53da6b5ce2aeae53a74a1ba078546230c07b6378fe3c30b40029a8e4e527915cba7a7144c673dfbcab7a4de59826f4203cbe7c38880c211798dd09. Remote head: 0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:30:11.689 INFO  [P2P Registry] Registering session for peer 0x4ea9a8a22b53da6b5ce2aeae53a74a1ba078546230c07b6378fe3c30b40029a8e4e527915cba7a7144c673dfbcab7a4de59826f4203cbe7c38880c211798dd09 (session_id: 10)
+Oct 19 08:30:11.689 INFO  [P2P Session] Started session for peer 0x4ea9a8a22b53da6b5ce2aeae53a74a1ba078546230c07b6378fe3c30b40029a8e4e527915cba7a7144c673dfbcab7a4de59826f4203cbe7c38880c211798dd09
+Oct 19 08:30:21.247 INFO  [P2P Server] Accepted TCP connection from 172.18.0.1:46304
+Oct 19 08:30:21.248 INFO  [P2P Server] Handling connection from 172.18.0.1:46304
+Oct 19 08:30:21.248 INFO  [P2P Handshake] Inbound: accepting RLPx stream
+Oct 19 08:30:21.248 INFO  [P2P Handshake] Inbound: starting ECIES handshake
+Oct 19 08:30:21.258 INFO  [P2P Handshake] Inbound: ECIES handshake completed
+Oct 19 08:30:21.258 INFO  [P2P Handshake] Inbound: starting P2P Hello handshake
+Oct 19 08:30:21.262 INFO  [P2P Handshake] Inbound: P2P Hello handshake completed
+Oct 19 08:30:21.262 INFO  [P2P Handshake] Inbound: starting ETH Status handshake
+Oct 19 08:30:21.262 INFO  [P2P Handshake] Creating local status: head_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813, latest_height=0, genesis_hash=0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:30:21.265 INFO  [P2P Handshake] Inbound: ETH Status handshake completed
+Oct 19 08:30:21.266 INFO  [P2P Server] Handshake successful with peer 0xd998cc9b036a704f427aad3a870abbd9e6c55304d1b9b195274fffd65f833d7da051d9149d4c4972af79a9775d4fdba3789ec47efa9be02d7829ee0d5173447c. Remote head: 0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:30:21.319 INFO  [P2P Registry] Registering session for peer 0xd998cc9b036a704f427aad3a870abbd9e6c55304d1b9b195274fffd65f833d7da051d9149d4c4972af79a9775d4fdba3789ec47efa9be02d7829ee0d5173447c (session_id: 11)
+Oct 19 08:30:21.320 INFO  [P2P Session] Started session for peer 0xd998cc9b036a704f427aad3a870abbd9e6c55304d1b9b195274fffd65f833d7da051d9149d4c4972af79a9775d4fdba3789ec47efa9be02d7829ee0d5173447c
+Oct 19 08:30:44.007 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792398644, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:30:44.007 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:30:44.013 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792398644, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:30:44.013 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:30:44.017 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792398644, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:30:44.017 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:30:44.021 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792398644, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:30:44.021 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:32:20.011 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792398740, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:32:20.012 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:32:20.016 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792398740, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:32:20.017 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:32:20.021 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792398740, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:32:20.021 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:32:20.025 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792398740, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:32:20.026 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:33:08.007 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792398788, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:33:08.008 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:33:08.012 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792398788, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:33:08.012 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:33:08.016 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792398788, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:33:08.016 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:33:08.020 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792398788, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:33:08.020 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:35:32.009 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792398932, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:35:32.010 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:35:32.015 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792398932, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:35:32.015 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:35:32.020 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792398932, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:35:32.020 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:35:32.024 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792398932, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:35:32.025 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:36:08.008 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792398968, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:36:08.008 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:36:08.013 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792398968, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:36:08.014 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:36:08.018 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792398968, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:36:08.018 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:36:08.022 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792398968, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:36:08.023 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:40:56.011 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792399256, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:40:56.012 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:40:56.017 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792399256, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:40:56.017 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:40:56.021 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792399256, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:40:56.022 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true
+Oct 19 08:40:56.025 INFO  [EngineService] forkchoiceUpdated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, payload_attributes=Some(PayloadAttributes { timestamp: 1792399256, prev_randao: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, suggested_fee_recipient: 0x0000000000000000000000000000000000000000, withdrawals: Some([]), parent_beacon_block_root: Some(0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f), slot_number: None, target_gas_limit: None })
+Oct 19 08:40:56.025 INFO  [Engine] forkchoice_updated: head=0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41 safe=0x0000000000000000000000000000000000000000000000000000000000000000 finalized=0x0000000000000000000000000000000000000000000000000000000000000000 version=3 attr=true

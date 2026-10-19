@@ -200,13 +200,15 @@ impl PayloadBuilder {
             )
             .ok_or_else(|| RpcError::InvalidForkchoiceState(format!("Head block not found for empty payload building: {:?}", head_block_hash)))?;
 
-        let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_else(|| {
-            let chain_id = tokio::runtime::Handle::current().block_on(self.read_storage.chain_id()).unwrap_or(1);
+        let chain_config = if let Some(config) = self.read_storage.chain_config().await.ok().flatten() {
+            config
+        } else {
+            let chain_id = self.read_storage.chain_id().await.unwrap_or(1);
             ChainConfig {
                 chain_id,
                 ..Default::default()
             }
-        });
+        };
         let base_fee_per_gas = self.consensus.calculate_next_base_fee(&parent_block.header, &chain_config);
 
         let (finalized_block, receipts, metas, _, _) = self.execution.execute_block_for_payload(
@@ -267,13 +269,15 @@ impl PayloadBuilder {
         };
 
         // 2. Compute base fees and max blobs
-        let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_else(|| {
-            let chain_id = tokio::runtime::Handle::current().block_on(self.read_storage.chain_id()).unwrap_or(1);
+        let chain_config = if let Some(config) = self.read_storage.chain_config().await.ok().flatten() {
+            config
+        } else {
+            let chain_id = self.read_storage.chain_id().await.unwrap_or(1);
             ChainConfig {
                 chain_id,
                 ..Default::default()
             }
-        });
+        };
         let base_fee_per_gas = self.consensus.calculate_next_base_fee(&parent_block.header, &chain_config);
         let blob_base_fee = self.consensus.calculate_next_blob_base_fee(&parent_block.header, &chain_config).await;
 

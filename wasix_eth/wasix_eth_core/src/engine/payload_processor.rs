@@ -69,13 +69,15 @@ impl PayloadProcessor {
             });
         }
 
-        let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_else(|| {
-            let chain_id = tokio::runtime::Handle::current().block_on(self.read_storage.chain_id()).unwrap_or(31133);
+        let chain_config = if let Some(config) = self.read_storage.chain_config().await.ok().flatten() {
+            config
+        } else {
+            let chain_id = self.read_storage.chain_id().await.unwrap_or(31133);
             ChainConfig {
                 chain_id,
                 ..Default::default()
             }
-        });
+        };
         let active_fork = Hardfork::get_active_fork(&chain_config, block.header.number, block.header.timestamp);
 
         // 1. Idempotency check: See if this block is already being processed
@@ -319,13 +321,15 @@ impl PayloadProcessor {
 
         // 2. Check if ANY ancestor is invalid by walking back and validating headers
         let mut current_hash = parent_hash;
-        let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_else(|| {
-            let chain_id = tokio::runtime::Handle::current().block_on(self.read_storage.chain_id()).unwrap_or(1);
+        let chain_config = if let Some(config) = self.read_storage.chain_config().await.ok().flatten() {
+            config
+        } else {
+            let chain_id = self.read_storage.chain_id().await.unwrap_or(1);
             ChainConfig {
                 chain_id,
                 ..Default::default()
             }
-        });
+        };
 
         for i in 0..32 {
             if let Some(current_header) = self.get_header_from_anywhere(current_hash).await {
@@ -406,13 +410,15 @@ impl PayloadProcessor {
             wasix_eth_utils::exp!("[EXP] BLOCK_RPC_RECV hash={:?}", actual_hash);
         }
 
-        let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_else(|| {
-            let chain_id = tokio::runtime::Handle::current().block_on(self.read_storage.chain_id()).unwrap_or(31133);
+        let chain_config = if let Some(config) = self.read_storage.chain_config().await.ok().flatten() {
+            config
+        } else {
+            let chain_id = self.read_storage.chain_id().await.unwrap_or(31133);
             ChainConfig {
                 chain_id,
                 ..Default::default()
             }
-        });
+        };
         
         let active_fork = Hardfork::get_active_fork(&chain_config, block_number, block.header.timestamp);
         debug!("[PayloadProcessor] active_fork: {:?} for block {}", active_fork, block_number);
@@ -678,11 +684,6 @@ impl PayloadProcessor {
         let block_number = final_block.header.number;
         info!("[PayloadProcessor] Committing block {} (hash: {}) with {} transactions", block_number, block_hash, final_block.body.transactions.len());
 
-        let storage = self.write_storage.clone();
-        let final_block_clone = final_block.clone();
-        let receipts_clone = receipts.clone();
-        let metas_clone = metas.clone();
-        
         let parent_td = if block_number == 0 {
             U256::ZERO
         } else {
@@ -694,22 +695,16 @@ impl PayloadProcessor {
         };
         let td = parent_td + U256::from(final_block.header.difficulty);
 
-        tokio::task::spawn_blocking(move || -> wasix_eth_types::error::RpcResult<()> {
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            let rt = tokio::runtime::Handle::current();
-            rt.block_on(storage.send_request(wasix_eth_storage::write::request::WriteRequest::InsertBlockFull {
-                block: final_block_clone,
-                receipts: receipts_clone,
-                metas: metas_clone,
-                td,
-                account_changes,
-                storage_changes,
-                resp: tx,
-            }, rx)).map_err(|e| RpcError::Internal(e.to_string()))?;
-
-            info!("[PayloadProcessor] Block {} (hash: {}) successfully committed to storage via coordinator", block_number, block_hash);
-            Ok(())
-        }).await.map_err(|e| RpcError::Internal(format!("Storage task panicked: {}", e)))??;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.write_storage.send_request(wasix_eth_storage::write::request::WriteRequest::InsertBlockFull {
+            block: final_block.clone(),
+            receipts: receipts.clone(),
+            metas: metas.clone(),
+            td,
+            account_changes,
+            storage_changes,
+            resp: tx,
+        }, rx).await.map_err(|e| RpcError::Internal(e.to_string()))?;
 
         let _ = self.event_tx.send(EngineEvent::NewBlock {
             block: final_block.clone(),

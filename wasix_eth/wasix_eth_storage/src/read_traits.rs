@@ -115,6 +115,24 @@ pub trait BytecodeProvider: Send + Sync {
     async fn bytecode(&self, code_hash: B256) -> anyhow::Result<Option<Bytes>>;
 }
 
+pub trait AccountProviderSync: Send + Sync {
+    fn account_sync(&self, address: Address, state_root: Option<B256>) -> anyhow::Result<Option<TrieAccount>>;
+}
+
+pub trait StorageProviderSync: Send + Sync {
+    fn storage_sync(&self, address: Address, slot: B256, state_root: Option<B256>) -> anyhow::Result<U256>;
+}
+
+pub trait BytecodeProviderSync: Send + Sync {
+    fn bytecode_sync(&self, code_hash: B256) -> anyhow::Result<Option<Bytes>>;
+}
+
+pub trait StateProviderSync: Send + Sync {
+    fn plain_state_sync(&self, address: Address) -> anyhow::Result<Option<Bytes>>;
+    fn hashed_state_sync(&self, hash: B256) -> anyhow::Result<Option<Bytes>>;
+    fn trie_node_sync(&self, hash: B256) -> anyhow::Result<Option<Bytes>>;
+}
+
 /// Trait for reading state-related information from the database.
 #[async_trait]
 pub trait StateProvider: Send + Sync {

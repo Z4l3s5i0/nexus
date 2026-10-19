@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use wasix_eth_types::*;
-use wasix_eth_storage::read_traits::{AccountProvider, BytecodeProvider, StorageProvider};
+use wasix_eth_storage::read_traits::{AccountProviderSync, BytecodeProviderSync, StorageProviderSync};
 use wasix_eth_storage::write::BatchWriter;
 use evm::backend::{InMemoryEnvironment, RuntimeBaseBackend, RuntimeEnvironment};
 use evm::uint::{H160, H256, U256 as EvmU256};
@@ -8,8 +8,9 @@ use evm::interpreter::runtime::RuntimeBackend;
 
 #[derive(Clone)]
 pub struct SputnikBackend<'a> {
-    pub read_provider: &'a dyn AccountProvider,
-    pub storage_provider: &'a BatchWriter,
+    pub read_provider: &'a dyn AccountProviderSync,
+    pub storage_provider: &'a dyn StorageProviderSync,
+    pub bytecode_provider: &'a dyn BytecodeProviderSync,
     pub environment: InMemoryEnvironment,
     pub state_root: Option<B256>,
     pub transient_storage: HashMap<(H160, H256), H256>,
@@ -25,12 +26,12 @@ impl<'a> SputnikBackend<'a>{
 
     pub fn check_delegation(&self, address: H160) -> Option<H160> {
         let addr = Address::from_slice(address.as_bytes());
-        if let Ok(Some(acc)) = tokio::runtime::Handle::current().block_on(self.storage_provider.account(addr, self.state_root)) {
+        if let Ok(Some(acc)) = self.read_provider.account_sync(addr, self.state_root) {
             if acc.code_hash != alloy_primitives::KECCAK256_EMPTY {
-                if let Ok(Some(code)) = tokio::runtime::Handle::current().block_on(self.storage_provider.bytecode(acc.code_hash)) {
+                if let Ok(Some(code)) = self.bytecode_provider.bytecode_sync(acc.code_hash) {
                     if code.starts_with(&[0xef, 0x01, 0x00]) {
                         if code.len() == 23 {
-                             return Some(H160::from_slice(&code[3..23]));
+                            return Some(H160::from_slice(&code[3..23]));
                         }
                     }
                 }
@@ -43,7 +44,7 @@ impl<'a> SputnikBackend<'a>{
 impl<'a> RuntimeBaseBackend for SputnikBackend<'a> {
     fn balance(&self, address: H160) -> EvmU256 {
         let addr = Address::from_slice(address.as_bytes());
-        match tokio::runtime::Handle::current().block_on(self.storage_provider.account(addr, self.state_root)) {
+        match self.read_provider.account_sync(addr, self.state_root) {
             Ok(Some(acc)) => alloy_u256_to_evm_u256(acc.balance),
             _ => EvmU256::zero(),
         }
@@ -54,13 +55,13 @@ impl<'a> RuntimeBaseBackend for SputnikBackend<'a> {
             return self.code(target);
         }
         let addr = Address::from_slice(address.as_bytes());
-        match tokio::runtime::Handle::current().block_on(self.storage_provider.account(addr, self.state_root)) {
+        match self.read_provider.account_sync(addr, self.state_root) {
             Ok(Some(acc)) => {
                 if acc.code_hash == B256::ZERO
                     || acc.code_hash == alloy_primitives::KECCAK256_EMPTY {
                     return Vec::new();
                 }
-                match tokio::runtime::Handle::current().block_on(self.storage_provider.bytecode(acc.code_hash)) {
+                match self.bytecode_provider.bytecode_sync(acc.code_hash) {
                     Ok(Some(code)) => code.to_vec(),
                     _ => {
                         wasix_eth_utils::debug!("[Backend] Bytecode not found for hash: {:?}", acc.code_hash);
@@ -75,7 +76,7 @@ impl<'a> RuntimeBaseBackend for SputnikBackend<'a> {
     fn exists(&self, address: H160) -> bool {
         let addr = Address::from_slice(address.as_bytes());
 
-        match tokio::runtime::Handle::current().block_on(self.storage_provider.account(addr, self.state_root)) {
+        match self.read_provider.account_sync(addr, self.state_root) {
             Ok(Some(acc)) => {
                 !Self::is_account_empty(&acc)
             }
@@ -88,7 +89,7 @@ impl<'a> RuntimeBaseBackend for SputnikBackend<'a> {
     fn nonce(&self, address: H160) -> EvmU256 {
         self.check_delegation(address);
         let addr = Address::from_slice(address.as_bytes());
-        match tokio::runtime::Handle::current().block_on(self.storage_provider.account(addr, self.state_root)) {
+        match self.read_provider.account_sync(addr, self.state_root) {
             Ok(Some(acc)) => EvmU256::from(acc.nonce),
             _ => EvmU256::zero(),
         }
@@ -100,7 +101,7 @@ impl<'a> RuntimeBaseBackend for SputnikBackend<'a> {
         }
         let addr = Address::from_slice(address.as_bytes());
         let slot = B256::from_slice(index.as_bytes());
-        let val = tokio::runtime::Handle::current().block_on(self.storage_provider.storage(addr, slot, self.state_root)).unwrap_or_default();
+        let val = self.storage_provider.storage_sync(addr, slot, self.state_root).unwrap_or_default();
         H256::from_slice(&val.to_be_bytes::<32>())
     }
 
@@ -135,7 +136,7 @@ impl<'a> RuntimeBackend for SputnikBackend<'a> {
 
     fn mark_storage_hot(&mut self, address: H160, index: H256) {
         if !self.hot_storage.contains(&(address, index)) {
-             println!("[HOT_DEBUG] Marking storage {:?}:{:?} as hot", address, index);
+            println!("[HOT_DEBUG] Marking storage {:?}:{:?} as hot", address, index);
         }
         self.hot_storage.insert((address, index));
     }
@@ -197,7 +198,7 @@ impl<'a> RuntimeEnvironment for SputnikBackend<'a> {
             let history_storage_contract = H160::from_slice(HISTORY_STORAGE_ADDRESS.as_slice());
             let index = target_u64 % 8192;
             let slot = H256::from_slice(&B256::from(U256::from(index)).0);
-            
+
             // Read from storage provider
             return self.storage(history_storage_contract, slot);
         }

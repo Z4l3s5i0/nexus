@@ -79,9 +79,7 @@ impl CanonicalState {
         };
 
         let storage = self.write_storage.clone();
-        tokio::task::spawn_blocking(move || {
-            tokio::runtime::Handle::current().block_on(storage.update_forkchoice(new_state.head_block_hash, Some(new_state.safe_block_hash), Some(new_state.finalized_block_hash)))
-        }).await.map_err(|e| anyhow::anyhow!("Storage task panicked: {}", e))??;
+        storage.update_forkchoice(new_state.head_block_hash, Some(new_state.safe_block_hash), Some(new_state.finalized_block_hash)).await?;
 
         self.state.store(Arc::new(CanonicalStateInner {
             state: new_state,
@@ -104,9 +102,7 @@ impl CanonicalState {
         };
 
         let storage = self.write_storage.clone();
-        tokio::task::spawn_blocking(move || {
-            tokio::runtime::Handle::current().block_on(storage.update_forkchoice(new_state.head_block_hash, Some(new_state.safe_block_hash), Some(new_state.finalized_block_hash)))
-        }).await.map_err(|e| anyhow::anyhow!("Storage task panicked: {}", e))??;
+        self.write_storage.update_forkchoice(new_state.head_block_hash, Some(new_state.safe_block_hash), Some(new_state.finalized_block_hash)).await?;
 
         self.state.store(Arc::new(CanonicalStateInner {
             state: new_state,
@@ -129,9 +125,7 @@ impl CanonicalState {
         };
 
         let storage = self.write_storage.clone();
-        tokio::task::spawn_blocking(move || {
-            tokio::runtime::Handle::current().block_on(storage.update_forkchoice(new_state.head_block_hash, Some(new_state.safe_block_hash), Some(new_state.finalized_block_hash)))
-        }).await.map_err(|e| anyhow::anyhow!("Storage task panicked: {}", e))??;
+        storage.update_forkchoice(new_state.head_block_hash, Some(new_state.safe_block_hash), Some(new_state.finalized_block_hash)).await?;
 
         self.state.store(Arc::new(CanonicalStateInner {
             state: new_state,
@@ -149,9 +143,7 @@ impl CanonicalState {
         }
 
         let storage = self.write_storage.clone();
-        tokio::task::spawn_blocking(move || {
-            tokio::runtime::Handle::current().block_on(storage.update_forkchoice(state.head_block_hash, Some(state.safe_block_hash), Some(state.finalized_block_hash)))
-        }).await.map_err(|e| anyhow::anyhow!("Storage task panicked: {}", e))??;
+        storage.update_forkchoice(state.head_block_hash, Some(state.safe_block_hash), Some(state.finalized_block_hash)).await?;
 
         self.state.store(Arc::new(CanonicalStateInner {
             state,

@@ -63,92 +63,93 @@ impl WriteCoordinator {
 
     async fn process_batch(&self, requests: Vec<WriteRequest>) -> Result<()> {
         let batch_writer = self.provider.begin_write_batch()?;
+        let mut responders = Vec::with_capacity(requests.len());
 
         for req in requests {
             match req {
                 WriteRequest::InsertHeader { hash, header, resp } => {
                     let res = batch_writer.insert_header(hash, header).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::InsertHeaderTD { hash, td, resp } => {
                     let res = batch_writer.insert_header_td(hash, td).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::UpdateForkchoice { head, safe, finalized, resp } => {
                     let res = batch_writer.update_forkchoice(head, safe, finalized).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::InsertHeaderNumber { hash, number, resp } => {
                     let res = batch_writer.insert_header_number(hash, number).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::InsertBlock { block, receipts, metas, resp } => {
                     let res = batch_writer.insert_block(block, receipts, metas).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::InsertBlockBody { hash, number, body, resp } => {
                     let res = batch_writer.insert_block_body(hash, number, body).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::SetCanonical { number, hash, resp } => {
                     let res = batch_writer.set_canonical(number, hash).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::RemoveCanonical { number, resp } => {
                     let res = batch_writer.remove_canonical(number).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::InsertTransaction { hash, tx, resp } => {
                     let res = batch_writer.insert_transaction(hash, tx).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::InsertReceipt { block_hash, index, receipt, resp } => {
                     let res = batch_writer.insert_receipt(block_hash, index, receipt).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::InsertReceiptMeta { block_hash, index, meta, resp } => {
                     let res = batch_writer.insert_receipt_meta(block_hash, index, meta).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::RemoveReceiptMeta { block_hash, index, resp } => {
                     let res = batch_writer.remove_receipt_meta(block_hash, index).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::InsertTransactionLookup { hash, block_hash, index, resp } => {
                     let res = batch_writer.insert_transaction_lookup(hash, block_hash, index).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::UpdateAccount { address, account, resp } => {
                     let res = batch_writer.update_account(address, account).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::RemoveAccount { address, resp } => {
                     let res = batch_writer.remove_account(address).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::UpdateStorage { address, slot, value, resp } => {
                     let res = batch_writer.update_storage(address, slot, value).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::InsertBytecode { code_hash, bytecode, resp } => {
                     let res = batch_writer.insert_bytecode(code_hash, bytecode).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::UpdateTrieNode { hash, node, resp } => {
                     let res = batch_writer.update_trie_node(hash, node).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::UpdatePlainState { address, state, resp } => {
                     let res = batch_writer.update_plain_state(address, state).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::RemovePlainState { address, resp } => {
                     let res = batch_writer.remove_plain_state(address).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::UpdateHashedState { hash, state, resp } => {
                     let res = batch_writer.update_hashed_state(hash, state).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::RegisterPeer { peer, resp } => {
                     let res = (|| async {
@@ -159,7 +160,7 @@ impl WriteCoordinator {
                             Ok(())
                         }
                     })().await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::RemovePeer { peer_id, resp } => {
                     let res = (|| async {
@@ -170,36 +171,36 @@ impl WriteCoordinator {
                             Ok(())
                         }
                     })().await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::ResetStorage { address, resp } => {
                     let res = batch_writer.reset_storage(address).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::SetMetadata { key, value, resp } => {
                     let res = batch_writer.set_metadata(key, value).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::InsertAccountChangeSet { number, change_set, resp } => {
                     let res = batch_writer.insert_account_change_set(number, change_set).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::InsertStorageChangeSet { number, change_set, resp } => {
                     let res = batch_writer.insert_storage_change_set(number, change_set).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::RemoveChangeSet { number, resp } => {
                     let res = batch_writer.remove_change_set(number).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
-                WriteRequest::InsertBlockFull { 
-                    block, 
-                    receipts, 
-                    metas, 
-                    td, 
+                WriteRequest::InsertBlockFull {
+                    block,
+                    receipts,
+                    metas,
+                    td,
                     account_changes,
                     storage_changes,
-                    resp 
+                    resp
                 } => {
                     let hash = block.header.hash_slow();
                     let number = block.header.number;
@@ -208,27 +209,36 @@ impl WriteCoordinator {
                         batch_writer.insert_header_td(hash, td).await?;
                         batch_writer.insert_transaction_lookup_for_block(hash, number).await?;
                         batch_writer.remove_payload_by_block_hash(hash).await?;
-                        
+
                         // Insert ChangeSets
                         batch_writer.insert_account_change_set(number, account_changes).await?;
                         batch_writer.insert_storage_change_set(number, storage_changes).await?;
-                        
+
                         Ok(())
                     })().await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::AddPayload { id, block, receipts, metas, bundle, resp } => {
                     let res = batch_writer.add_payload(id, block, receipts, metas, bundle).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
                 WriteRequest::RemovePayloadByBlockHash { hash, resp } => {
                     let res = batch_writer.remove_payload_by_block_hash(hash).await;
-                    let _ = resp.send(res);
+                    responders.push((resp, res));
                 }
             }
         }
 
-        batch_writer.commit()?;
+        let commit_res = batch_writer.commit();
+        for (resp, res) in responders {
+            if commit_res.is_err() {
+                let _ = resp.send(Err(anyhow::anyhow!("Batch commit failed")));
+            } else {
+                let _ = resp.send(res);
+            }
+        }
+
+        commit_res?;
         Ok(())
     }
 }

@@ -117,6 +117,7 @@ impl EvmExecutor {
         let backend = SputnikBackend {
             read_provider: batch,
             storage_provider: batch,
+            bytecode_provider: batch,
             environment: env.clone(),
             state_root,
             transient_storage: HashMap::new(),
@@ -167,7 +168,7 @@ impl EvmExecutor {
 
         let (_backend_final, changeset) = overlay.deconstruct();
         info!("[Execution] System call to {:?} finished, changeset: storages={}, accounts={}", to_h160, changeset.storages.len(), changeset.balances.len());
-        
+
         // Restore caller balance in changeset to avoid permanent state change
         let mut filtered_changeset = changeset;
         filtered_changeset.balances.insert(caller_h160, original_caller_acc);

@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::read_traits::StateProvider;
+use crate::StateProviderSync;
 use crate::write_traits::StateWriter;
 
 fn encode_path(nibbles: &Nibbles, is_leaf: bool) -> Vec<u8> {
@@ -125,7 +126,7 @@ impl Encodable for MyBranchNode {
             list: true,
             payload_length,
         };
-        
+
         list_header.encode(out);
         for child in &self.stack {
             if child.is_empty() {
@@ -166,9 +167,9 @@ pub enum MyTrieNode {
 impl MyTrieNode {
     pub fn decode(buf: &mut &[u8]) -> anyhow::Result<Self> {
         if buf.is_empty() {
-             return Err(anyhow::anyhow!("Empty RLP buffer"));
+            return Err(anyhow::anyhow!("Empty RLP buffer"));
         }
-        
+
         let mut b = *buf;
         let header = Header::decode(&mut b).map_err(|e| anyhow::anyhow!("RLP header decode error: {}", e))?;
         if !header.list {
@@ -203,7 +204,7 @@ impl MyTrieNode {
                 return Err(anyhow::anyhow!("Key must be a string"));
             }
             let (nibbles, is_leaf) = decode_path(item0).ok_or_else(|| anyhow::anyhow!("Invalid hex-prefix encoding"))?;
-            
+
             *buf = next_buf;
             if is_leaf {
                 let mut s = items[1];
@@ -229,7 +230,7 @@ impl MyTrieNode {
             }
             Ok(MyTrieNode::Branch(branch))
         } else {
-             Err(anyhow::anyhow!("Invalid number of items in trie node RLP list: {}", items.len()))
+            Err(anyhow::anyhow!("Invalid number of items in trie node RLP list: {}", items.len()))
         }
     }
 
@@ -271,6 +272,18 @@ impl StateProvider for MemoryState {
     }
 }
 
+impl StateProviderSync for MemoryState {
+    fn plain_state_sync(&self, _address: Address) -> wasix_eth_types::Result<Option<Bytes>> {
+        unreachable!()
+    }
+    fn hashed_state_sync(&self, _hash: B256) -> wasix_eth_types::Result<Option<Bytes>> {
+        unreachable!()
+    }
+    fn trie_node_sync(&self, hash: B256) -> wasix_eth_types::Result<Option<Bytes>> {
+        Ok(self.nodes.get(&hash).as_deref().cloned())
+    }
+}
+
 #[async_trait]
 impl StateWriter for MemoryState {
     async fn update_trie_node(&self, hash: B256, node: Bytes) -> anyhow::Result<()> {
@@ -292,7 +305,7 @@ pub async fn calculate_trie_root(leaves: Vec<(B256, Vec<u8>)>) -> anyhow::Result
     calculate_trie_root_incremental(EMPTY_ROOT_HASH, &MemoryState::default(), leaves).await
 }
 
-pub async fn calculate_trie_root_incremental<S: StateProvider + StateWriter>(
+pub async fn calculate_trie_root_incremental<S: StateProvider + StateProviderSync + StateWriter>(
     base_root: B256,
     state: &S,
     leaves: Vec<(B256, Vec<u8>)>,
@@ -309,14 +322,14 @@ pub async fn calculate_trie_root_incremental<S: StateProvider + StateWriter>(
     Ok(trie.root_hash())
 }
 
-pub struct EthTrie<'a, S: StateProvider + StateWriter> {
+pub struct EthTrie<'a, S: StateProvider + StateProviderSync + StateWriter> {
     state: &'a S,
     root_hash: B256,
     cache: HashMap<B256, MyTrieNode>,
     dirty: HashMap<B256, Vec<u8>>,
 }
 
-impl<'a, S: StateProvider + StateWriter> EthTrie<'a, S> {
+impl<'a, S: StateProvider + StateProviderSync + StateWriter> EthTrie<'a, S> {
     pub fn new(state: &'a S, root_hash: B256) -> Self {
         Self {
             state,
@@ -328,6 +341,109 @@ impl<'a, S: StateProvider + StateWriter> EthTrie<'a, S> {
 
     pub fn root_hash(&self) -> B256 {
         self.root_hash
+    }
+
+    pub fn get_sync(&mut self, key: B256) -> anyhow::Result<Option<Vec<u8>>> {
+        let nibbles = Nibbles::unpack(key);
+        self.get_recursive_sync(self.root_hash, nibbles)
+    }
+
+    fn get_recursive_sync(
+        &mut self,
+        node_hash: B256,
+        nibbles: Nibbles,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        if node_hash == EMPTY_ROOT_HASH {
+            return Ok(None);
+        }
+
+        let node = self.get_node_sync(node_hash)?;
+        self.get_recursive_node_sync(node, nibbles)
+    }
+
+    fn get_recursive_node_sync(
+        &mut self,
+        node: MyTrieNode,
+        nibbles: Nibbles,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        match node {
+            MyTrieNode::EmptyRoot => Ok(None),
+            MyTrieNode::Leaf(leaf) => {
+                if leaf.key == nibbles {
+                    Ok(Some(leaf.value))
+                } else {
+                    Ok(None)
+                }
+            }
+            MyTrieNode::Extension(ext) => {
+                if nibbles.starts_with(&ext.key) {
+                    let remaining = if ext.key.len() < nibbles.len() {
+                        nibbles.slice(ext.key.len()..)
+                    } else {
+                        Nibbles::default()
+                    };
+                    self.get_recursive_rlp_sync(&ext.child, remaining)
+                } else {
+                    Ok(None)
+                }
+            }
+            MyTrieNode::Branch(branch) => {
+                if nibbles.is_empty() {
+                    return Ok(branch.value);
+                }
+                let index = nibbles
+                    .get(0)
+                    .ok_or_else(|| anyhow::anyhow!("Nibbles empty"))? as usize;
+                let remaining = if 1 < nibbles.len() {
+                    nibbles.slice(1..)
+                } else {
+                    Nibbles::default()
+                };
+                self.get_recursive_rlp_sync(&branch.stack[index], remaining)
+            }
+        }
+    }
+
+    fn get_recursive_rlp_sync(
+        &mut self,
+        rlp_node: &ChildNode,
+        nibbles: Nibbles,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        if let Some(hash) = rlp_node.as_hash() {
+            self.get_recursive_sync(hash, nibbles)
+        } else {
+            let mut data = rlp_node.as_slice();
+            if data.is_empty() {
+                return Ok(None);
+            }
+            let node = MyTrieNode::decode(&mut data)?;
+            self.get_recursive_node_sync(node, nibbles)
+        }
+    }
+
+    fn get_node_sync(&mut self, hash: B256) -> anyhow::Result<MyTrieNode> {
+        if hash == EMPTY_ROOT_HASH {
+            return Ok(MyTrieNode::EmptyRoot);
+        }
+        if let Some(node) = self.cache.get(&hash) {
+            return Ok(node.clone());
+        }
+
+        let data = if let Some(dirty_data) = self.dirty.get(&hash) {
+            dirty_data.clone()
+        } else {
+            match self.state.trie_node_sync(hash)? {
+                Some(bytes) => bytes.to_vec(),
+                None => {
+                    return Err(anyhow::anyhow!("Trie node not found: {:?}", hash));
+                }
+            }
+        };
+
+        let mut slice = &data[..];
+        let node = MyTrieNode::decode(&mut slice)?;
+        self.cache.insert(hash, node.clone());
+        Ok(node)
     }
 
     pub async fn get_nibbles(&mut self, nibbles: Nibbles) -> anyhow::Result<Option<Vec<u8>>> {

@@ -43,7 +43,7 @@ impl<'a> TransactionExecutor<'a> {
     ) -> Result<TransactionExecutionResult> {
         let recovered = tx.clone().try_into_recovered().map_err(|e| anyhow::anyhow!("Failed to recover signer: {}", e))?;
         let sender = recovered.signer();
-        
+
         self.validate_transaction_with_state(tx, sender, state_root).await?;
 
         let start_time = std::time::Instant::now();
@@ -68,12 +68,12 @@ impl<'a> TransactionExecutor<'a> {
         }
 
         let mut overlay = OverlayedBackend::new(backend, &self.config.runtime);
-        
+
         // EIP-4844 and EIP-7702 pre-execution logic
         self.handle_pre_execution_eip_logic(tx, sender, &mut overlay)?;
 
         let args = self.prepare_transact_args(tx, sender, &overlay);
-        
+
         debug!("[Execution] Transaction {:?} Args details: caller={:?}, gas_limit={}, gas_price={:?}, value={}", tx_hash_final, args.caller, args.gas_limit, args.gas_price, args.value);
         let sender_h160 = H160::from_slice(sender.as_slice());
         let balance_before_overlay = overlay.balance(sender_h160);
@@ -101,7 +101,7 @@ impl<'a> TransactionExecutor<'a> {
 
         let (_backend_final, changeset) = overlay.deconstruct();
         let tx_gas_used = result.used_gas.as_u64();
-        
+
         // Post-execution gas adjustments (EIP-7702, EIP-7623, etc)
         let elapsed = start_time.elapsed();
         debug!("[Execution) Transaction {:?} finished: success={}, reverted={}, gas_evm={}, cumulative={}, elapsed={:?}", tx_hash_final, tx_success, tx_reverted, tx_gas_used, *cumulative_gas_used + tx_gas_used, elapsed);
@@ -248,6 +248,7 @@ impl<'a> TransactionExecutor<'a> {
         Ok(SputnikBackend {
             read_provider: self.batch,
             storage_provider: self.batch,
+            bytecode_provider: self.batch,
             environment: self.env.clone(),
             state_root,
             transient_storage: std::collections::HashMap::new(),
@@ -264,15 +265,15 @@ impl<'a> TransactionExecutor<'a> {
                 let blob_gas_used = s.tx().blob_versioned_hashes().unwrap_or_default().len() as u64 * wasix_eth_types::DATA_GAS_PER_BLOB;
                 let blob_base_fee = self.env.blob_base_fee_per_gas.as_u64();
                 let blob_fee = alloy_primitives::U256::from(blob_gas_used) * alloy_primitives::U256::from(blob_base_fee);
-                
+
                 let sender_h160 = H160::from_slice(sender.as_slice());
                 let balance = overlay.balance(sender_h160);
                 let blob_fee_evm = alloy_u256_to_evm_u256(blob_fee);
-                
+
                 if balance < blob_fee_evm {
                     return Err(anyhow::anyhow!("Insufficient balance for blob fee"));
                 }
-                
+
                 overlay.withdrawal(sender_h160, blob_fee_evm).map_err(|e| anyhow::anyhow!("Failed to deduct blob fee: {:?}", e))?;
             }
         }
@@ -287,13 +288,13 @@ impl<'a> TransactionExecutor<'a> {
         };
 
         let gas_price = if tx.is_eip1559() || tx.is_eip4844() {
-             let base_fee = self.env.block_base_fee_per_gas;
-             let max_fee = EvmU256::from(tx.max_fee_per_gas());
-             let max_priority = EvmU256::from(tx.max_priority_fee_per_gas().unwrap_or_default());
-             let effective_priority = if max_fee >= base_fee { std::cmp::min(max_priority, max_fee.saturating_sub(base_fee)) } else { EvmU256::zero() };
-             TransactGasPrice::FeeMarket { max_priority: effective_priority, max: max_fee }
+            let base_fee = self.env.block_base_fee_per_gas;
+            let max_fee = EvmU256::from(tx.max_fee_per_gas());
+            let max_priority = EvmU256::from(tx.max_priority_fee_per_gas().unwrap_or_default());
+            let effective_priority = if max_fee >= base_fee { std::cmp::min(max_priority, max_fee.saturating_sub(base_fee)) } else { EvmU256::zero() };
+            TransactGasPrice::FeeMarket { max_priority: effective_priority, max: max_fee }
         } else {
-             TransactGasPrice::Legacy(EvmU256::from(tx.gas_price().unwrap_or_default()))
+            TransactGasPrice::Legacy(EvmU256::from(tx.gas_price().unwrap_or_default()))
         };
 
         TransactArgs {
@@ -312,10 +313,10 @@ impl<'a> TransactionExecutor<'a> {
         let balance_after = overlay.balance(sender_h160);
         let used_gas = {
             let deduction_rate = if is_coinbase { effective_gas_price.saturating_sub(reward_rate) } else { effective_gas_price };
-            let calculated = if deduction_rate > EvmU256::from(0) { 
+            let calculated = if deduction_rate > EvmU256::from(0) {
                 let spent = balance_before.saturating_sub(balance_after);
-                spent / deduction_rate 
-            } else { 
+                spent / deduction_rate
+            } else {
                 EvmU256::from(0u64)
             };
             // Always charge at least intrinsic gas for failed transactions, 
@@ -325,7 +326,7 @@ impl<'a> TransactionExecutor<'a> {
         };
         let used_gas_u64 = used_gas.as_u64();
         if used_gas_u64 > args.gas_limit.as_u64() {
-             debug!("[Execution] Transaction used gas ({}) exceeds limit ({})", used_gas_u64, args.gas_limit.as_u64());
+            debug!("[Execution] Transaction used gas ({}) exceeds limit ({})", used_gas_u64, args.gas_limit.as_u64());
         }
 
         match e {

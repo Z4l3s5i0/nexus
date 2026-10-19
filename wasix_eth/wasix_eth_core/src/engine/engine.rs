@@ -213,19 +213,16 @@ impl Engine {
     pub async fn get_payload_bodies_by_hash(&self, hashes: Vec<B256>) -> RpcResult<Vec<Option<ExecutionPayloadBodyV1>>> {
         let mut bodies = Vec::new();
         for hash in hashes {
-            let body = self.read_storage.block_body_by_hash(hash).await.map(|body_opt| {
-                tokio::runtime::Handle::current().block_on(async {
-                    if let Some(body) = body_opt {
-                        let header = self.read_storage.header(BlockId::Hash(hash.into())).await.ok().flatten();
-                        header.map(|header| {
-                            let block = Block { header, body: body.into() };
-                            EngineMapper::to_execution_payload_body_v1(&block)
-                        })
-                    } else {
-                        None
-                    }
+            let body_opt = self.read_storage.block_body_by_hash(hash).await.map_err(|e| RpcError::Internal(e.to_string()))?;
+            let body = if let Some(body) = body_opt {
+                let header = self.read_storage.header(BlockId::Hash(hash.into())).await.ok().flatten();
+                header.map(|header| {
+                    let block = Block { header, body: body.into() };
+                    EngineMapper::to_execution_payload_body_v1(&block)
                 })
-            }).map_err(|e| RpcError::Internal(e.to_string()))?;
+            } else {
+                None
+            };
             bodies.push(body);
         }
         Ok(bodies)
@@ -248,21 +245,17 @@ impl Engine {
         let mut bodies = Vec::with_capacity(actual_count as usize);
         for i in 0..actual_count {
             let number = start + i;
-            let body = self.read_storage.block_body(number).await
-                .map(|body_opt| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        if let Some(body) = body_opt {
-                            let header = self.read_storage.header(BlockId::Number(BlockNumberOrTag::Number(number))).await.ok().flatten();
-                            header.map(|header| {
-                                let block = Block { header, body: body.into() };
-                                EngineMapper::to_execution_payload_body_v1(&block)
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                })
+            let body_opt = self.read_storage.block_body(number).await
                 .map_err(|e| RpcError::Internal(e.to_string()))?;
+            let body = if let Some(body) = body_opt {
+                let header = self.read_storage.header(BlockId::Number(BlockNumberOrTag::Number(number))).await.ok().flatten();
+                header.map(|header| {
+                    let block = Block { header, body: body.into() };
+                    EngineMapper::to_execution_payload_body_v1(&block)
+                })
+            } else {
+                None
+            };
             bodies.push(body);
         }
         Ok(bodies)
@@ -549,17 +542,19 @@ impl Engine {
         let mut head_number = 0;
         if forkchoice_state.head_block_hash != B256::ZERO {
             // Check if head block actually exists in our storage or payload map before checking ancestry.
-            let head_header = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(forkchoice_state.head_block_hash))).await.ok().flatten()
-                .or_else(|| tokio::runtime::Handle::current().block_on(self.read_storage.get_payload_by_block_hash(forkchoice_state.head_block_hash)).map(|(p, _, _, _)| p.header.clone()))
-                .or_else(|| {
-                    // Manual check for genesis if header lookup by hash failed
-                    let genesis_hash = tokio::runtime::Handle::current().block_on(self.read_storage.block_hash(0)).unwrap_or(None);
-                    if genesis_hash == Some(forkchoice_state.head_block_hash) {
-                         tokio::runtime::Handle::current().block_on(self.read_storage.header(BlockId::Number(BlockNumberOrTag::Number(0)))).ok().flatten()
-                    } else {
-                        None
-                    }
-                });
+            let head_header = if let Some(h) = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(forkchoice_state.head_block_hash))).await.ok().flatten() {
+                Some(h)
+            } else if let Some((p, _, _, _)) = self.read_storage.get_payload_by_block_hash(forkchoice_state.head_block_hash).await {
+                Some(p.header.clone())
+            } else {
+                // Manual check for genesis if header lookup by hash failed
+                let genesis_hash = self.read_storage.block_hash(0).await.unwrap_or(None);
+                if genesis_hash == Some(forkchoice_state.head_block_hash) {
+                     self.read_storage.header(BlockId::Number(BlockNumberOrTag::Number(0))).await.ok().flatten()
+                } else {
+                    None
+                }
+            };
             
             if let Some(header) = head_header {
                 head_number = header.number;
@@ -603,8 +598,11 @@ impl Engine {
 
         // Update metrics and handle canonical chain events if VALID or SYNCING
         if status.status == PayloadStatusEnum::Valid || status.status == PayloadStatusEnum::Syncing {
-            let head_header = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(forkchoice_state.head_block_hash))).await.ok().flatten()
-                .or_else(|| tokio::runtime::Handle::current().block_on(self.read_storage.get_payload_by_block_hash(forkchoice_state.head_block_hash)).map(|(p, _, _, _)| p.header.clone()));
+            let head_header = if let Some(h) = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(forkchoice_state.head_block_hash))).await.ok().flatten() {
+                Some(h)
+            } else {
+                self.read_storage.get_payload_by_block_hash(forkchoice_state.head_block_hash).await.map(|(p, _, _, _)| p.header.clone())
+            };
 
             if let Some(header) = head_header {
                 if status.status == PayloadStatusEnum::Valid {
@@ -683,11 +681,12 @@ impl Engine {
         }
 
         if let Some(attr) = &payload_attributes {
-            let head_block = self.read_storage.block_by_hash(forkchoice_state.head_block_hash).await.ok().flatten()
-                .or_else(|| {
-                    tokio::runtime::Handle::current().block_on(self.read_storage.get_payload_by_block_hash(forkchoice_state.head_block_hash))
-                        .map(|(b, _, _, _)| b)
-                });
+            let head_block = if let Some(b) = self.read_storage.block_by_hash(forkchoice_state.head_block_hash).await.ok().flatten() {
+                Some(b)
+            } else {
+                self.read_storage.get_payload_by_block_hash(forkchoice_state.head_block_hash).await
+                    .map(|(b, _, _, _)| b)
+            };
             
             if let Some(parent) = head_block {
                 if attr.timestamp <= parent.header.timestamp {
@@ -789,7 +788,7 @@ impl Engine {
                 // Subtract transactions and block from committed metrics
                 TRANSACTIONS_COMMITTED_TOTAL.sub(block.body.transactions.len() as f64);
 
-                let blobs_bundle = tokio::runtime::Handle::current().block_on(self.read_storage.get_payload_by_block_hash(discarded_hash)).map(|(_, _, _, b)| b);
+                let blobs_bundle = self.read_storage.get_payload_by_block_hash(discarded_hash).await.map(|(_, _, _, b)| b);
                 let mut blob_idx = 0;
 
                 for tx in block.body.transactions {

@@ -24,6 +24,7 @@ alloy-rlp = {workspace = true, features = ["derive"]}
 alloy-json-rpc = {workspace = true}
 alloy-eips = { workspace = true }
 dashmap = { workspace = true }
+arc-swap = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 async-trait = { workspace = true }
 futures-util = { workspace = true }

@@ -1,0 +1,171 @@
+Oct 19 08:28:53.678 INFO  Lighthouse started                            version: "Lighthouse/v8.2.3-6db6ae9"
+Oct 19 08:28:53.678 INFO  Configured network                            network_name: "custom (/app/startup)"
+Oct 19 08:28:53.687 INFO  Data directory initialised                    datadir: /root/.lighthouse
+Oct 19 08:28:53.688 INFO  Deposit contract                              deploy_block: 0, address: 0x00000000219ab540356cbb839cbe05303d7705fa
+Oct 19 08:28:53.689 WARN  Fork boundaries are not well aligned / multiples of 256  info: "This may cause issues as fork boundaries do not align with the start of sync committee period.", misaligned_forks: [(Electra, Epoch(99999999)), (Fulu, Epoch(99999999))]
+Oct 19 08:28:53.727 INFO  Blob DB initialized                           path: "/root/.lighthouse/beacon/blobs_db", oldest_blob_slot: Some(Slot(0)), oldest_data_column_slot: Some(Slot(3199999968))
+Oct 19 08:28:59.063 INFO  Starting from known genesis state           
+Oct 19 08:28:59.102 INFO  Block production enabled                    
+Oct 19 08:28:59.103 INFO  Beacon chain initialized                      head_state: 0xd3746e3ca16e4f41f2e49e227e412e6fc4be5c5d8a361ad5f68a8d7170abe00b, head_block: 0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f, head_slot: 0
+Oct 19 08:28:59.103 INFO  Timer service started                       
+Oct 19 08:28:59.104 INFO  UPnP Attempting to initialise routes        
+Oct 19 08:28:59.105 INFO  ENR Initialised                               enr: "enr:-Ou4QBpLq6t9vPYnRLNBOxl5AbaBU0jUvMbNZTEVVO7PHVW8KusrMRQzrCgJbu_ujg0gTgNF6uVJrFIofJCITnoYvqUBh2F0dG5ldHOIAAAAAAAAAACDY2djBIZjbGllbnTRikxpZ2h0aG91c2WFOC4yLjOEZXRoMpA6HycgYAAAAP_g9QUAAAAAgmlkgnY0gmlwhKwcHoaDbmZkhOEe4E6EcXVpY4IjKYlzZWNwMjU2azGhAwVLDj-PETQxGhN5w08jwTUBvJ1tXVGO7wjASYoMaD-7iHN5bmNuZXRzAIN0Y3CCIyiDdWRwgiMo", seq: 1, id: 0x7f1f..31df, ip4: Some(172.28.30.134), udp4: Some(9000), tcp4: Some(9000), tcp6: None, udp6: None, quic4: Some(9001), quic6: None
+Oct 19 08:28:59.106 INFO  Libp2p Starting                               peer_id: 16Uiu2HAmD1emYEHeHgmUNoWhJmFiUEPfLUnjYZ3FA32NrNhrn14v, bandwidth_config: "3-Average"
+Oct 19 08:28:59.106 INFO  Listening established                         address: /ip4/0.0.0.0/tcp/9000/p2p/16Uiu2HAmD1emYEHeHgmUNoWhJmFiUEPfLUnjYZ3FA32NrNhrn14v
+Oct 19 08:28:59.107 INFO  Listening established                         address: /ip4/0.0.0.0/udp/9001/quic-v1/p2p/16Uiu2HAmD1emYEHeHgmUNoWhJmFiUEPfLUnjYZ3FA32NrNhrn14v
+Oct 19 08:28:59.107 INFO  Waiting for genesis                           peers: "0", wait_time: "1 min"
+Oct 19 08:28:59.111 ERROR Genesis payload block hash mismatch           info: "genesis is misconfigured and likely to fail", consensus_node_block_hash: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, execution_node_block_hash: 0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:28:59.112 INFO  HTTP API started                              listen_address: 0.0.0.0:5052
+Oct 19 08:29:07.976 INFO  Sync state updated                            old_state: Stalled, new_state: Synced
+Oct 19 08:29:07.977 INFO  Subscribed to topics                          topics: ["/eth2/3a1f2720/beacon_block/ssz_snappy", "/eth2/3a1f2720/beacon_aggregate_and_proof/ssz_snappy", "/eth2/3a1f2720/voluntary_exit/ssz_snappy", "/eth2/3a1f2720/proposer_slashing/ssz_snappy", "/eth2/3a1f2720/attester_slashing/ssz_snappy", "/eth2/3a1f2720/sync_committee_contribution_and_proof/ssz_snappy", "/eth2/3a1f2720/light_client_finality_update/ssz_snappy", "/eth2/3a1f2720/light_client_optimistic_update/ssz_snappy", "/eth2/3a1f2720/bls_to_execution_change/ssz_snappy"]
+Oct 19 08:29:09.105 INFO  Could not UPnP map Discovery port             error: Gateway does not support UPnP
+Oct 19 08:29:09.108 INFO  UPnP not available                          
+Oct 19 08:29:11.113 INFO  Waiting for genesis                           peers: "1", wait_time: "1 min"
+Oct 19 08:29:11.115 ERROR Genesis payload block hash mismatch           info: "genesis is misconfigured and likely to fail", consensus_node_block_hash: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, execution_node_block_hash: 0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:29:23.116 INFO  Waiting for genesis                           peers: "2", wait_time: "0 mins"
+Oct 19 08:29:23.118 ERROR Genesis payload block hash mismatch           info: "genesis is misconfigured and likely to fail", consensus_node_block_hash: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, execution_node_block_hash: 0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:29:35.119 INFO  Waiting for genesis                           peers: "4", wait_time: "0 mins"
+Oct 19 08:29:35.121 ERROR Genesis payload block hash mismatch           info: "genesis is misconfigured and likely to fail", consensus_node_block_hash: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, execution_node_block_hash: 0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:29:47.122 INFO  Waiting for genesis                           peers: "5", wait_time: "0 mins"
+Oct 19 08:29:47.123 ERROR Genesis payload block hash mismatch           info: "genesis is misconfigured and likely to fail", consensus_node_block_hash: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, execution_node_block_hash: 0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:29:59.124 INFO  Waiting for genesis                           peers: "6", wait_time: "0 mins"
+Oct 19 08:29:59.125 ERROR Genesis payload block hash mismatch           info: "genesis is misconfigured and likely to fail", consensus_node_block_hash: 0xe3d6193c23104f81954ea3dcb7fe58f421084c2025a7ed54ab04f68f7536ad41, execution_node_block_hash: 0x5c0e7441ab7ada3918700fd53128ae31fe503d383bfd892d899ff4ceaed87813
+Oct 19 08:30:17.001 WARN  Unable to determine slot in state advance timer  error: UnableToReadSlot
+Oct 19 08:30:26.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "0xc5b6…a54f", slot: 0
+Oct 19 08:30:32.007 INFO  Prepared beacon proposer                      prepare_slot: 2, validator: 0, parent_root: 0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f, payload_status: Empty
+Oct 19 08:30:38.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 1
+Oct 19 08:30:44.008 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:30:44.008 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:30:44.009 WARN  Error processing HTTP API request             elapsed_ms: 4.770448, status: 400 Bad Request, path: /eth/v3/validator/blocks/2, method: GET
+Oct 19 08:30:44.014 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:30:44.014 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:30:44.014 WARN  Error processing HTTP API request             elapsed_ms: 3.6318610000000002, status: 400 Bad Request, path: /eth/v3/validator/blocks/2, method: GET
+Oct 19 08:30:44.017 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:30:44.017 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:30:44.018 WARN  Error processing HTTP API request             elapsed_ms: 2.802302, status: 400 Bad Request, path: /eth/v3/validator/blocks/2, method: GET
+Oct 19 08:30:44.021 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:30:44.021 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:30:44.022 WARN  Error processing HTTP API request             elapsed_ms: 3.360271, status: 400 Bad Request, path: /eth/v3/validator/blocks/2, method: GET
+Oct 19 08:30:50.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 2
+Oct 19 08:31:02.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 3
+Oct 19 08:31:14.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 4
+Oct 19 08:31:26.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 5
+Oct 19 08:31:38.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 6
+Oct 19 08:31:50.002 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 7
+Oct 19 08:32:02.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 8
+Oct 19 08:32:08.004 INFO  Prepared beacon proposer                      prepare_slot: 10, validator: 0, parent_root: 0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f, payload_status: Empty
+Oct 19 08:32:14.002 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 9
+Oct 19 08:32:20.013 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:32:20.013 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:32:20.013 WARN  Error processing HTTP API request             elapsed_ms: 5.978225, status: 400 Bad Request, path: /eth/v3/validator/blocks/10, method: GET
+Oct 19 08:32:20.017 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:32:20.017 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:32:20.018 WARN  Error processing HTTP API request             elapsed_ms: 3.8675900000000003, status: 400 Bad Request, path: /eth/v3/validator/blocks/10, method: GET
+Oct 19 08:32:20.022 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:32:20.022 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:32:20.022 WARN  Error processing HTTP API request             elapsed_ms: 3.602321, status: 400 Bad Request, path: /eth/v3/validator/blocks/10, method: GET
+Oct 19 08:32:20.026 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:32:20.026 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:32:20.026 WARN  Error processing HTTP API request             elapsed_ms: 3.2243720000000002, status: 400 Bad Request, path: /eth/v3/validator/blocks/10, method: GET
+Oct 19 08:32:26.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 10
+Oct 19 08:32:38.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 11
+Oct 19 08:32:50.002 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 12
+Oct 19 08:32:56.005 INFO  Prepared beacon proposer                      prepare_slot: 14, validator: 0, parent_root: 0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f, payload_status: Empty
+Oct 19 08:33:02.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 13
+Oct 19 08:33:08.009 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:33:08.009 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:33:08.009 WARN  Error processing HTTP API request             elapsed_ms: 4.986877, status: 400 Bad Request, path: /eth/v3/validator/blocks/14, method: GET
+Oct 19 08:33:08.012 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:33:08.013 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:33:08.013 WARN  Error processing HTTP API request             elapsed_ms: 3.114752, status: 400 Bad Request, path: /eth/v3/validator/blocks/14, method: GET
+Oct 19 08:33:08.017 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:33:08.017 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:33:08.017 WARN  Error processing HTTP API request             elapsed_ms: 3.2887709999999997, status: 400 Bad Request, path: /eth/v3/validator/blocks/14, method: GET
+Oct 19 08:33:08.021 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:33:08.021 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:33:08.021 WARN  Error processing HTTP API request             elapsed_ms: 3.4324120000000002, status: 400 Bad Request, path: /eth/v3/validator/blocks/14, method: GET
+Oct 19 08:33:14.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 14
+Oct 19 08:33:26.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 15
+Oct 19 08:33:38.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 16
+Oct 19 08:33:50.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 17
+Oct 19 08:34:02.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 18
+Oct 19 08:34:14.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 19
+Oct 19 08:34:26.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 20
+Oct 19 08:34:38.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 21
+Oct 19 08:34:50.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 22
+Oct 19 08:35:02.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 23
+Oct 19 08:35:14.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 24
+Oct 19 08:35:20.003 INFO  Prepared beacon proposer                      prepare_slot: 26, validator: 0, parent_root: 0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f, payload_status: Empty
+Oct 19 08:35:26.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 25
+Oct 19 08:35:32.011 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:35:32.011 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:35:32.011 WARN  Error processing HTTP API request             elapsed_ms: 5.5711759999999995, status: 400 Bad Request, path: /eth/v3/validator/blocks/26, method: GET
+Oct 19 08:35:32.016 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:35:32.016 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:35:32.017 WARN  Error processing HTTP API request             elapsed_ms: 4.418478, status: 400 Bad Request, path: /eth/v3/validator/blocks/26, method: GET
+Oct 19 08:35:32.021 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:35:32.021 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:35:32.021 WARN  Error processing HTTP API request             elapsed_ms: 3.828481, status: 400 Bad Request, path: /eth/v3/validator/blocks/26, method: GET
+Oct 19 08:35:32.025 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:35:32.025 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:35:32.026 WARN  Error processing HTTP API request             elapsed_ms: 3.74165, status: 400 Bad Request, path: /eth/v3/validator/blocks/26, method: GET
+Oct 19 08:35:38.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 26
+Oct 19 08:35:50.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 27
+Oct 19 08:35:56.004 INFO  Prepared beacon proposer                      prepare_slot: 29, validator: 0, parent_root: 0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f, payload_status: Empty
+Oct 19 08:36:02.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 28
+Oct 19 08:36:08.009 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:36:08.009 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:36:08.010 WARN  Error processing HTTP API request             elapsed_ms: 4.996458, status: 400 Bad Request, path: /eth/v3/validator/blocks/29, method: GET
+Oct 19 08:36:08.014 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:36:08.015 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:36:08.015 WARN  Error processing HTTP API request             elapsed_ms: 3.88964, status: 400 Bad Request, path: /eth/v3/validator/blocks/29, method: GET
+Oct 19 08:36:08.019 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:36:08.019 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:36:08.019 WARN  Error processing HTTP API request             elapsed_ms: 3.4846909999999998, status: 400 Bad Request, path: /eth/v3/validator/blocks/29, method: GET
+Oct 19 08:36:08.023 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:36:08.023 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:36:08.024 WARN  Error processing HTTP API request             elapsed_ms: 3.484321, status: 400 Bad Request, path: /eth/v3/validator/blocks/29, method: GET
+Oct 19 08:36:14.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 29
+Oct 19 08:36:26.002 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 30
+Oct 19 08:36:38.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 0, block: "   …  empty", slot: 31
+Oct 19 08:36:50.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 32
+Oct 19 08:37:02.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 33
+Oct 19 08:37:14.002 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 34
+Oct 19 08:37:26.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 35
+Oct 19 08:37:38.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 36
+Oct 19 08:37:50.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 37
+Oct 19 08:38:02.002 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 38
+Oct 19 08:38:14.002 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 39
+Oct 19 08:38:26.002 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 40
+Oct 19 08:38:38.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 41
+Oct 19 08:38:50.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 42
+Oct 19 08:39:02.002 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 43
+Oct 19 08:39:12.028 WARN  Could not publish message                     error: NoPeersSubscribedToTopic, kind: beacon_attestation_12
+Oct 19 08:39:14.002 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 44
+Oct 19 08:39:26.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 45
+Oct 19 08:39:38.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 46
+Oct 19 08:39:50.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 47
+Oct 19 08:40:02.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 48
+Oct 19 08:40:14.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 49
+Oct 19 08:40:26.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 50
+Oct 19 08:40:38.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 51
+Oct 19 08:40:44.003 INFO  Prepared beacon proposer                      prepare_slot: 53, validator: 0, parent_root: 0xc5b6e3ac869b615296a058e434ec224c39c6e8e56dadac3b53a0f3c58311a54f, payload_status: Empty
+Oct 19 08:40:50.002 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 52
+Oct 19 08:40:56.013 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:40:56.013 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:40:56.013 WARN  Error processing HTTP API request             elapsed_ms: 7.352892, status: 400 Bad Request, path: /eth/v3/validator/blocks/53, method: GET
+Oct 19 08:40:56.018 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:40:56.018 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:40:56.018 WARN  Error processing HTTP API request             elapsed_ms: 3.607221, status: 400 Bad Request, path: /eth/v3/validator/blocks/53, method: GET
+Oct 19 08:40:56.022 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:40:56.022 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:40:56.022 WARN  Error processing HTTP API request             elapsed_ms: 3.668411, status: 400 Bad Request, path: /eth/v3/validator/blocks/53, method: GET
+Oct 19 08:40:56.026 ERROR Exec engine unable to produce payload         msg: "No payload ID, the engine is likely syncing. This has the potential to cause a missed block proposal.", status: PayloadStatusV1 { status: Syncing, latest_valid_hash: None, validation_error: None }
+Oct 19 08:40:56.026 WARN  Execution engine call failed                  error: PayloadIdUnavailable
+Oct 19 08:40:56.026 WARN  Error processing HTTP API request             elapsed_ms: 2.522323, status: 400 Bad Request, path: /eth/v3/validator/blocks/53, method: GET
+Oct 19 08:41:02.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 53
+Oct 19 08:41:14.002 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 54
+Oct 19 08:41:26.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 55
+Oct 19 08:41:38.002 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 56
+Oct 19 08:41:50.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 57
+Oct 19 08:42:02.001 INFO  Synced                                        peers: "9", exec_hash: "n/a", finalized_root: 0xc5b6…a54f, finalized_epoch: 0, epoch: 1, block: "   …  empty", slot: 58
