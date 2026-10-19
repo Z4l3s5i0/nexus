@@ -112,7 +112,8 @@ impl BatchWriter {
         let mut trie = EthTrie::new(self, initial_root);
 
         // 1. Load addresses that were modified in this batch
-        let batch_addresses = self.touched_accounts.iter().map(|a| *a).collect::<Vec<_>>();
+        let mut batch_addresses = self.touched_accounts.iter().map(|a| *a).collect::<Vec<_>>();
+        batch_addresses.sort();
 
         for addr in batch_addresses {
             let hashed_addr = alloy_primitives::keccak256(addr);
@@ -185,31 +186,37 @@ impl BatchWriter {
 
     async fn calculate_storage_root_internal(&self, address: Address, state_root: Option<B256>) -> Result<B256> {
         let state_root = state_root.or_else(|| self.base_state_root.load().as_ref().map(|r| **r));
-        let initial_root = self.read_provider.account(address, state_root).await?
-            .map(|a| a.storage_root)
-            .unwrap_or(alloy_trie::EMPTY_ROOT_HASH);
+        let initial_root = if self.resetted_storages.contains(&address) {
+            alloy_trie::EMPTY_ROOT_HASH
+        } else {
+            self.read_provider.account(address, state_root).await?
+                .map(|a| a.storage_root)
+                .unwrap_or(alloy_trie::EMPTY_ROOT_HASH)
+        };
 
         let mut trie = EthTrie::new(self, initial_root);
 
-        let touched_slots = self.touched_storages.iter()
+        let mut touched_slots = self.touched_storages.iter()
             .filter(|r| r.key().0 == address)
             .map(|r| (r.key().1, *r.value()))
             .collect::<Vec<_>>();
-
-        if self.resetted_storages.contains(&address) {
-            // If resetted, we should probably start from empty trie or handle it.
-            // For now, let's just clear what we have in the trie.
-            // This is complex because we don't know all slots.
-            // But if we use HashedStorage table, we can iterate.
-            let _hashed_address = alloy_primitives::keccak256(address);
-            // redb doesn't support easy prefix delete, so we'd have to iterate.
-            // Let's assume for now reset_storage is rare and not fully optimized here.
-        }
+        touched_slots.sort_by_key(|(slot, _)| *slot);
 
         for (slot, value) in touched_slots {
             let hashed_slot = alloy_primitives::keccak256(slot);
             if value == U256::ZERO {
                 trie.delete(hashed_slot).await?;
+                
+                // Sync PlainState and HashedState removal
+                if let BatchTransaction::Write(wtx) = &self.tx {
+                    let mut storages = wtx.open_table(Storages::definition())?;
+                    storages.remove((address, slot))?;
+
+                    let hashed_address = alloy_primitives::keccak256(address);
+                    let combined_key = alloy_primitives::keccak256([hashed_address.0, hashed_slot.0].concat());
+                    let mut hashed_table = wtx.open_table(HashedState::definition())?;
+                    hashed_table.remove(combined_key)?;
+                }
             } else {
                 let mut buf = Vec::new();
                 alloy_rlp::Encodable::encode(&value, &mut buf);

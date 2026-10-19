@@ -4934,6 +4934,7 @@ dependencies = [
  "once_cell",
  "prometheus",
  "serde_json",
+ "sha2",
  "wasix_eth_types",
 ]
 

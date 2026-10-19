@@ -7,10 +7,17 @@ use redb::{Database, ReadableDatabase};
 use std::path::Path;
 use std::sync::Arc;
 use wasix_eth_types::genesis::GenesisConfiguration;
-use wasix_eth_types::{proofs, Block, BlockBody, Header, Result, TrieAccount, B256, B64, EMPTY_OMMER_ROOT_HASH, U256, Hardfork, Address, BlobsBundleV1};
+use wasix_eth_types::{
+    HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE,
+    WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, WITHDRAWAL_REQUEST_PREDEPLOY_CODE,
+    CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS, CONSOLIDATION_REQUEST_PREDEPLOY_CODE,
+    proofs, Block, BlockBody, Header, Result, TrieAccount, B256, B64, EMPTY_OMMER_ROOT_HASH, U256, Hardfork, Address, BlobsBundleV1
+};
 use wasix_eth_utils::{debug, info};
 use alloy_rlp::Encodable;
-use crate::read_traits::MetadataProvider;
+use alloy_trie::EMPTY_ROOT_HASH;
+use crate::read_traits::{MetadataProvider, AccountProvider};
+use wasix_eth_types::constants::*;
 use crate::write_traits::{AccountWriter, BlockWriter, BytecodeWriter, HeaderWriter, MetadataWriter, StorageWriter};
 
 pub struct EthDatabase {
@@ -103,6 +110,7 @@ impl EthDatabase {
                 blob_gas_used: if fork >= Hardfork::Cancun { Some(genesis.blob_gas_used.map(|v| v.to::<u64>()).unwrap_or(0)) } else { None },
                 excess_blob_gas: if fork >= Hardfork::Cancun { Some(genesis.excess_blob_gas.map(|v| v.to::<u64>()).unwrap_or(0)) } else { None },
                 parent_beacon_block_root: if fork >= Hardfork::Cancun { Some(B256::ZERO) } else { None },
+                requests_hash: if fork >= Hardfork::Prague { Some(EMPTY_ROOT_HASH) } else { None },
                 ..Default::default()
             };
 
@@ -165,6 +173,38 @@ impl EthDatabase {
         debug!("[Execution] GENESIS STATE CALCULATION BEGIN");
         debug!("[Execution] GENESIS CONFIG: coinbase={:?}, number={}, timestamp={}, fork={:?}, eip161={}", beneficiary, number, timestamp, fork, eip161);
 
+        if fork >= Hardfork::Prague {
+            // NOTE: We cannot use wasix_eth_execution::block::BlockProcessor here due to circular dependency.
+            // We should either move this logic to wasix_eth_execution or just manually initialize here if needed.
+            // But if we strictly follow the gitdiff, it HAS the circular dependency.
+            // Let's see if we can just do what BlockProcessor does but without the dependency.
+            
+            // Re-implementing BlockProcessor::initialize_prague_system_contracts logic here manually
+            async fn ensure_code(batch: &crate::write::BatchWriter, addr: Address, code: &[u8]) -> anyhow::Result<()> {
+                let account = batch.account(addr, None).await?;
+                let is_new = account.is_none();
+                let mut contract_acc = account.unwrap_or(TrieAccount {
+                    nonce: 1,
+                    balance: U256::ZERO,
+                    storage_root: EMPTY_ROOT_HASH,
+                    code_hash: KECCAK256_EMPTY,
+                });
+                let code_hash = alloy_primitives::keccak256(code);
+                if is_new || contract_acc.code_hash != code_hash {
+                    contract_acc.code_hash = code_hash;
+                    if is_new { contract_acc.nonce = 1; }
+                    batch.insert_bytecode(code_hash, code.to_vec().into()).await?;
+                    batch.update_account(addr, contract_acc).await?;
+                }
+                Ok(())
+            }
+
+            ensure_code(&batch, HISTORY_STORAGE_ADDRESS, &HISTORY_STORAGE_CODE).await?;
+            ensure_code(&batch, WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, &WITHDRAWAL_REQUEST_PREDEPLOY_CODE).await?;
+            ensure_code(&batch, CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS, &CONSOLIDATION_REQUEST_PREDEPLOY_CODE).await?;
+            debug!("[Execution] Prague system contracts initialized");
+        }
+
         for (address, account) in &genesis.alloc {
             let addr = *address;
             
@@ -185,24 +225,22 @@ impl EthDatabase {
                 KECCAK256_EMPTY
             };
 
-            let trie_account = TrieAccount {
+            let trie_acc = TrieAccount {
                 nonce: account.nonce.unwrap_or(0),
                 balance: account.balance,
                 storage_root,
                 code_hash,
             };
 
-            batch.update_account(addr, trie_account).await?;
+            debug!("[Execution] Adding account to genesis trie: addr={:?}, balance={}, nonce={}, storage={:?}, code={:?}", addr, trie_acc.balance, trie_acc.nonce, trie_acc.storage_root, trie_acc.code_hash);
+
+            batch.update_account(addr, trie_acc).await?;
         }
 
         let state_root = batch.calculate_state_root(eip161, None).await?;
         batch.commit()?;
         
-        debug!(
-            "[Execution] GENESIS STATE ROOT:
-                root={:?}",
-            state_root,
-        );
+        debug!("[Execution] GENESIS STATE ROOT CALCULATED: {:?}", state_root);
 
         Ok(state_root)
     }

@@ -1,4 +1,5 @@
-use wasix_eth_types::Bytes;
+use wasix_eth_types::{Bytes, EMPTY_ROOT_HASH};
+use sha2::Digest;
 use wasix_eth_types::Encodable2718;
 use wasix_eth_types::ExecutionPayloadBodyV1;
 use wasix_eth_types::ExecutionPayloadEnvelopeV2;
@@ -176,17 +177,71 @@ impl EngineMapper {
         payload: &ExecutionPayloadV4,
         transactions: Vec<Transaction>,
         parent_beacon_block_root: B256,
-        _execution_requests: Vec<Bytes>,
+        execution_requests: Vec<Bytes>,
         chain_config: &ChainConfig,
     ) -> Block<Transaction> {
-        let block = Self::payload_v3_to_block(
+        let mut block = Self::payload_v3_to_block(
             &payload.payload_inner,
             transactions,
             parent_beacon_block_root,
             chain_config,
         );
-        // TODO: calculate requests_hash if needed for Prague
+        
+        let fork = Hardfork::get_active_fork(chain_config, block.header.number, block.header.timestamp);
+        if fork >= Hardfork::Prague {
+            // Calculate requests_hash from execution_requests
+            let requests: Vec<Vec<u8>> = execution_requests.iter().map(|b| b.to_vec()).collect();
+            block.header.requests_hash = Some(Self::calculate_requests_hash(fork, &requests));
+        }
+        
         block
+    }
+
+    pub fn calculate_requests_hash(fork: Hardfork, requests: &[Vec<u8>]) -> B256 {
+        if requests.is_empty() {
+            return EMPTY_ROOT_HASH;
+        }
+
+        // Filter out requests with only request_type (len <= 1)
+        let filtered_requests: Vec<_> = requests.iter()
+            .filter(|r| r.len() > 1)
+            .collect();
+
+        if filtered_requests.is_empty() {
+            return EMPTY_ROOT_HASH;
+        }
+
+        let mut intermediate_hashes = Vec::new();
+
+        if fork >= Hardfork::Prague {
+            // Group by request_type (first byte) and maintain ascending order of types
+            let mut type_to_requests: std::collections::BTreeMap<u8, Vec<&Vec<u8>>> = std::collections::BTreeMap::new();
+            for &req in &filtered_requests {
+                let ty = req[0];
+                type_to_requests.entry(ty).or_default().push(req);
+            }
+
+            for (_ty, reqs) in type_to_requests {
+                for r in reqs {
+                    let mut hasher = sha2::Sha256::new();
+                    hasher.update(r);
+                    intermediate_hashes.push(hasher.finalize());
+                }
+            }
+        } else {
+            // No sorting/grouping for pre-Prague
+            for &r in &filtered_requests {
+                let mut hasher = sha2::Sha256::new();
+                hasher.update(r);
+                intermediate_hashes.push(hasher.finalize());
+            }
+        }
+
+        let mut final_hasher = sha2::Sha256::new();
+        for h in intermediate_hashes {
+            final_hasher.update(&h);
+        }
+        B256::from_slice(&final_hasher.finalize())
     }
 
     pub fn payload_v1_to_block(

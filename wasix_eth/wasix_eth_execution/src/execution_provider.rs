@@ -1,5 +1,5 @@
 use crate::block::BlockProcessor;
-use alloy_primitives::Keccak256;
+use alloy_primitives::Bloom;
 use async_trait::async_trait;
 use evm::backend::InMemoryEnvironment;
 use evm::interpreter::etable::Chained;
@@ -12,7 +12,7 @@ use wasix_eth_storage::write_traits::AccountWriter;
 use wasix_eth_types::eip6110::DepositRequest;
 use wasix_eth_types::PayloadAttributes;
 use wasix_eth_types::*;
-use wasix_eth_types::{logs_bloom, proofs};
+use wasix_eth_types::proofs;
 
 pub use crate::executor::{EvmExecutor, TransactionExecutionResult};
 
@@ -139,15 +139,7 @@ impl EthExecutionProvider {
     }
 
     pub fn calculate_requests_hash(&self, fork: Hardfork, requests: &[Vec<u8>]) -> B256 {
-        if fork < Hardfork::Prague || requests.is_empty() {
-            return EMPTY_ROOT_HASH;
-        }
-
-        let mut hasher = Keccak256::new();
-        for request in requests {
-            hasher.update(request);
-        }
-        hasher.finalize()
+        wasix_eth_utils::engine_mapper::EngineMapper::calculate_requests_hash(fork, requests)
     }
 
     async fn prepare_execution_env(
@@ -171,64 +163,98 @@ impl EthExecutionProvider {
         Ok((chain_config, fork, config, env))
     }
 
-    pub fn finalize_block_header_with_requests(
+    pub async fn finalize_block_header_with_requests(
         &self,
         block: &mut Block<Transaction>,
         receipts: &[Receipt],
-        gas_used: u64,
-        state_root: B256,
+        cumulative_gas_used: u64,
+        calculated_root: B256,
         fork: Hardfork,
         building: bool,
     ) -> Result<()> {
-        block.header.gas_used = gas_used;
-        block.header.state_root = state_root;
-        block.header.receipts_root = proofs::calculate_receipt_root(receipts);
-        block.header.logs_bloom = logs_bloom(receipts.iter().flat_map(|r| r.receipt.logs.iter()));
+        let transactions_root = proofs::calculate_transaction_root(&block.body.transactions);
+        let receipts_root = proofs::calculate_receipt_root(receipts);
 
-        if !building {
-            block.header.transactions_root = proofs::calculate_transaction_root(&block.body.transactions);
+        let mut logs_bloom = Bloom::default();
+        for receipt in receipts {
+            logs_bloom.accrue_bloom(&receipt.logs_bloom);
         }
 
-        if fork >= Hardfork::Shanghai {
-            if let Some(withdrawals) = &block.body.withdrawals {
-                block.header.withdrawals_root = Some(proofs::calculate_withdrawals_root(&withdrawals.0));
+        // Determine if we should update or validate based on the presence of values.
+        // We use a "building" heuristic: if key fields are missing or at their default "empty" values, we fill them.
+        let is_building = building || block.header.state_root == B256::ZERO
+            || (block.header.gas_used == 0 && cumulative_gas_used > 0);
+
+        if is_building {
+            block.header.gas_used = cumulative_gas_used;
+            block.header.transactions_root = transactions_root;
+            block.header.receipts_root = receipts_root;
+            block.header.logs_bloom = logs_bloom;
+            block.header.state_root = calculated_root;
+
+            if fork >= Hardfork::Shanghai && block.header.withdrawals_root.is_none() {
+                let withdrawals = block.body.withdrawals.as_ref().map(|w| w.0.as_slice()).unwrap_or(&[]);
+                block.header.withdrawals_root = Some(proofs::calculate_withdrawals_root(withdrawals));
             }
-        }
+            if fork >= Hardfork::Cancun {
+                let blob_gas_used = block
+                    .body
+                    .transactions
+                    .iter()
+                    .filter(|tx| tx.tx_type() == TxType::Eip4844)
+                    .count() as u64
+                    * DATA_GAS_PER_BLOB;
 
-        if fork >= Hardfork::Cancun {
-            let blob_gas_used = block
-                .body
-                .transactions
-                .iter()
-                .filter(|tx| tx.tx_type() == TxType::Eip4844)
-                .count() as u64
-                * DATA_GAS_PER_BLOB;
-            let excess_blob_gas = calc_excess_blob_gas(
-                None, // Simplified for now
-                Some(blob_gas_used),
-                TARGET_BLOB_GAS_PER_BLOCK,
-            );
-            block.header.blob_gas_used = Some(blob_gas_used);
-            block.header.excess_blob_gas = Some(excess_blob_gas);
-        }
-
-        if fork >= Hardfork::Prague {
-            let mut all_requests = Vec::new();
-
-            // EIP-6110
-            let deposits = self.collect_deposits(receipts);
-            if !deposits.is_empty() {
-                let mut out = Vec::new();
-                for deposit in deposits {
-                    eip6110_utils::encode_deposit_request(&deposit, &mut out);
+                if block.header.blob_gas_used.is_none() {
+                    block.header.blob_gas_used = Some(blob_gas_used);
                 }
-                all_requests.push(out);
+                if block.header.excess_blob_gas.is_none() {
+                    let parent_excess_blob_gas = if block.header.number > 0 {
+                        self.read_storage.header(BlockId::Hash(block.header.parent_hash.into())).await.ok().flatten().and_then(|h| h.excess_blob_gas)
+                    } else {
+                        None
+                    };
+                    let parent_blob_gas_used = if block.header.number > 0 {
+                        self.read_storage.header(BlockId::Hash(block.header.parent_hash.into())).await.ok().flatten().and_then(|h| h.blob_gas_used)
+                    } else {
+                        None
+                    };
+
+                    let excess_blob_gas = calc_excess_blob_gas(
+                        parent_excess_blob_gas,
+                        parent_blob_gas_used,
+                        TARGET_BLOB_GAS_PER_BLOCK,
+                    );
+                    block.header.excess_blob_gas = Some(excess_blob_gas);
+                }
+                if block.header.parent_beacon_block_root.is_none() {
+                    block.header.parent_beacon_block_root = Some(B256::ZERO);
+                }
             }
 
-            // Other requests would be collected here if they weren't already in the block
-            // In this implementation we assume they are added to all_requests
-            
-            block.header.requests_hash = Some(self.calculate_requests_hash(fork, &all_requests));
+            if fork >= Hardfork::Prague {
+                if block.header.requests_hash.is_none() {
+                    let mut all_requests = Vec::new();
+
+                    // EIP-6110: Deposit request type 0
+                    let deposits = self.collect_deposits(receipts);
+                    for deposit in deposits {
+                        let mut deposit_buf = Vec::new();
+                        eip6110_utils::encode_deposit_request(&deposit, &mut deposit_buf);
+
+                        let mut request_buf = Vec::with_capacity(1 + deposit_buf.len());
+                        request_buf.push(0x00u8);
+                        request_buf.extend_from_slice(&deposit_buf);
+                        all_requests.push(request_buf);
+                    }
+
+                    // For header building, we rely on the requests collected during execution
+                    // If they are not already in the header, we can't easily re-collect them here 
+                    // without a batch, env, etc. So we assume they are handled in execute_block_with_batch.
+                    // However, we MUST ensure the hash is set if it's missing.
+                    block.header.requests_hash = Some(self.calculate_requests_hash(fork, &all_requests));
+                }
+            }
         }
 
         Ok(())
@@ -263,6 +289,10 @@ impl ExecutionProvider for EthExecutionProvider {
 
         let (_chain_config, fork, config, env) = self.prepare_execution_env(&block.header).await?;
         let block_processor = BlockProcessor::new(batch);
+
+        if fork >= Hardfork::Prague {
+            block_processor.initialize_prague_system_contracts(fork, state_root).await?;
+        }
 
         if fork >= Hardfork::Cancun {
             if let Some(beacon_root) = block.header.parent_beacon_block_root {
@@ -305,17 +335,50 @@ impl ExecutionProvider for EthExecutionProvider {
 
         let mut all_requests = Vec::new();
         if fork >= Hardfork::Prague {
-            let withdrawal_requests = self.collect_withdrawal_requests(&block.header, batch, &env, &config, &invoker, fork, state_root).await?;
-            all_requests.extend(withdrawal_requests);
+            // EIP-6110: Deposits
+            let deposits = self.collect_deposits(&receipts);
+            for deposit in deposits {
+                let mut deposit_buf = Vec::new();
+                eip6110_utils::encode_deposit_request(&deposit, &mut deposit_buf);
+                let mut request_buf = Vec::with_capacity(1 + deposit_buf.len());
+                request_buf.push(0x00u8);
+                request_buf.extend_from_slice(&deposit_buf);
+                all_requests.push(request_buf);
+            }
 
+            // EIP-7002: Withdrawal requests
+            let withdrawal_requests = self.collect_withdrawal_requests(&block.header, batch, &env, &config, &invoker, fork, state_root).await?;
+            for req_data in withdrawal_requests {
+                if !req_data.is_empty() && req_data.len() % 76 == 0 {
+                    for chunk in req_data.chunks_exact(76) {
+                        let mut request = Vec::with_capacity(77);
+                        request.push(0x01u8);
+                        request.extend_from_slice(chunk);
+                        all_requests.push(request);
+                    }
+                }
+            }
+
+            // EIP-7251: Consolidation requests
             let consolidation_requests = self.collect_consolidation_requests(&block.header, batch, &env, &config, &invoker, fork, state_root).await?;
-            all_requests.extend(consolidation_requests);
+            for req_data in consolidation_requests {
+                if !req_data.is_empty() && req_data.len() % 192 == 0 {
+                    for chunk in req_data.chunks_exact(192) {
+                        let mut request = Vec::with_capacity(193);
+                        request.push(0x02u8);
+                        request.extend_from_slice(chunk);
+                        all_requests.push(request);
+                    }
+                }
+            }
+            
+            block.header.requests_hash = Some(self.calculate_requests_hash(fork, &all_requests));
         }
 
         block_processor.apply_block_rewards(fork, block.header.beneficiary, &block.body.ommers, state_root, block.header.number).await?;
 
         let calculated_root = batch.calculate_state_root(fork >= Hardfork::SpuriousDragon, state_root).await?;
-        self.finalize_block_header_with_requests(&mut block, &receipts, cumulative_gas_used, calculated_root, fork, building)?;
+        self.finalize_block_header_with_requests(&mut block, &receipts, cumulative_gas_used, calculated_root, fork, building).await?;
 
         Ok((block, receipts, metas))
     }
@@ -361,6 +424,20 @@ impl ExecutionProvider for EthExecutionProvider {
         let mut cumulative_gas_used = 0u64;
 
         for tx in transactions {
+            // Simulation funding: Ensure sender has enough balance
+            if let Ok(sender) = tx.recover_signer() {
+                if let Ok(mut account) = batch.account(sender, state_root).await {
+                    let mut acc = account.unwrap_or_else(|| TrieAccount {
+                        nonce: 0,
+                        balance: U256::ZERO,
+                        storage_root: EMPTY_ROOT_HASH,
+                        code_hash: alloy_primitives::KECCAK256_EMPTY,
+                    });
+                    acc.balance = U256::from(10u128.pow(30)); // 1 Trillion ETH
+                    let _ = batch.update_account(sender, acc).await;
+                }
+            }
+
             let result = self.executor.execute_transaction(
                 &tx,
                 &batch,

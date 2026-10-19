@@ -22,4 +22,5 @@ alloy-rlp = {workspace = true}
 k256 = {workspace = true}
 anyhow = {workspace = true}
 serde_json = {workspace = true}
+sha2 = {workspace = true}
 

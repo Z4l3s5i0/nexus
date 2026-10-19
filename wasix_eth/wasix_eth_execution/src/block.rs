@@ -4,7 +4,7 @@ use wasix_eth_types::constants::*;
 use wasix_eth_storage::write::BatchWriter;
 use wasix_eth_storage::read_traits::AccountProvider;
 use wasix_eth_storage::write_traits::{AccountWriter, BytecodeWriter, StorageWriter};
-use wasix_eth_utils::debug;
+use wasix_eth_utils::{debug, info};
 use anyhow::Result;
 
 const BEACON_ROOTS_ADDRESS: Address = Address::new([
@@ -12,7 +12,7 @@ const BEACON_ROOTS_ADDRESS: Address = Address::new([
     0x3d, 0x77, 0x05, 0xFa,
 ]);
 const BEACON_ROOTS_CODE: [u8; 0] = []; // Placeholder, adjust if known
-const HISTORY_STORAGE_PRUNING_WINDOW: u64 = 8192;
+const HISTORY_STORAGE_PRUNING_WINDOW: u64 = 8191;
 
 pub struct BlockProcessor<'a> {
     pub batch: &'a BatchWriter,
@@ -35,37 +35,52 @@ impl<'a> BlockProcessor<'a> {
         // Ensure contract code is present
         self.ensure_system_contract_code(beacon_root_contract, &BEACON_ROOTS_CODE, state_root).await?;
 
-        let timestamp_slot = B256::from(U256::from(timestamp % HISTORY_STORAGE_PRUNING_WINDOW));
-        let root_slot = B256::from(U256::from(timestamp % HISTORY_STORAGE_PRUNING_WINDOW) + U256::from(HISTORY_STORAGE_PRUNING_WINDOW));
+        let index = timestamp % HISTORY_STORAGE_PRUNING_WINDOW;
+        let timestamp_slot = B256::from(U256::from(index));
+        let root_slot = B256::from(U256::from(index + HISTORY_STORAGE_PRUNING_WINDOW));
 
         self.batch.update_storage(beacon_root_contract, timestamp_slot, U256::from(timestamp)).await?;
         self.batch.update_storage(beacon_root_contract, root_slot, U256::from_be_bytes(beacon_root.0)).await?;
+        self.batch.mark_account_touched(beacon_root_contract)?;
         
         Ok(0)
     }
 
     pub async fn ensure_system_contract_code(&self, address: Address, code: &[u8], state_root: Option<B256>) -> Result<()> {
         let account = self.batch.account(address, state_root).await?;
+        let is_new = account.is_none();
+        let mut contract_acc = account.unwrap_or(TrieAccount {
+            nonce: 1,
+            balance: U256::ZERO,
+            storage_root: EMPTY_ROOT_HASH,
+            code_hash: alloy_primitives::KECCAK256_EMPTY,
+        });
+
         let code_hash = keccak256(code);
         
-        let needs_init = match account {
-            Some(acc) => acc.code_hash == B256::ZERO || acc.code_hash == alloy_primitives::KECCAK256_EMPTY,
-            None => true,
-        };
-
-        if needs_init {
-            let mut contract_acc = account.unwrap_or(TrieAccount {
-                nonce: 1,
-                balance: U256::ZERO,
-                storage_root: EMPTY_ROOT_HASH,
-                code_hash,
-            });
+        if is_new || contract_acc.code_hash != code_hash {
             contract_acc.code_hash = code_hash;
+            if is_new {
+                contract_acc.nonce = 1;
+            }
             
             self.batch.insert_bytecode(code_hash, code.to_vec().into()).await?;
             self.batch.update_account(address, contract_acc).await?;
         }
         Ok(())
+    }
+
+    pub async fn initialize_prague_system_contracts(&self, fork: Hardfork, state_root: Option<B256>) -> Result<u64> {
+        if fork < Hardfork::Prague {
+            return Ok(0);
+        }
+
+        self.ensure_system_contract_code(HISTORY_STORAGE_ADDRESS, &HISTORY_STORAGE_CODE, state_root).await?;
+        self.ensure_system_contract_code(WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, &WITHDRAWAL_REQUEST_PREDEPLOY_CODE, state_root).await?;
+        self.ensure_system_contract_code(CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS, &CONSOLIDATION_REQUEST_PREDEPLOY_CODE, state_root).await?;
+        debug!("[Execution] Prague system contracts initialized");
+
+        Ok(0)
     }
 
     pub async fn process_withdrawals(&self, withdrawals: &[Withdrawal], state_root: Option<B256>) -> Result<()> {
