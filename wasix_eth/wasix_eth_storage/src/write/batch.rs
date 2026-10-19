@@ -179,6 +179,7 @@ impl BatchWriter {
             }
         }
 
+        trie.commit().await?;
         let root = trie.root_hash();
         debug!("[Trie] Final state root: {:?}", root);
         Ok(root)
@@ -224,6 +225,7 @@ impl BatchWriter {
             }
         }
 
+        trie.commit().await?;
         Ok(trie.root_hash())
     }
 
