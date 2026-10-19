@@ -108,7 +108,7 @@ impl BatchWriter {
             }
         };
 
-        debug!("[Trie] calculate_state_root_internal: initial_root={:?}", initial_root);
+        debug!("[Trie] calculate_state_root_internal: initial_root={:?}, touched_accounts_count={}", initial_root, self.touched_accounts.len());
         let mut trie = EthTrie::new(self, initial_root);
 
         // 1. Load addresses that were modified in this batch
@@ -150,7 +150,7 @@ impl BatchWriter {
                     code_hash: if acc.code_hash == B256::default() { alloy_primitives::KECCAK256_EMPTY } else { acc.code_hash },
                 };
 
-                debug!("[Trie] Updating account in trie: addr={:?}, balance={}, nonce={}, storage={:?}, code={:?}", addr, trie_acc.balance, trie_acc.nonce, trie_acc.storage_root, trie_acc.code_hash);
+                debug!("[Trie] Updating account in trie: addr={:?}, balance={}, nonce={}, storage={:?}, code={:?}, hashed_addr={:?}", addr, trie_acc.balance, trie_acc.nonce, trie_acc.storage_root, trie_acc.code_hash, hashed_addr);
 
                 // Update Accounts table with new storage root
                 match &self.tx {
