@@ -71,6 +71,8 @@ pub trait AccountWriter: Send + Sync {
     async fn calculate_storage_root(&self, address: Address, state_root: Option<B256>) -> anyhow::Result<B256>;
     /// Clears any tracked "original" values used for ChangeSet generation.
     fn clear_tracking(&self);
+    /// Marks an account as touched (modified) in the current batch.
+    async fn mark_account_touched(&self, address: Address) -> anyhow::Result<()>;
 }
 
 /// Trait for writing storage information to the database.

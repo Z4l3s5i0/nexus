@@ -29,7 +29,7 @@ impl Downloader {
                 let td = session.eth_status().await.map(|s| s.total_difficulty).unwrap_or(U256::ZERO);
                 let height = session.best_height().await;
                 
-                debug!("[Downloader] Peer {} has TD {} and height {}", peer_info.peer_id, td, height);
+                // debug!("[Downloader] Peer {} has TD {} and height {}", peer_info.peer_id, td, height);
 
                 // Prioritize TD first, then height.
                 // If TD is zero (Eth69), we compare only by height.

@@ -182,7 +182,7 @@ impl EthExecutionProvider {
 
         // Determine if we should update or validate based on the presence of values.
         // We use a "building" heuristic: if key fields are missing or at their default "empty" values, we fill them.
-        let is_building = building || block.header.state_root == B256::ZERO
+        let is_building = building || (block.header.state_root == B256::ZERO && block.header.number > 0)
             || (block.header.gas_used == 0 && cumulative_gas_used > 0);
 
         if is_building {
@@ -192,7 +192,7 @@ impl EthExecutionProvider {
             block.header.logs_bloom = logs_bloom;
             block.header.state_root = calculated_root;
 
-            if fork >= Hardfork::Shanghai && block.header.withdrawals_root.is_none() {
+            if fork >= Hardfork::Shanghai && (block.header.withdrawals_root.is_none() || block.header.withdrawals_root == Some(B256::ZERO)) {
                 let withdrawals = block.body.withdrawals.as_ref().map(|w| w.0.as_slice()).unwrap_or(&[]);
                 block.header.withdrawals_root = Some(proofs::calculate_withdrawals_root(withdrawals));
             }
@@ -201,14 +201,19 @@ impl EthExecutionProvider {
                     .body
                     .transactions
                     .iter()
-                    .filter(|tx| tx.tx_type() == TxType::Eip4844)
-                    .count() as u64
-                    * DATA_GAS_PER_BLOB;
+                    .filter_map(|tx| {
+                        if let Transaction::Eip4844(tx_4844) = tx {
+                            Some(tx_4844.tx().blob_versioned_hashes().map(|h| h.len()).unwrap_or(0) as u64 * DATA_GAS_PER_BLOB)
+                        } else {
+                            None
+                        }
+                    })
+                    .sum::<u64>();
 
-                if block.header.blob_gas_used.is_none() {
+                if block.header.blob_gas_used.is_none() || block.header.blob_gas_used == Some(0) {
                     block.header.blob_gas_used = Some(blob_gas_used);
                 }
-                if block.header.excess_blob_gas.is_none() {
+                if block.header.excess_blob_gas.is_none() || block.header.excess_blob_gas == Some(0) {
                     let parent_excess_blob_gas = if block.header.number > 0 {
                         self.read_storage.header(BlockId::Hash(block.header.parent_hash.into())).await.ok().flatten().and_then(|h| h.excess_blob_gas)
                     } else {
@@ -220,10 +225,14 @@ impl EthExecutionProvider {
                         None
                     };
 
+                    let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_default();
+                    let params = fork.blob_params(&chain_config);
+                    let target = params.map(|p| p.target_blob_count * DATA_GAS_PER_BLOB).unwrap_or(TARGET_BLOB_GAS_PER_BLOCK);
+
                     let excess_blob_gas = calc_excess_blob_gas(
                         parent_excess_blob_gas,
                         parent_blob_gas_used,
-                        TARGET_BLOB_GAS_PER_BLOCK,
+                        target,
                     );
                     block.header.excess_blob_gas = Some(excess_blob_gas);
                 }
@@ -233,7 +242,7 @@ impl EthExecutionProvider {
             }
 
             if fork >= Hardfork::Prague {
-                if block.header.requests_hash.is_none() {
+                if block.header.requests_hash.is_none() || block.header.requests_hash == Some(EMPTY_ROOT_HASH) {
                     let mut all_requests = Vec::new();
 
                     // EIP-6110: Deposit request type 0
@@ -247,13 +256,28 @@ impl EthExecutionProvider {
                         request_buf.extend_from_slice(&deposit_buf);
                         all_requests.push(request_buf);
                     }
-
-                    // For header building, we rely on the requests collected during execution
-                    // If they are not already in the header, we can't easily re-collect them here 
-                    // without a batch, env, etc. So we assume they are handled in execute_block_with_batch.
-                    // However, we MUST ensure the hash is set if it's missing.
-                    block.header.requests_hash = Some(self.calculate_requests_hash(fork, &all_requests));
+                    
+                    // Note: Withdrawal and Consolidation requests should have been added during execution.
+                    // If we are building, we might need to re-collect them if they weren't passed in.
+                    // For now, we assume the requests_hash calculated during execute_block_with_batch is correct.
+                    if block.header.requests_hash.is_none() || block.header.requests_hash == Some(EMPTY_ROOT_HASH) {
+                         block.header.requests_hash = Some(self.calculate_requests_hash(fork, &all_requests));
+                    }
                 }
+            }
+        } else {
+            // Validation mode: check that calculated values match header
+            if block.header.gas_used != cumulative_gas_used {
+                return Err(anyhow::anyhow!("Gas used mismatch for block {}: expected {}, calculated {}", block.header.number, block.header.gas_used, cumulative_gas_used));
+            }
+            if block.header.transactions_root != transactions_root {
+                return Err(anyhow::anyhow!("Transactions root mismatch for block {}: expected {:?}, calculated {:?}", block.header.number, block.header.transactions_root, transactions_root));
+            }
+            if block.header.receipts_root != receipts_root {
+                return Err(anyhow::anyhow!("Receipts root mismatch for block {}: expected {:?}, calculated {:?}", block.header.number, block.header.receipts_root, receipts_root));
+            }
+            if block.header.state_root != calculated_root {
+                return Err(anyhow::anyhow!("State root mismatch for block {}: expected {:?}, calculated {:?}", block.header.number, block.header.state_root, calculated_root));
             }
         }
 
@@ -388,10 +412,41 @@ impl ExecutionProvider for EthExecutionProvider {
         transactions: Vec<Transaction>,
         header: &Header,
         attributes: &PayloadAttributes,
-        _base_fee: Option<u64>,
+        base_fee: Option<u64>,
     ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, Vec<(Address, Option<Bytes>)>, Vec<(Address, B256, U256)>)> {
+        let chain_config = self.read_storage.chain_config().await.ok().flatten();
+        let fork = if let Some(config) = chain_config.as_ref() {
+            Hardfork::get_active_fork(config, header.number + 1, attributes.timestamp)
+        } else {
+            Hardfork::Cancun
+        };
+        
+        let mut new_header = header.clone();
+        new_header.parent_hash = header.hash_slow();
+        new_header.number = header.number + 1;
+        new_header.timestamp = attributes.timestamp;
+        new_header.beneficiary = attributes.suggested_fee_recipient;
+        new_header.mix_hash = attributes.prev_randao;
+        new_header.base_fee_per_gas = base_fee;
+        new_header.gas_used = 0;
+        new_header.parent_beacon_block_root = attributes.parent_beacon_block_root;
+        new_header.ommers_hash = EMPTY_OMMER_ROOT_HASH;
+        new_header.extra_data = Bytes::default();
+        new_header.difficulty = U256::ZERO;
+        new_header.nonce = B64::ZERO;
+        
+        if fork >= Hardfork::Shanghai {
+            new_header.withdrawals_root = Some(proofs::calculate_withdrawals_root(attributes.withdrawals.as_ref().map(|w| w.as_slice()).unwrap_or(&[])));
+        } else {
+            new_header.withdrawals_root = None;
+        }
+
+        new_header.blob_gas_used = None;
+        new_header.excess_blob_gas = None;
+        new_header.requests_hash = None;
+
         let block = Block {
-            header: header.clone(),
+            header: new_header,
             body: BlockBody {
                 transactions,
                 ommers: vec![],

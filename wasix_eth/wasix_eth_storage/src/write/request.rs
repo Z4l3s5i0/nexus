@@ -27,6 +27,7 @@ pub enum WriteRequest {
     RegisterPeer { peer: PeerEntry, resp: oneshot::Sender<Result<()>> },
     RemovePeer { peer_id: String, resp: oneshot::Sender<Result<()>> },
     ResetStorage { address: Address, resp: oneshot::Sender<Result<()>> },
+    MarkAccountTouched { address: Address, resp: oneshot::Sender<Result<()>> },
     SetMetadata { key: String, value: Bytes, resp: oneshot::Sender<Result<()>> },
     InsertAccountChangeSet { number: u64, change_set: Vec<(Address, Option<Bytes>)>, resp: oneshot::Sender<Result<()>> },
     InsertStorageChangeSet { number: u64, change_set: Vec<(Address, B256, U256)>, resp: oneshot::Sender<Result<()>> },

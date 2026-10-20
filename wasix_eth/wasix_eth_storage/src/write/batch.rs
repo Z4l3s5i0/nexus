@@ -242,10 +242,6 @@ impl BatchWriter {
         self.original_storages.clear();
     }
 
-    pub fn mark_account_touched(&self, address: Address) -> Result<()> {
-        self.touched_accounts.insert(address);
-        Ok(())
-    }
 }
 
 impl AccountProviderSync for BatchWriter {
@@ -400,6 +396,7 @@ impl BytecodeProvider for BatchWriter {
 #[async_trait]
 impl HeaderWriter for BatchWriter {
     async fn insert_header(&self, hash: B256, header: Header) -> Result<()> {
+        debug!("[BatchWriter] Inserting header for hash: {:?}, number: {}", hash, header.number);
         if let BatchTransaction::Write(wtx) = &self.tx {
             let mut table = wtx.open_table(Headers::definition())?;
             table.insert(hash, header)?;
@@ -451,6 +448,7 @@ impl BlockWriter for BatchWriter {
     }
 
     async fn insert_block_body(&self, hash: B256, _number: u64, body: BlockBody<Transaction>) -> Result<()> {
+        debug!("[BatchWriter] Inserting block body for hash: {:?}", hash);
         if let BatchTransaction::Write(wtx) = &self.tx {
             let mut table = wtx.open_table(BlockBodies::definition())?;
             table.insert(hash, body.clone())?;
@@ -648,6 +646,11 @@ impl AccountWriter for BatchWriter {
         self.resetted_storages.clear();
         self.original_accounts.clear();
         self.original_storages.clear();
+    }
+
+    async fn mark_account_touched(&self, address: Address) -> Result<()> {
+        self.touched_accounts.insert(address);
+        Ok(())
     }
 }
 

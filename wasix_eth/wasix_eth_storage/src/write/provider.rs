@@ -254,6 +254,11 @@ impl AccountWriter for DatabaseWriteProvider {
         self.touched_accounts.lock().unwrap().clear();
         self.touched_storages.lock().unwrap().clear();
     }
+
+    async fn mark_account_touched(&self, address: Address) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.send_request(WriteRequest::MarkAccountTouched { address, resp: tx }, rx).await
+    }
 }
 
 #[async_trait]

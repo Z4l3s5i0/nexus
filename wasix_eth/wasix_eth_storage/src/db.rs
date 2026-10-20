@@ -127,6 +127,7 @@ impl EthDatabase {
             debug!("[Storage] Genesis header (RLP): {:?}", wasix_eth_types::hex::encode(alloy_rlp::encode(&genesis_header)));
             let genesis_hash = genesis_header.clone().seal_slow();
             debug!("[Storage] Genesis hash (calculated): {:?}", genesis_hash);
+            debug!("[Storage] Genesis hash (hash_slow): {:?}", genesis_header.hash_slow());
 
             // 3. Persist Block and Metadata
             write_provider.insert_header(genesis_hash.hash(), genesis_header_clone).await?;
@@ -140,6 +141,7 @@ impl EthDatabase {
                 withdrawals: if fork >= Hardfork::Shanghai { Some(wasix_eth_types::eip4895::Withdrawals::new(Vec::new())) } else { None },
             };
             write_provider.insert_block_body(genesis_hash.hash(), block_number, body.clone()).await?;
+            debug!("[Storage] Genesis block body persisted for hash: {:?}", genesis_hash.hash());
             write_provider.update_forkchoice(genesis_hash.hash(), None, None).await?;
             write_provider.insert_header_td(genesis_hash.hash(), genesis_header.difficulty).await?;
 
@@ -201,11 +203,11 @@ impl EthDatabase {
             }
 
             ensure_code(&batch, HISTORY_STORAGE_ADDRESS, &HISTORY_STORAGE_CODE).await?;
-            batch.mark_account_touched(HISTORY_STORAGE_ADDRESS)?;
+            batch.mark_account_touched(HISTORY_STORAGE_ADDRESS).await?;
             ensure_code(&batch, WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, &WITHDRAWAL_REQUEST_PREDEPLOY_CODE).await?;
-            batch.mark_account_touched(WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS)?;
+            batch.mark_account_touched(WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS).await?;
             ensure_code(&batch, CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS, &CONSOLIDATION_REQUEST_PREDEPLOY_CODE).await?;
-            batch.mark_account_touched(CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS)?;
+            batch.mark_account_touched(CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS).await?;
             debug!("[Execution] Prague system contracts initialized");
         }
 
@@ -237,7 +239,7 @@ impl EthDatabase {
             debug!("[Execution] Adding account to genesis trie: addr={:?}, balance={}, nonce={}, storage={:?}, code={:?}", addr, trie_acc.balance, trie_acc.nonce, trie_acc.storage_root, trie_acc.code_hash);
 
             batch.update_account(addr, trie_acc).await?;
-            batch.mark_account_touched(addr)?;
+            batch.mark_account_touched(addr).await?;
         }
 
         let state_root = batch.calculate_state_root(eip161, None).await?;

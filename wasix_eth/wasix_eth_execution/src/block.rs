@@ -7,10 +7,7 @@ use wasix_eth_storage::write_traits::{AccountWriter, BytecodeWriter, StorageWrit
 use wasix_eth_utils::{debug, info};
 use anyhow::Result;
 
-const BEACON_ROOTS_ADDRESS: Address = Address::new([
-    0x00, 0x00, 0x00, 0x00, 0x21, 0x9a, 0xb5, 0x40, 0x35, 0x6c, 0xBB, 0x83, 0x9C, 0xbe, 0x05, 0x30,
-    0x3d, 0x77, 0x05, 0xFa,
-]);
+const BEACON_ROOTS_ADDRESS: Address = address!("0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02");
 const BEACON_ROOTS_CODE: [u8; 0] = []; // Placeholder, adjust if known
 const HISTORY_STORAGE_PRUNING_WINDOW: u64 = 8191;
 
@@ -41,7 +38,7 @@ impl<'a> BlockProcessor<'a> {
 
         self.batch.update_storage(beacon_root_contract, timestamp_slot, U256::from(timestamp)).await?;
         self.batch.update_storage(beacon_root_contract, root_slot, U256::from_be_bytes(beacon_root.0)).await?;
-        self.batch.mark_account_touched(beacon_root_contract)?;
+        self.batch.mark_account_touched(beacon_root_contract).await?;
         
         Ok(0)
     }

@@ -112,8 +112,21 @@ impl PayloadBuilder {
                 // Fallback to payloads map if head is not in storage yet
                 self.read_storage.get_payload_by_block_hash(head_block_hash).await
                     .map(|(b, _, _, _)| b)
-            )
-            .ok_or_else(|| RpcError::InvalidForkchoiceState(format!("Head block not found for payload building: {:?}", head_block_hash)))?;
+            );
+        
+        let parent_block = match parent_block {
+            Some(b) => b,
+            None => {
+                // FALLBACK: If not in storage or payloads yet, check if it's genesis by number
+                let genesis_hash = self.read_storage.block_hash(0).await.unwrap_or(None);
+                if genesis_hash == Some(head_block_hash) {
+                    self.read_storage.block(wasix_eth_types::BlockId::Number(wasix_eth_types::BlockNumberOrTag::Number(0))).await.ok().flatten()
+                        .ok_or_else(|| RpcError::InvalidForkchoiceState(format!("Genesis block #0 content missing for head hash: {:?}", head_block_hash)))?
+                } else {
+                    return Err(RpcError::InvalidForkchoiceState(format!("Head block not found for payload building: {:?}", head_block_hash)));
+                }
+            }
+        };
 
         if attr.timestamp <= parent_block.header.timestamp {
             return Err(RpcError::InvalidPayloadAttributes("Invalid timestamp".to_string()));
@@ -193,12 +206,24 @@ impl PayloadBuilder {
         attr: PayloadAttributes,
         id: PayloadId,
     ) -> RpcResult<()> {
-        let parent_block = self.read_storage.block_by_hash(head_block_hash).await.map_err(|e| RpcError::Internal(e.to_string()))?
+        let mut parent_block = self.read_storage.block_by_hash(head_block_hash).await.map_err(|e| RpcError::Internal(e.to_string()))?
             .or(
                 self.read_storage.get_payload_by_block_hash(head_block_hash).await
                     .map(|(b, _, _, _)| b)
-            )
-            .ok_or_else(|| RpcError::InvalidForkchoiceState(format!("Head block not found for empty payload building: {:?}", head_block_hash)))?;
+            ).or(
+            self.read_storage.get_payload(&id.clone()).await
+                .map(|(b, _, _, _)| b)
+        );
+        
+        if parent_block.is_none() {
+            // FALLBACK: If not in storage or payloads yet, it might be the genesis block or just committed.
+            let genesis_hash = self.read_storage.block_hash(0).await.unwrap_or(None);
+            if genesis_hash == Some(head_block_hash) {
+                parent_block = self.read_storage.block(wasix_eth_types::BlockId::Number(wasix_eth_types::BlockNumberOrTag::Number(0))).await.ok().flatten();
+            }
+        }
+
+        let parent_block = parent_block.ok_or_else(|| RpcError::InvalidForkchoiceState(format!("Head block not found for empty payload building: {:?}", head_block_hash)))?;
 
         let chain_config = if let Some(config) = self.read_storage.chain_config().await.ok().flatten() {
             config
@@ -254,19 +279,31 @@ impl PayloadBuilder {
         };
 
         // 1. Validate attributes (check if parent block still exists)
-        let parent_block = self.read_storage.block_by_hash(head_hash).await.map_err(|e| RpcError::Internal(e.to_string()))?
+        let mut parent_block = self.read_storage.block_by_hash(head_hash).await.map_err(|e| RpcError::Internal(e.to_string()))?
             .or(
                 self.read_storage.get_payload_by_block_hash(head_hash).await
                     .map(|(b, _, _, _)| b)
             );
         
-        let parent_block = match parent_block {
-            Some(b) => b,
-            None => {
+        if parent_block.is_none() {
+            // FALLBACK: If not in storage or payloads yet, it might be the genesis block or just committed.
+            // For genesis (block 0), it might not be in the Payloads table but should be in storage.
+            // If it's missing from both, we try to see if it's the genesis hash.
+            let genesis_hash = self.read_storage.block_hash(0).await.unwrap_or(None);
+            if genesis_hash == Some(head_hash) {
+                if let Some(block) = self.read_storage.block(wasix_eth_types::BlockId::Number(wasix_eth_types::BlockNumberOrTag::Number(0))).await.ok().flatten() {
+                     parent_block = Some(block);
+                } else {
+                     info!("[PayloadBuilder] Cannot rebuild payload {:?}: head block #0 found by hash but block content missing", payload_id);
+                     return Ok(());
+                }
+            } else {
                 info!("[PayloadBuilder] Cannot rebuild payload {:?}: head block not found", payload_id);
                 return Ok(());
             }
-        };
+        }
+
+        let parent_block = parent_block.unwrap();
 
         // 2. Compute base fees and max blobs
         let chain_config = if let Some(config) = self.read_storage.chain_config().await.ok().flatten() {
@@ -370,11 +407,7 @@ impl PayloadBuilder {
 
     pub async fn get_payload(&self, payload_id: &PayloadId) -> RpcResult<(Block<Transaction>, Vec<Receipt>, Vec<wasix_eth_types::ReceiptMeta>, BlobsBundleV1)> {
         let payload = self.read_storage.get_payload(payload_id).await
-            .ok_or_else(|| {
-                let mut hash = [0u8; 32];
-                hash[..8].copy_from_slice(&payload_id.0[..]);
-                RpcError::BlockNotFound(wasix_eth_types::BlockId::Hash(B256::from(hash).into()))
-            })?;
+            .ok_or_else(|| RpcError::BlockNotFound(wasix_eth_types::BlockId::Hash(B256::from_slice(&payload_id.0[..]).into())))?;
         
         info!("[PayloadBuilder] Returning payload {:?} with {} transactions", payload_id, payload.0.body.transactions.len());
         Ok(payload)

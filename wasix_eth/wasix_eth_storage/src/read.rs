@@ -26,7 +26,7 @@ use alloy_rlp::Decodable;
 use crate::trie::MyTrieNode;
 use anyhow::Error;
 use wasix_eth_types::error::RpcError;
-use wasix_eth_utils::info;
+use wasix_eth_utils::{debug, info, warn};
 use crate::read_traits::{AccountProvider, BlockProvider, BytecodeProvider, ChainProvider, ChangeSetProvider, HeaderProvider, LogProvider, MetadataProvider, PeerDiscoveryProvider, StateProvider, StorageProvider, TransactionProvider};
 use crate::{AccountProviderSync, BytecodeProviderSync, StateProviderSync, StorageProviderSync};
 use crate::write_traits::StateWriter;
@@ -121,15 +121,23 @@ impl HeaderProvider for DatabaseReadProvider {
 #[async_trait]
 impl BlockProvider for DatabaseReadProvider {
     async fn block(&self, id: BlockId) -> Result<Option<Block<Transaction>>> {
-        let header = self.header(id).await?;
+        let header = self.header(id.clone()).await?;
         if let Some(header) = header {
-            let hash = header.hash_slow();
+            let hash = match id {
+                BlockId::Hash(h) => h.block_hash,
+                BlockId::Number(BlockNumberOrTag::Number(0)) | BlockId::Number(BlockNumberOrTag::Earliest) => {
+                    self.block_hash(0).await?.unwrap_or_else(|| header.hash_slow())
+                }
+                _ => header.hash_slow(),
+            };
             let body = self.block_body_by_hash(hash).await?;
             if let Some(body) = body {
                 return Ok(Some(Block {
                     header,
                     body,
                 }));
+            } else {
+                warn!("[Storage] Block body not found for header hash: {:?}. Header number: {}. BlockId requested: {:?}", hash, header.number, id);
             }
         }
         Ok(None)

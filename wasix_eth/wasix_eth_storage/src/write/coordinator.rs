@@ -26,7 +26,7 @@ impl WriteCoordinator {
             db,
             rx,
             provider,
-            batch_timeout: std::time::Duration::from_millis(50),
+            batch_timeout: std::time::Duration::from_millis(15),
             max_batch_size: 100,
         }
     }
@@ -175,6 +175,10 @@ impl WriteCoordinator {
                 }
                 WriteRequest::ResetStorage { address, resp } => {
                     let res = batch_writer.reset_storage(address).await;
+                    responders.push((resp, res));
+                }
+                WriteRequest::MarkAccountTouched { address, resp } => {
+                    let res = batch_writer.mark_account_touched(address).await;
                     responders.push((resp, res));
                 }
                 WriteRequest::SetMetadata { key, value, resp } => {
