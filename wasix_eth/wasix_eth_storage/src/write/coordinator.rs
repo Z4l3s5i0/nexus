@@ -9,7 +9,7 @@ use crate::write::provider::DatabaseWriteProvider;
 use crate::write::batch::{BatchWriter, BatchTransaction};
 use crate::read::DatabaseReadProvider;
 use crate::codecs::Table;
-use crate::tables::{ActivePeers, Payloads};
+use crate::tables::{ActivePeers};
 use crate::write_traits::{HeaderWriter, BlockWriter, TransactionWriter, AccountWriter, StorageWriter, BytecodeWriter, StateWriter, ChangeSetWriter, MetadataWriter};
 
 pub struct WriteCoordinator {

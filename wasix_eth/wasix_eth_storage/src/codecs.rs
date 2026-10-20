@@ -185,26 +185,28 @@ impl RedbRlp for Vec<(Address, B256, U256)> {
     }
 }
 
-impl RedbRlp for (Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1) {
+impl RedbRlp for (PayloadId, Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1) {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        let bundle_payload_len = Encodable::length(&self.3.commitments) +
-                                Encodable::length(&self.3.proofs) +
-                                Encodable::length(&self.3.blobs);
+        let bundle_payload_len = Encodable::length(&self.4.commitments) +
+                                Encodable::length(&self.4.proofs) +
+                                Encodable::length(&self.4.blobs);
 
-        let payload_length = Encodable::length(&self.0) +
+        let payload_length = Encodable::length(&self.0.0) +
                             Encodable::length(&self.1) +
                             Encodable::length(&self.2) +
+                            Encodable::length(&self.3) +
                             alloy_rlp::length_of_length(bundle_payload_len) + bundle_payload_len;
         alloy_rlp::Header { list: true, payload_length }.encode(out);
-        Encodable::encode(&self.0, out);
+        Encodable::encode(&self.0.0, out);
         Encodable::encode(&self.1, out);
         Encodable::encode(&self.2, out);
+        Encodable::encode(&self.3, out);
         
         // Encode bundle as a nested list
         alloy_rlp::Header { list: true, payload_length: bundle_payload_len }.encode(out);
-        Encodable::encode(&self.3.commitments, out);
-        Encodable::encode(&self.3.proofs, out);
-        Encodable::encode(&self.3.blobs, out);
+        Encodable::encode(&self.4.commitments, out);
+        Encodable::encode(&self.4.proofs, out);
+        Encodable::encode(&self.4.blobs, out);
     }
     fn decode(buf: &mut &[u8]) -> Result<Self, alloy_rlp::Error> {
         let h = alloy_rlp::Header::decode(buf)?;
@@ -214,6 +216,7 @@ impl RedbRlp for (Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundl
         let (mut body, rest) = buf.split_at(h.payload_length);
         *buf = rest;
 
+        let id = PayloadId::new(Decodable::decode(&mut body)?);
         let block = Decodable::decode(&mut body)?;
         let receipts = Decodable::decode(&mut body)?;
         let metas = Decodable::decode(&mut body)?;
@@ -243,16 +246,17 @@ impl RedbRlp for (Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundl
             return Err(alloy_rlp::Error::UnexpectedLength);
         }
 
-        Ok((block, receipts, metas, bundle))
+        Ok((id, block, receipts, metas, bundle))
     }
     fn rlp_length(&self) -> usize {
-        let bundle_payload_len = Encodable::length(&self.3.commitments) +
-                                Encodable::length(&self.3.proofs) +
-                                Encodable::length(&self.3.blobs);
+        let bundle_payload_len = Encodable::length(&self.4.commitments) +
+                                Encodable::length(&self.4.proofs) +
+                                Encodable::length(&self.4.blobs);
 
-        let l = Encodable::length(&self.0) +
+        let l = Encodable::length(&self.0.0) +
                 Encodable::length(&self.1) +
                 Encodable::length(&self.2) +
+                Encodable::length(&self.3) +
                 alloy_rlp::length_of_length(bundle_payload_len) + bundle_payload_len;
         alloy_rlp::length_of_length(l) + l
     }
@@ -350,7 +354,8 @@ impl Table for PlainState { const NAME: &'static str = "plain_state"; type Key =
 impl Table for HashedState { const NAME: &'static str = "hashed_state"; type Key = B256; type Value = Bytes; }
 impl Table for TrieNodes { const NAME: &'static str = "trie_nodes"; type Key = B256; type Value = Bytes; }
 impl Table for Metadata { const NAME: &'static str = "metadata"; type Key = String; type Value = Bytes; }
-impl Table for Payloads { const NAME: &'static str = "payloads"; type Key = PayloadId; type Value = (Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1); }
+impl Table for PayloadsByHash { const NAME: &'static str = "payloads_by_hash"; type Key = B256; type Value = (PayloadId, Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1); }
+impl Table for PayloadIdToBlockHash { const NAME: &'static str = "payload_id_to_block_hash"; type Key = PayloadId; type Value = B256; }
 
 impl Table for Forkchoice { const NAME: &'static str = "forkchoice"; type Key = String; type Value = B256; }
 impl Table for ActivePeers { const NAME: &'static str = "active_peers"; type Key = String; type Value = PeerEntry; }

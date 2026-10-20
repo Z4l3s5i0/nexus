@@ -479,13 +479,35 @@ impl BlockWriter for BatchWriter {
         Ok(())
     }
 
-    async fn add_payload(&self, _id: PayloadId, _block: Block<Transaction>, _receipts: Vec<Receipt>, _metas: Vec<ReceiptMeta>, _bundle: BlobsBundleV1) -> Result<()> {
-        // Not implemented in original BatchWriter
+    async fn add_payload(&self, id: PayloadId, block: Block<Transaction>, receipts: Vec<Receipt>, metas: Vec<ReceiptMeta>, bundle: BlobsBundleV1) -> Result<()> {
+        if let BatchTransaction::Write(wtx) = &self.tx {
+            let hash = block.header.hash_slow();
+            
+            // 1. Cleanup old version if it exists
+            let mut mapping_table = wtx.open_table(PayloadIdToBlockHash::definition())?;
+            if let Some(old_hash) = mapping_table.get(id)? {
+                let mut payloads_table = wtx.open_table(PayloadsByHash::definition())?;
+                payloads_table.remove(old_hash.value())?;
+            }
+
+            // 2. Insert new version
+            mapping_table.insert(id, hash)?;
+            let mut payloads_table = wtx.open_table(PayloadsByHash::definition())?;
+            payloads_table.insert(hash, (id, block, receipts, metas, bundle))?;
+        }
         Ok(())
     }
 
     async fn remove_payload_by_block_hash(&self, hash: B256) -> Result<()> {
         if let BatchTransaction::Write(wtx) = &self.tx {
+            // PayloadsByHash and PayloadIdToBlockHash
+            let mut payloads_table = wtx.open_table(PayloadsByHash::definition())?;
+            if let Some(value) = payloads_table.remove(hash)? {
+                let (id, _, _, _, _) = value.value();
+                let mut mapping_table = wtx.open_table(PayloadIdToBlockHash::definition())?;
+                mapping_table.remove(id)?;
+            }
+            
             // Bodies
             let mut bodies = wtx.open_table(BlockBodies::definition())?;
             if let Some(body) = bodies.remove(hash)? {

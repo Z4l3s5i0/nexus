@@ -56,7 +56,8 @@ impl EthDatabase {
         wtx.open_table(HashedState::definition())?;
         wtx.open_table(TrieNodes::definition())?;
         wtx.open_table(Metadata::definition())?;
-        wtx.open_table(Payloads::definition())?;
+        wtx.open_table(PayloadsByHash::definition())?;
+        wtx.open_table(PayloadIdToBlockHash::definition())?;
         wtx.open_table(Forkchoice::definition())?;
         wtx.open_table(ActivePeers::definition())?;
 

@@ -263,7 +263,7 @@ impl Engine {
 
     pub async fn get_payload_v1(&self, payload_id: PayloadId) -> RpcResult<ExecutionPayloadV1> {
         info!("[Engine] get_payload_v1: payload_id={:?}", payload_id);
-        let (block, _, _, _) = self.payload_builder.get_payload(&payload_id).await?;
+        let (block, _, _, _) = self.get_payload(&payload_id).await?;
         let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_default();
         let fork = Hardfork::get_active_fork(&chain_config, block.header.number, block.header.timestamp);
 
@@ -277,7 +277,7 @@ impl Engine {
     
     pub async fn get_payload_v2(&self, payload_id: PayloadId) -> RpcResult<ExecutionPayloadEnvelopeV2> {
         info!("[Engine] get_payload_v2: payload_id={:?}", payload_id);
-        let (block, receipts, _, _) = self.payload_builder.get_payload(&payload_id).await?;
+        let (block, receipts, _, _) = self.get_payload(&payload_id).await?;
         let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_default();
         let fork = Hardfork::get_active_fork(&chain_config, block.header.number, block.header.timestamp);
 
@@ -294,7 +294,7 @@ impl Engine {
 
     pub async fn get_payload_v3(&self, payload_id: PayloadId) -> RpcResult<ExecutionPayloadEnvelopeV3> {
         info!("[Engine] get_payload_v3: payload_id={:?}", payload_id);
-        let (block, receipts, _, bundle) = self.payload_builder.get_payload(&payload_id).await?;
+        let (block, receipts, _, bundle) = self.get_payload(&payload_id).await?;
         let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_default();
         let fork = Hardfork::get_active_fork(&chain_config, block.header.number, block.header.timestamp);
 
@@ -311,7 +311,7 @@ impl Engine {
 
     pub async fn get_payload_v4(&self, payload_id: PayloadId) -> RpcResult<ExecutionPayloadEnvelopeV4> {
         info!("[Engine] get_payload_v4: payload_id={:?}", payload_id);
-        let (block, receipts, _, bundle) = self.payload_builder.get_payload(&payload_id).await?;
+        let (block, receipts, _, bundle) = self.get_payload(&payload_id).await?;
         let chain_config = self.read_storage.chain_config().await.ok().flatten().unwrap_or_default();
 
         let execution_payload = EngineMapper::to_execution_payload_v4(&block, &chain_config);

@@ -48,7 +48,9 @@ pub struct Metadata;
 
 // --- Engine
 #[derive(Debug)]
-pub struct Payloads;
+pub struct PayloadsByHash;
+#[derive(Debug)]
+pub struct PayloadIdToBlockHash;
 #[derive(Debug)]
 pub struct Forkchoice;
 

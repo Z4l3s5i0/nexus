@@ -1,7 +1,8 @@
 use std::sync::Arc;
+use wasix_eth_storage::{ChainProvider, BlockProvider};
 use wasix_eth_core::Engine;
 use wasix_eth_types::eip4895::Withdrawal;
-use wasix_eth_types::{ExecutionPayloadBodyV1, ExecutionPayloadEnvelopeV2, ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4, ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3, ExecutionPayloadV4, ForkchoiceState, ForkchoiceUpdated, PayloadAttributes, PayloadId, PayloadStatus, TransitionConfiguration, B256, B128, Bytes};
+use wasix_eth_types::{ExecutionPayloadBodyV1, ExecutionPayloadEnvelopeV2, ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4, ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3, ExecutionPayloadV4, ForkchoiceState, ForkchoiceUpdated, PayloadAttributes, PayloadId, PayloadStatus, TransitionConfiguration, B256, B128, Bytes, U256};
 use wasix_eth_types::{BlobAndProofV1, BlobAndProofV2};
 use wasix_eth_types::error::RpcResult;
 use wasix_eth_utils::info;
@@ -81,8 +82,19 @@ impl EngineService {
         &self,
         config: TransitionConfiguration,
     ) -> RpcResult<TransitionConfiguration> {
-        //TODO
-        Ok(config)
+        let chain_config = self.engine.read_storage.chain_config().await.ok().flatten().unwrap_or_default();
+        let genesis_hash = self.engine.read_storage.block_hash(0).await.ok().flatten().unwrap_or(B256::ZERO);
+
+        let ttd = chain_config.terminal_total_difficulty.unwrap_or(U256::ZERO);
+        
+        info!("[EngineService] exchange_transition_configuration_v1: client_ttd={:?}, client_hash={:?}, our_ttd={:?}, our_hash={:?}", 
+            config.terminal_total_difficulty, config.terminal_block_hash, ttd, genesis_hash);
+
+        Ok(TransitionConfiguration {
+            terminal_total_difficulty: ttd,
+            terminal_block_hash: genesis_hash,
+            terminal_block_number: 0,
+        })
     }
 
     pub async fn get_payload_bodies_by_hash_v1(

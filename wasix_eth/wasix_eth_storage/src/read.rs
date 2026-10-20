@@ -169,29 +169,27 @@ impl BlockProvider for DatabaseReadProvider {
 
     async fn get_payload(&self, payload_id: &PayloadId) -> Option<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1)> {
         let tx = self.db.begin_read().ok()?;
-        let table = tx.open_table(Payloads::definition()).ok()?;
-        let value = table.get(*payload_id).ok()??;
-        Some(value.value())
+        let mapping_table = tx.open_table(PayloadIdToBlockHash::definition()).ok()?;
+        let hash = mapping_table.get(*payload_id).ok()??.value();
+        
+        let payloads_table = tx.open_table(PayloadsByHash::definition()).ok()?;
+        let value = payloads_table.get(hash).ok()??;
+        let (_id, block, receipts, metas, bundle) = value.value();
+        Some((block, receipts, metas, bundle))
     }
 
     async fn get_payload_by_block_hash(&self, hash: B256) -> Option<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1)> {
         let tx = self.db.begin_read().ok()?;
-        let table = tx.open_table(Payloads::definition()).ok()?;
-        for entry in table.iter().ok()? {
-            if let Ok((_, value)) = entry {
-                let (block, receipts, metas, bundle): (Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1) = value.value();
-                if block.header.hash_slow() == hash {
-                    return Some((block, receipts, metas, bundle));
-                }
-            }
-        }
-        None
+        let table = tx.open_table(PayloadsByHash::definition()).ok()?;
+        let value = table.get(hash).ok()??;
+        let (_id, block, receipts, metas, bundle) = value.value();
+        Some((block, receipts, metas, bundle))
     }
 
     async fn all_payload_ids(&self) -> Vec<PayloadId> {
         let mut ids = Vec::new();
         if let Ok(tx) = self.db.begin_read() {
-            if let Ok(table) = tx.open_table(Payloads::definition()) {
+            if let Ok(table) = tx.open_table(PayloadIdToBlockHash::definition()) {
                 if let Ok(iter) = table.iter() {
                     for entry in iter {
                         if let Ok((id, _)) = entry {

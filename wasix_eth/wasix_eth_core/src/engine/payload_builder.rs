@@ -370,7 +370,11 @@ impl PayloadBuilder {
 
     pub async fn get_payload(&self, payload_id: &PayloadId) -> RpcResult<(Block<Transaction>, Vec<Receipt>, Vec<wasix_eth_types::ReceiptMeta>, BlobsBundleV1)> {
         let payload = self.read_storage.get_payload(payload_id).await
-            .ok_or_else(|| RpcError::BlockNotFound(wasix_eth_types::BlockId::Hash(B256::from_slice(&payload_id.0[..]).into())))?;
+            .ok_or_else(|| {
+                let mut hash = [0u8; 32];
+                hash[..8].copy_from_slice(&payload_id.0[..]);
+                RpcError::BlockNotFound(wasix_eth_types::BlockId::Hash(B256::from(hash).into()))
+            })?;
         
         info!("[PayloadBuilder] Returning payload {:?} with {} transactions", payload_id, payload.0.body.transactions.len());
         Ok(payload)
