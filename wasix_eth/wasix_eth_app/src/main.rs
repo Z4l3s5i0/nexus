@@ -7,6 +7,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     std::panic::set_hook(Box::new(|panic_info| {
         eprintln!("[PANIC] {}", panic_info);
+        wasix_eth_utils::logging::flush();
     }));
 
     let mut args = cli::Args::parse();
@@ -44,6 +45,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.run().await?;
         }
     }
+
+    wasix_eth_utils::logging::flush();
 
     Ok(())
 }
