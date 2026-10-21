@@ -274,6 +274,23 @@ impl PayloadBuilder {
         &self,
         payload_id: PayloadId,
     ) -> Result<()> {
+        let result = self.maybe_rebuild_payload_inner(payload_id).await;
+        
+        // Ensure build status is updated and waiters are notified on success (even if no rebuild happened)
+        if result.is_ok() {
+            self.build_statuses.write().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?.insert(payload_id, BuildStatus::InitialBuildCompleted);
+            if let Some(notify) = self.build_notify.read().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?.get(&payload_id) {
+                notify.notify_waiters();
+            }
+        }
+
+        result
+    }
+
+    async fn maybe_rebuild_payload_inner(
+        &self,
+        payload_id: PayloadId,
+    ) -> Result<()> {
         let (payload_block, payload_receipts, _payload_metas, _payload_bundle) = match self.read_storage.get_payload(&payload_id) {
             Some(p) => p,
             None => return Ok(()),
@@ -410,12 +427,6 @@ impl PayloadBuilder {
             write_storage.add_payload(payload_id, finalized_block_clone, receipts_clone, metas_clone, bundle)
         }).await.map_err(|e| RpcError::Internal(format!("Payload rebuilding task panicked: {}", e)))?
         .map_err(|e| RpcError::Internal(e.to_string()))?;
-
-        // Update build status and notify waiters
-        self.build_statuses.write().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?.insert(payload_id, BuildStatus::InitialBuildCompleted);
-        if let Some(notify) = self.build_notify.read().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?.get(&payload_id) {
-            notify.notify_waiters();
-        }
 
         Ok(())
     }
