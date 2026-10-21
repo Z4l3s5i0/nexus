@@ -25,7 +25,6 @@ use wasix_eth_types::Result;
 
 use std::collections::HashMap;
 use std::sync::RwLock;
-use dashmap::DashMap;
 
 // Simple CancellationToken since we don't have tokio-util
 #[derive(Clone, Default)]
@@ -69,9 +68,9 @@ pub struct PayloadBuilder {
     pub build_lock: Arc<tokio::sync::Mutex<()>>,
     pub cancel_tokens: Arc<RwLock<HashMap<PayloadId, CancellationToken>>>,
     /// Tracks the build status of payloads.
-    pub build_statuses: Arc<DashMap<PayloadId, BuildStatus>>,
+    pub build_statuses: Arc<RwLock<HashMap<PayloadId, BuildStatus>>>,
     /// Notifies waiters when a payload's build status changes.
-    pub build_notify: Arc<DashMap<PayloadId, Arc<Notify>>>,
+    pub build_notify: Arc<RwLock<HashMap<PayloadId, Arc<Notify>>>>,
 }
 
 impl PayloadBuilder {
@@ -135,8 +134,8 @@ impl PayloadBuilder {
         self.build_empty_payload(head_block_hash, attr.clone(), id.clone()).await?;
 
         // Initialize build status and notify
-        self.build_statuses.insert(id.clone(), BuildStatus::InitialBuildInProgress);
-        self.build_notify.insert(id.clone(), Arc::new(Notify::new()));
+        self.build_statuses.write().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?.insert(id.clone(), BuildStatus::InitialBuildInProgress);
+        self.build_notify.write().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?.insert(id.clone(), Arc::new(Notify::new()));
 
         // 5. Perform immediate synchronous rebuild
         let _ = self.maybe_rebuild_payload(id.clone()).await;
@@ -145,7 +144,7 @@ impl PayloadBuilder {
         let builder = self.clone();
         let token = CancellationToken::new();
         {
-            let mut tokens = self.cancel_tokens.write().unwrap();
+            let mut tokens = self.cancel_tokens.write().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?;
             if let Some(old_token) = tokens.insert(id.clone(), token.clone()) {
                 old_token.cancel();
             }
@@ -412,8 +411,8 @@ impl PayloadBuilder {
         .map_err(|e| RpcError::Internal(e.to_string()))?;
 
         // Update build status and notify waiters
-        self.build_statuses.insert(payload_id, BuildStatus::InitialBuildCompleted);
-        if let Some(notify) = self.build_notify.get(&payload_id) {
+        self.build_statuses.write().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?.insert(payload_id, BuildStatus::InitialBuildCompleted);
+        if let Some(notify) = self.build_notify.read().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?.get(&payload_id) {
             notify.notify_waiters();
         }
 
@@ -422,14 +421,23 @@ impl PayloadBuilder {
 
     pub async fn get_payload(&self, payload_id: &PayloadId) -> RpcResult<(Block<Transaction>, Vec<Receipt>, Vec<wasix_eth_types::ReceiptMeta>, BlobsBundleV1)> {
         // Wait for initial build to complete if it's still in progress
-        if let Some(status) = self.build_statuses.get(payload_id) {
-            if *status == BuildStatus::InitialBuildInProgress {
-                if let Some(notify) = self.build_notify.get(payload_id).map(|n| n.clone()) {
-                    debug!("[PayloadBuilder] get_payload called while initial build in progress for {:?}, waiting...", payload_id);
-                    let timeout = std::time::Duration::from_secs(4);
-                    let _ = tokio::time::timeout(timeout, notify.notified()).await;
+        let notify = {
+            let statuses = self.build_statuses.read().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?;
+            if let Some(status) = statuses.get(payload_id) {
+                if *status == BuildStatus::InitialBuildInProgress {
+                    self.build_notify.read().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?.get(payload_id).cloned()
+                } else {
+                    None
                 }
+            } else {
+                None
             }
+        };
+
+        if let Some(notify) = notify {
+            debug!("[PayloadBuilder] get_payload called while initial build in progress for {:?}, waiting...", payload_id);
+            let timeout = std::time::Duration::from_secs(4);
+            let _ = tokio::time::timeout(timeout, notify.notified()).await;
         }
 
         let payload = self.read_storage.get_payload(payload_id)

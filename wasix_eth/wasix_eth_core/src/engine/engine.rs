@@ -85,8 +85,6 @@ pub struct Engine {
     pub forkchoice_validator: ForkchoiceValidator,
     pub mempool_listener: Arc<MempoolListener>,
     pub sync_registry: Arc<SyncRegistry>,
-    pub transition_lock: Arc<tokio::sync::Mutex<()>>,
-    pub latest_fcu_seq: Arc<std::sync::atomic::AtomicU64>,
 }
 
 
@@ -179,8 +177,8 @@ impl Engine {
                 event_tx: event_tx.clone(),
                 build_lock: Arc::new(tokio::sync::Mutex::new(())),
                 cancel_tokens: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-                build_statuses: Arc::new(DashMap::new()),
-                build_notify: Arc::new(DashMap::new()),
+                build_statuses: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+                build_notify: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             },
             payload_processor: PayloadProcessor { 
                 processing_payloads: processing_payloads.clone(), 
@@ -200,8 +198,6 @@ impl Engine {
             forkchoice_validator,
             mempool_listener,
             sync_registry,
-            transition_lock: Arc::new(tokio::sync::Mutex::new(())),
-            latest_fcu_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
 
         engine
@@ -407,44 +403,12 @@ impl Engine {
     pub async fn forkchoice_updated(&self, forkchoice_state: ForkchoiceState,
                                     payload_attributes: Option<PayloadAttributes>,
                                     version: u8) -> RpcResult<ForkchoiceUpdated> {
-        let seq = self.latest_fcu_seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-        let start_time = std::time::Instant::now();
-        let _lock = self.transition_lock.lock().await;
-
-        // Coalescing: check if this is still the latest request
-        let current_latest = self.latest_fcu_seq.load(std::sync::atomic::Ordering::SeqCst);
-        if seq < current_latest {
-            info!("[Engine] forkchoice_updated: request seq={} is obsolete (latest={}), skipping", seq, current_latest);
-            let (current_state, _) = self.canonical.get_state();
-            return Ok(ForkchoiceUpdated {
-                payload_status: PayloadStatus {
-                    status: PayloadStatusEnum::Valid,
-                    latest_valid_hash: Some(current_state.head_block_hash),
-                },
-                payload_id: None,
-            });
-        }
-
-        let lock_acquired = std::time::Instant::now();
-        debug!("[Engine] forkchoice_updated lock acquired in {:?}", lock_acquired.duration_since(start_time));
 
         tokio::task::yield_now().await;
 
         info!("[Engine] forkchoice_updated: head={:?} safe={:?} finalized={:?} version={} attr={}", 
             forkchoice_state.head_block_hash, forkchoice_state.safe_block_hash, forkchoice_state.finalized_block_hash, version, payload_attributes.is_some());
 
-        // 0. Idempotency check: if the state matches our current canonical state, return success immediately
-        let (current_state, _) = self.canonical.get_state();
-        if current_state == forkchoice_state && payload_attributes.is_none() {
-            debug!("[Engine] forkchoice_updated: state matches current canonical state, returning immediately (idempotent)");
-            return Ok(ForkchoiceUpdated {
-                payload_status: PayloadStatus {
-                    status: PayloadStatusEnum::Valid,
-                    latest_valid_hash: Some(forkchoice_state.head_block_hash),
-                },
-                payload_id: None,
-            });
-        }
 
         let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_else(|| ChainConfig {
             chain_id: self.read_storage.chain_id().unwrap_or(1),
@@ -932,15 +896,8 @@ impl Engine {
         parent_beacon_block_root: Option<B256>,
         is_local: bool,
     ) -> RpcResult<PayloadStatus> {
-        let start_time = std::time::Instant::now();
-        let _lock = self.transition_lock.lock().await;
-        let lock_acquired = std::time::Instant::now();
-        debug!("[Engine] new_payload lock acquired in {:?}", lock_acquired.duration_since(start_time));
 
-        let res = self.payload_processor.new_payload_internal(block, expected_block_hash, expected_blob_versioned_hashes, parent_beacon_block_root, is_local).await;
-        
-        debug!("[Engine] new_payload execution finished in {:?}", lock_acquired.elapsed());
-        res
+        self.payload_processor.new_payload_internal(block, expected_block_hash, expected_blob_versioned_hashes, parent_beacon_block_root, is_local).await
     }
 
     // --- helper methods engine calls ---
