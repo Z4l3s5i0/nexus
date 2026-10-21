@@ -116,6 +116,7 @@ impl ReorgHandler {
     }
 
     pub async fn mark_branch_canonical(&self, blocks: &Vec<Block<Transaction>>) -> wasix_eth_types::Result<()> {
+        let batch = self.write_storage.begin_batch()?;
         for block in blocks.iter().rev() {
             let hash = block.header.hash_slow();
             let number = block.header.number;
@@ -128,17 +129,17 @@ impl ReorgHandler {
                 debug!("[ChainManager] Block {} not found in main storage, checking Payloads table", hash);
                 if let Some((full_block, receipts, metas, _bundle)) = self.read_storage.get_payload_by_block_hash(hash) {
                     // This call should internally insert Header, Body, Receipts, and Metas
-                    self.write_storage.insert_block(full_block, receipts, metas)?;
-                    self.write_storage.remove_payload_by_block_hash(hash)?;
+                    batch.insert_block(full_block, receipts, metas)?;
+                    batch.remove_payload_by_block_hash(hash)?;
                     debug!("[ChainManager] Promoted block {} from Payloads to main storage", hash);
                 }
             }
             // 1. Mark as canonical (Number -> Hash)
-            self.write_storage.set_canonical(number, hash)?;
+            batch.set_canonical(number, hash)?;
 
             // 2. Ensure Hash -> Number mapping is correct
-            self.write_storage.insert_header_number(hash, number)?;
-            self.write_storage.insert_block_hash(hash, number)?;
+            batch.insert_header_number(hash, number)?;
+            batch.insert_block_hash(hash, number)?;
 
             // 3. Ensure TD is correct
             if let Ok(parent_td) = self.read_storage.header_td(block.header.parent_hash) {
@@ -146,7 +147,7 @@ impl ReorgHandler {
                     let expected_td = ptd + block.header.difficulty;
                     let current_td = self.read_storage.header_td(hash).ok().flatten();
                     if current_td != Some(expected_td) {
-                        self.write_storage.insert_header_td(hash, expected_td)?;
+                        batch.insert_header_td(hash, expected_td)?;
                     }
                 }
             }
@@ -154,9 +155,10 @@ impl ReorgHandler {
             // 4. Update transaction lookups
             for (i, tx) in block.body.transactions.iter().enumerate() {
                 let tx_hash = *tx.hash();
-                self.write_storage.insert_transaction_lookup(tx_hash, hash, i as u64)?;
+                batch.insert_transaction_lookup(tx_hash, hash, i as u64)?;
             }
         }
+        batch.commit()?;
         Ok(())
     }
 
@@ -165,6 +167,8 @@ impl ReorgHandler {
         let (_, head_number) = self.canonical.get_head();
 
         info!("Reverting chain from {} to {}", head_number, height);
+
+        let batch = self.write_storage.begin_batch()?;
 
         // Revert state changes from head_number down to height + 1
         for h in (height + 1..=head_number).rev() {
@@ -177,13 +181,13 @@ impl ReorgHandler {
                         let trie_acc = TrieAccount::decode(&mut buf)
                             .map_err(|e| anyhow::anyhow!("Failed to decode TrieAccount for {}: {}", address, e))?;
 
-                        self.write_storage.update_account(address, trie_acc)?;
+                        batch.update_account(address, trie_acc)?;
                         // Also update the plain state for consistency if your storage layer uses it
-                        self.write_storage.update_plain_state(address, state.clone())?;
+                        batch.update_plain_state(address, state.clone())?;
                     } else {
                         // If the account didn't exist before this block, delete it
-                        self.write_storage.remove_account(address)?;
-                        self.write_storage.remove_plain_state(address)?;
+                        batch.remove_account(address)?;
+                        batch.remove_plain_state(address)?;
                     }
                 }
             }
@@ -191,23 +195,26 @@ impl ReorgHandler {
             // 2. Roll back storage changes
             if let Some(storage_changes) = self.read_storage.storage_change_set(h)? {
                 for (address, slot, old_value) in storage_changes {
-                    self.write_storage.update_storage(address, slot, old_value)?;
+                    batch.update_storage(address, slot, old_value)?;
                 }
             }
 
             // Clean up the change sets themselves
-            self.write_storage.remove_change_set(h)?;
+            batch.remove_change_set(h)?;
 
             // Remove from canonical heads
             if let Some(block_hash) = self.read_storage.block_hash(h)? {
                 if let Some(body) = self.read_storage.block_body_by_hash(block_hash)? {
                     for i in 0..body.transactions.len() {
-                        let _ = self.write_storage.remove_receipt_meta(block_hash, i as u64);
+                        let _ = batch.remove_receipt_meta(block_hash, i as u64);
                     }
                 }
             }
-            self.write_storage.remove_canonical(h)?;
+            batch.remove_canonical(h)?;
         }
+
+        // Commit all changes atomically
+        batch.commit()?;
 
         // Update canonical head
         let new_head_hash = self.read_storage.block_hash(height)?

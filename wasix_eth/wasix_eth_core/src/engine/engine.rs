@@ -86,6 +86,7 @@ pub struct Engine {
     pub mempool_listener: Arc<MempoolListener>,
     pub sync_registry: Arc<SyncRegistry>,
     pub transition_lock: Arc<tokio::sync::Mutex<()>>,
+    pub latest_fcu_seq: Arc<std::sync::atomic::AtomicU64>,
 }
 
 
@@ -198,6 +199,7 @@ impl Engine {
             mempool_listener,
             sync_registry,
             transition_lock: Arc::new(tokio::sync::Mutex::new(())),
+            latest_fcu_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
 
         engine
@@ -403,8 +405,24 @@ impl Engine {
     pub async fn forkchoice_updated(&self, forkchoice_state: ForkchoiceState,
                                     payload_attributes: Option<PayloadAttributes>,
                                     version: u8) -> RpcResult<ForkchoiceUpdated> {
+        let seq = self.latest_fcu_seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         let start_time = std::time::Instant::now();
         let _lock = self.transition_lock.lock().await;
+
+        // Coalescing: check if this is still the latest request
+        let current_latest = self.latest_fcu_seq.load(std::sync::atomic::Ordering::SeqCst);
+        if seq < current_latest {
+            info!("[Engine] forkchoice_updated: request seq={} is obsolete (latest={}), skipping", seq, current_latest);
+            let (current_state, _) = self.canonical.get_state();
+            return Ok(ForkchoiceUpdated {
+                payload_status: PayloadStatus {
+                    status: PayloadStatusEnum::Valid,
+                    latest_valid_hash: Some(current_state.head_block_hash),
+                },
+                payload_id: None,
+            });
+        }
+
         let lock_acquired = std::time::Instant::now();
         debug!("[Engine] forkchoice_updated lock acquired in {:?}", lock_acquired.duration_since(start_time));
 
