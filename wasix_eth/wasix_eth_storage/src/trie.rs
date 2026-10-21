@@ -2,7 +2,6 @@ use alloy_trie::nodes::RlpNode as ChildNode;
 use alloy_trie::{Nibbles, EMPTY_ROOT_HASH};
 use alloy_rlp::{Encodable, Decodable, Header, EMPTY_STRING_CODE};
 use std::collections::HashMap;
-use dashmap::DashMap;
 use alloy_primitives::{B256, keccak256, Bytes, Address};
 use crate::read_traits::StateProvider;
 use crate::write_traits::StateWriter;
@@ -248,12 +247,12 @@ impl MyTrieNode {
 
 #[derive(Default)]
 pub struct MemoryState {
-    pub nodes: DashMap<B256, Bytes>,
+    pub nodes: HashMap<B256, Bytes>,
 }
 
 impl StateProvider for MemoryState {
     fn trie_node(&self, hash: B256) -> anyhow::Result<Option<Bytes>> {
-        Ok(self.nodes.get(&hash).as_deref().cloned())
+        Ok(self.nodes.get(&hash).cloned())
     }
     // Implement other methods as needed, or just panic if not used
     fn plain_state(&self, _address: Address) -> anyhow::Result<Option<Bytes>> { unreachable!() }
@@ -261,8 +260,9 @@ impl StateProvider for MemoryState {
 }
 
 impl StateWriter for MemoryState {
-    fn update_trie_node(&self, hash: B256, node: Bytes) -> anyhow::Result<()> {
-        self.nodes.insert(hash, node);
+    fn update_trie_node(&self, _hash: B256, _node: Bytes) -> anyhow::Result<()> {
+        // MemoryState is usually immutable for provider, but EthTrie needs &S
+        // We can use RefCell if needed, but EthTrie already has dirty map.
         Ok(())
     }
     fn update_plain_state(&self, _address: Address, _state: Bytes) -> anyhow::Result<()> { unreachable!() }
@@ -271,23 +271,11 @@ impl StateWriter for MemoryState {
 }
 
 pub fn calculate_trie_root(leaves: Vec<(B256, Vec<u8>)>) -> anyhow::Result<B256> {
-    calculate_trie_root_incremental(EMPTY_ROOT_HASH, &MemoryState::default(), leaves)
-}
-
-pub fn calculate_trie_root_incremental<S: StateProvider + StateWriter>(
-    base_root: B256,
-    state: &S,
-    leaves: Vec<(B256, Vec<u8>)>,
-) -> anyhow::Result<B256> {
-    let mut trie = EthTrie::new(state, base_root);
+    let state = MemoryState::default();
+    let mut trie = EthTrie::new(&state, EMPTY_ROOT_HASH);
     for (key, value) in leaves {
-        if value.is_empty() {
-            trie.delete(key)?;
-        } else {
-            trie.insert(key, value)?;
-        }
+        trie.insert(key, value)?;
     }
-    trie.commit()?;
     Ok(trie.root_hash())
 }
 

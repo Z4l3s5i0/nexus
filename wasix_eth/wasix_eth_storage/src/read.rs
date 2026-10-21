@@ -636,20 +636,16 @@ impl DatabaseReadProvider {
         let mut sorted_accounts: Vec<_> = trie_accounts.into_iter().collect();
         sorted_accounts.sort_by_key(|(h, _)| *h);
 
-        // Optimization: use the provided state_root as base if available to speed up calculation.
-        let base_root = state_root.unwrap_or(alloy_trie::EMPTY_ROOT_HASH);
-        let root = crate::trie::calculate_trie_root_incremental(base_root, self, sorted_accounts)?;
+        let root = crate::trie::calculate_trie_root(sorted_accounts)?;
         info!("[Storage] Calculated state root (read-only): {:?}", root);
         Ok(root)
     }
 
     pub fn calculate_storage_root(&self, address: Address, state_root: Option<B256>) -> Result<B256> {
         let mut trie_storages = std::collections::HashMap::new();
-        let mut base_storage_root = alloy_trie::EMPTY_ROOT_HASH;
 
         if let Some(root) = state_root {
             if let Some(acc) = self.account(address, Some(root))? {
-                base_storage_root = acc.storage_root;
                 let leaves = self.iterate_trie(acc.storage_root)?;
                 for (hashed_key, encoded_val) in leaves {
                     trie_storages.insert(hashed_key, encoded_val.to_vec());
@@ -673,7 +669,7 @@ impl DatabaseReadProvider {
         let mut sorted_storages: Vec<_> = trie_storages.into_iter().collect();
         sorted_storages.sort_by_key(|(h, _)| *h);
 
-        let root = crate::trie::calculate_trie_root_incremental(base_storage_root, self, sorted_storages)?;
+        let root = crate::trie::calculate_trie_root(sorted_storages)?;
         Ok(root)
     }
 }
