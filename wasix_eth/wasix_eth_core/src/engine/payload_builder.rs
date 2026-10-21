@@ -1,7 +1,7 @@
 use crate::mempool::mempool_provider::MempoolProvider;
 use crate::{Consensus, EngineEvent};
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Notify};
 use wasix_eth_execution::execution_provider::ExecutionProvider;
 use wasix_eth_storage::read::DatabaseReadProvider;
 use wasix_eth_storage::read_traits::{BlockProvider, ChainProvider};
@@ -32,6 +32,14 @@ pub struct CancellationToken {
     cancelled: Arc<std::sync::atomic::AtomicBool>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildStatus {
+    /// Initial empty block prepared, first non-empty build in progress.
+    InitialBuildInProgress,
+    /// First non-empty build (or best possible one) has been completed.
+    InitialBuildCompleted,
+}
+
 impl CancellationToken {
     pub fn new() -> Self {
         Self::default()
@@ -59,6 +67,10 @@ pub struct PayloadBuilder {
     pub event_tx: broadcast::Sender<EngineEvent>,
     pub build_lock: Arc<tokio::sync::Mutex<()>>,
     pub cancel_tokens: Arc<RwLock<HashMap<PayloadId, CancellationToken>>>,
+    /// Tracks the build status of payloads.
+    pub build_statuses: Arc<RwLock<HashMap<PayloadId, BuildStatus>>>,
+    /// Notifies waiters when a payload's build status changes.
+    pub build_notify: Arc<RwLock<HashMap<PayloadId, Arc<Notify>>>>,
 }
 
 impl PayloadBuilder {
@@ -120,6 +132,11 @@ impl PayloadBuilder {
 
         // 4. Build initial empty payload
         self.build_empty_payload(head_block_hash, attr.clone(), id.clone()).await?;
+
+
+        // Initialize build status and notify
+        self.build_statuses.write().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?.insert(id.clone(), BuildStatus::InitialBuildInProgress);
+        self.build_notify.write().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?.insert(id.clone(), Arc::new(Notify::new()));
 
         // 5. Perform immediate synchronous rebuild
         let _ = self.maybe_rebuild_payload(id.clone()).await;
@@ -394,13 +411,38 @@ impl PayloadBuilder {
         }).await.map_err(|e| RpcError::Internal(format!("Payload rebuilding task panicked: {}", e)))?
         .map_err(|e| RpcError::Internal(e.to_string()))?;
 
+        // Update build status and notify waiters
+        self.build_statuses.write().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?.insert(payload_id, BuildStatus::InitialBuildCompleted);
+        if let Some(notify) = self.build_notify.read().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?.get(&payload_id) {
+            notify.notify_waiters();
+        }
+
         Ok(())
     }
 
-    pub fn get_payload(&self, payload_id: &PayloadId) -> RpcResult<(Block<Transaction>, Vec<Receipt>, Vec<wasix_eth_types::ReceiptMeta>, BlobsBundleV1)> {
+    pub async fn get_payload(&self, payload_id: &PayloadId) -> RpcResult<(Block<Transaction>, Vec<Receipt>, Vec<wasix_eth_types::ReceiptMeta>, BlobsBundleV1)> {
+        let notify = {
+            let statuses = self.build_statuses.read().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?;
+            if let Some(status) = statuses.get(payload_id) {
+                if *status == BuildStatus::InitialBuildInProgress {
+                    self.build_notify.read().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?.get(payload_id).cloned()
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        if let Some(notify) = notify {
+            debug!("[PayloadBuilder] get_payload called while initial build in progress for {:?}, waiting...", payload_id);
+            let timeout = std::time::Duration::from_secs(4);
+            let _ = tokio::time::timeout(timeout, notify.notified()).await;
+        }
+
         let payload = self.read_storage.get_payload(payload_id)
             .ok_or_else(|| RpcError::BlockNotFound(wasix_eth_types::BlockId::Hash(B256::from_slice(&payload_id.0[..]).into())))?;
-        
+
         info!("[PayloadBuilder] Returning payload {:?} with {} transactions", payload_id, payload.0.body.transactions.len());
         Ok(payload)
     }

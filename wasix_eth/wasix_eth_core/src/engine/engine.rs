@@ -176,6 +176,8 @@ impl Engine {
                 event_tx: event_tx.clone(),
                 build_lock: Arc::new(tokio::sync::Mutex::new(())),
                 cancel_tokens: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+                build_statuses: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+                build_notify: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             },
             payload_processor: PayloadProcessor { 
                 processing_payloads: processing_payloads.clone(), 
@@ -253,7 +255,7 @@ impl Engine {
 
     pub async fn get_payload_v1(&self, payload_id: PayloadId) -> RpcResult<ExecutionPayloadV1> {
         info!("[Engine] get_payload_v1: payload_id={:?}", payload_id);
-        let (block, _, _, _) = self.payload_builder.get_payload(&payload_id)?;
+        let (block, _, _, _) = self.payload_builder.get_payload(&payload_id).await?;
         let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_default();
         let fork = Hardfork::get_active_fork(&chain_config, block.header.number, block.header.timestamp);
 
@@ -267,7 +269,7 @@ impl Engine {
     
     pub async fn get_payload_v2(&self, payload_id: PayloadId) -> RpcResult<ExecutionPayloadEnvelopeV2> {
         info!("[Engine] get_payload_v2: payload_id={:?}", payload_id);
-        let (block, receipts, _, _) = self.payload_builder.get_payload(&payload_id)?;
+        let (block, receipts, _, _) = self.payload_builder.get_payload(&payload_id).await?;
         let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_default();
         let fork = Hardfork::get_active_fork(&chain_config, block.header.number, block.header.timestamp);
 
@@ -284,7 +286,7 @@ impl Engine {
 
     pub async fn get_payload_v3(&self, payload_id: PayloadId) -> RpcResult<ExecutionPayloadEnvelopeV3> {
         info!("[Engine] get_payload_v3: payload_id={:?}", payload_id);
-        let (block, receipts, _, bundle) = self.payload_builder.get_payload(&payload_id)?;
+        let (block, receipts, _, bundle) = self.payload_builder.get_payload(&payload_id).await?;
         let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_default();
         let fork = Hardfork::get_active_fork(&chain_config, block.header.number, block.header.timestamp);
 
@@ -301,7 +303,7 @@ impl Engine {
 
     pub async fn get_payload_v4(&self, payload_id: PayloadId) -> RpcResult<ExecutionPayloadEnvelopeV4> {
         info!("[Engine] get_payload_v4: payload_id={:?}", payload_id);
-        let (block, receipts, _, bundle) = self.payload_builder.get_payload(&payload_id)?;
+        let (block, receipts, _, bundle) = self.payload_builder.get_payload(&payload_id).await?;
         let chain_config = self.read_storage.chain_config().ok().flatten().unwrap_or_default();
 
         let execution_payload = EngineMapper::to_execution_payload_v4(&block, &chain_config);
@@ -895,7 +897,7 @@ impl Engine {
 
     // --- helper methods engine calls ---
     pub async fn get_payload(&self, payload_id: &PayloadId) -> RpcResult<(Block<Transaction>, Vec<Receipt>, Vec<wasix_eth_types::ReceiptMeta>, BlobsBundleV1)> {
-        self.payload_builder.get_payload(payload_id)
+        self.payload_builder.get_payload(payload_id).await
     }
 
     async fn build_new_payload(

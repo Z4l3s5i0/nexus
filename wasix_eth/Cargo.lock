@@ -4735,6 +4735,7 @@ dependencies = [
  "alloy-json-rpc",
  "alloy-rlp",
  "alloy-serde",
+ "arc-swap",
  "base64 0.22.1",
  "clap",
  "futures-util",
