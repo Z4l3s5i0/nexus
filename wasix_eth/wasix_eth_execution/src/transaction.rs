@@ -2,7 +2,7 @@ use wasix_eth_types::*;
 use wasix_eth_storage::write::BatchWriter;
 use wasix_eth_storage::read_traits::AccountProvider;
 use wasix_eth_storage::write_traits::AccountWriter;
-use wasix_eth_utils::{debug, exp};
+use wasix_eth_utils::{debug, exp, warn};
 use evm::backend::{OverlayedBackend, OverlayedChangeSet, InMemoryEnvironment, RuntimeBaseBackend, RuntimeEnvironment, RuntimeBackend};
 use evm::uint::{H160, H256, U256 as EvmU256};
 use evm::standard::{Config, EtableResolver, ExecutionEtable, GasometerEtable, Invoker, TransactArgs, TransactArgsCallCreate, TransactGasPrice, TransactValue, TransactValueCallCreate};
@@ -87,7 +87,7 @@ impl<'a> TransactionExecutor<'a> {
         let (result, tx_failed) = match transact(args.clone(), None, &mut overlay, self.invoker) {
             Ok(res) => (res, false),
             Err(e) => {
-                debug!("[Execution] Transaction {:?} EVM execution error: {:?}. Args: caller={:?}, value={}, gas_limit={}, gas_price={:?}", tx_hash_final, e, args.caller, args.value, args.gas_limit, args.gas_price);
+                warn!("[Execution] Transaction {:?} EVM execution error: {:?}. Args: caller={:?}, value={}, gas_limit={}, gas_price={:?}", tx_hash_final, e, args.caller, args.value, args.gas_limit, args.gas_price);
                 let res = self.handle_transact_error(tx, e, &args, sender_h160, balance_before, effective_gas_price, reward_rate, is_coinbase, &overlay)?;
                 (res, true)
             }
