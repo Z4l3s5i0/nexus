@@ -6,12 +6,12 @@ set -e
 # Default values
 RPC_URL="http://host.docker.internal:8545"
 PRIVATE_KEY="ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-SCENARIO="stress"
+SCENARIO="simple"
 IS_CAMPAIGN=false
 TPS=10
 DURATION=60
 ACCOUNTS=10
-MIN_BALANCE="1000000000"
+MIN_BALANCE="100eth"
 GAS_LIMIT=""
 NETWORK=""
 CONTENDER_IMAGE="docker.io/z4l3s5i0/contender:latest"

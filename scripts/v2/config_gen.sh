@@ -47,7 +47,7 @@ GENESIS_DELAY=$GENESIS_DELAY
 # Pre-fund the default contender account (first Anvil account)
 # and a few accounts from the custom mnemonic if needed.
 # 100000 ETH = 100000000000000000000000 Wei
-EL_PREMINE_ADDRS='{"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266": {"balance": "1000000ETH"}}'
+EL_PREMINE_ADDRS='{"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266": {"balance": "1000000000ETH"}}'
 EL_PREMINE_COUNT=10
 EL_PREMINE_BALANCE=1000000ETH
 # Increase genesis gas limit to accommodate large contracts like Uber

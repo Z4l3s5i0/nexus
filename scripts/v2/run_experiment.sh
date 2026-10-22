@@ -144,10 +144,10 @@ for i in "${TARGET_INDICES[@]}"; do
         --seed "$SEED" \
         --duration $((WORKLOAD_DURATION)) \
         --network experiments_blockchain-net \
-        --scenario "exp/counter" \
+        --scenario "exp/uber" \
         --tps 4 \
         --accounts 4 \
-        --min-balance 10000000000000000000 \
+        --min-balance "100eth" \
         --rpc "$RPC_URL" < /dev/null &
     WORKLOAD_PIDS+=($!)
 done
