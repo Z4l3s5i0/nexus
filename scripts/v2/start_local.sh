@@ -5,9 +5,8 @@ set -e
 
 source "$(dirname "$0")/common.sh"
 
-NODES=4
-LINUX_RATIO=50
-WASIX_RATIO=50
+LINUX_NODES=2
+WASIX_NODES=2
 CHAIN_ID=12345
 CLEANUP=false
 SETUP=false
@@ -18,9 +17,8 @@ COMPOSE_FILE="docker-compose.v2.yml"
 usage() {
     echo "Usage: $0 [options]"
     echo "Options:"
-    echo "  --nodes N         Total number of nodes (default: 4)"
-    echo "  --linux P         Percentage of Linux nodes (default: 50)"
-    echo "  --wasix P         Percentage of Wasix nodes (default: 50)"
+    echo "  --linux-nodes N   Number of Linux nodes (default: 2)"
+    echo "  --wasix-nodes N   Number of Wasix nodes (default: 2)"
     echo "  --chain-id ID     Unique chain ID (default: 12345)"
     echo "  --cleanup         Remove existing data before starting"
     echo "  --setup           Run setup.sh locally before starting"
@@ -31,9 +29,8 @@ usage() {
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
-        --nodes) NODES="$2"; shift ;;
-        --linux) LINUX_RATIO="$2"; shift ;;
-        --wasix) WASIX_RATIO="$2"; shift ;;
+        --linux-nodes) LINUX_NODES="$2"; shift ;;
+        --wasix-nodes) WASIX_NODES="$2"; shift ;;
         --chain-id) CHAIN_ID="$2"; shift ;;
         --cleanup) CLEANUP=true ;;
         --setup) SETUP=true ;;
@@ -43,6 +40,8 @@ while [[ "$#" -gt 0 ]]; do
     esac
     shift
 done
+
+NODES=$((LINUX_NODES + WASIX_NODES))
 
 if [ "$SETUP" = true ]; then
     echo "Running local setup..."
@@ -124,8 +123,9 @@ if [ -z "$EXT_IP" ]; then
 fi
 echo "Using external IP: $EXT_IP"
 
-# 3. Calculate node counts
-read c_linux c_wasix <<< $(calculate_counts "$NODES" "$LINUX_RATIO" "$WASIX_RATIO")
+# 3. Node counts
+c_linux=$LINUX_NODES
+c_wasix=$WASIX_NODES
 echo "Node counts: Linux=$c_linux, Wasix=$c_wasix"
 
 # 3. Generate docker-compose.yml

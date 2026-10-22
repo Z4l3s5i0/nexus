@@ -3,17 +3,23 @@ set -e
 
 # Experiment Loop Script
 # Runs the experiment with different combinations of parameters.
-
-DURATIONS=(30 60 90 120 150)
-WAIT_DURATIONS=(480)
-NODE_COUNTS=(5 10 15)
-RATIOS=(100 75 50 25 0)
-WORKLOAD_NODE_PERCENTS=(100 50)
+VARIANTS=(
+    "exp/uber 120 4 4"
+    "exp/counter 180 17 17"
+    "exp/dota 280 66 66"
+)
+WAIT_DURATION=480
+RATIO_VARIANTS=(
+    "10 0"
+    "5 5"
+    "0 10"
+)
+WORKLOAD_NODE_PERCENT=100
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_EXPERIMENT="$SCRIPT_DIR/run_experiment.sh"
 
-TOTAL_COMBINATIONS=$((${#DURATIONS[@]} * ${#WAIT_DURATIONS[@]} * ${#NODE_COUNTS[@]} * ${#RATIOS[@]} * ${#WORKLOAD_NODE_PERCENTS[@]}))
+TOTAL_COMBINATIONS=$(( ${#VARIANTS[@]} * ${#RATIO_VARIANTS[@]} ))
 COUNTER=0
 FAILED_PLOTS=()
 
@@ -21,48 +27,50 @@ echo "=== Starting Experiment Loop ==="
 echo "Total combinations to run: $TOTAL_COMBINATIONS"
 echo ""
 
-for nodes in "${NODE_COUNTS[@]}"; do
-    for ratio in "${RATIOS[@]}"; do
-        for wl_percent in "${WORKLOAD_NODE_PERCENTS[@]}"; do
-            for duration in "${DURATIONS[@]}"; do
-                for wait_dur in "${WAIT_DURATIONS[@]}"; do
-                    COUNTER=$((COUNTER + 1))
+for variant in "${VARIANTS[@]}"; do
+    read wl_type duration spammer_accounts tps <<< "$variant"
+    for ratio_var in "${RATIO_VARIANTS[@]}"; do
+        read linux_nodes wasix_nodes <<< "$ratio_var"
+        NODE_COUNT=$((linux_nodes + wasix_nodes))
+        COUNTER=$((COUNTER + 1))
+        
+        echo "--- Running Experiment $COUNTER/$TOTAL_COMBINATIONS ---"
+        echo "Workload Type: $wl_type"
+        echo "Nodes: $NODE_COUNT (Linux: $linux_nodes, WASM: $wasix_nodes)"
+        echo "Workload Percent: $WORKLOAD_NODE_PERCENT%"
+        echo "Workload Duration: $duration s"
+        echo "Wait Duration: $WAIT_DURATION s"
+        echo "Spammer Accounts: $spammer_accounts"
+        echo "TPS: $tps"
+        echo "---------------------------------------"
+        
+        # Run the experiment
+        # We use a unique chain-id for each run to avoid any state overlap if cleanup fails
+        CHAIN_ID=$((1000 + COUNTER))
+        
+        bash "$RUN_EXPERIMENT" \
+            --linux-nodes "$linux_nodes" \
+            --wasix-nodes "$wasix_nodes" \
+            --workload-percent "$WORKLOAD_NODE_PERCENT" \
+            --duration "$duration" \
+            --wait-duration "$WAIT_DURATION" \
+            --workload-type "$wl_type" \
+            --spammer-accounts "$spammer_accounts" \
+            --tps "$tps" \
+            --chain-id "$CHAIN_ID"
                     
-                    echo "--- Running Experiment $COUNTER/$TOTAL_COMBINATIONS ---"
-                    echo "Nodes: $nodes"
-                    echo "Ratio (Linux %): $ratio"
-                    echo "Workload Percent: $wl_percent%"
-                    echo "Workload Duration: $duration s"
-                    echo "Wait Duration: $wait_dur s"
-                    echo "---------------------------------------"
-                    
-                    # Run the experiment
-                    # We use a unique chain-id for each run to avoid any state overlap if cleanup fails
-                    CHAIN_ID=$((1000 + COUNTER))
-                    
-                    bash "$RUN_EXPERIMENT" \
-                        --nodes "$nodes" \
-                        --ratio "$ratio" \
-                        --workload-percent "$wl_percent" \
-                        --duration "$duration" \
-                        --wait-duration "$wait_dur" \
-                        --chain-id "$CHAIN_ID"
-                    
-                    # Check if plotting was skipped
-                    # We need to find the experiment directory. run_experiment.sh doesn't output it easily,
-                    # but we know it's in experiments/exp_YYYYMMDD_HHMMSS/analysis/PLOTS_SKIPPED
-                    # Let's find the latest directory in experiments/
-                    LATEST_EXP=$(ls -td experiments/exp_* 2>/dev/null | head -1)
-                    if [ -f "$LATEST_EXP/analysis/PLOTS_SKIPPED" ]; then
-                        PARAM_INFO="Nodes: $nodes, Ratio: $ratio, WL%: $wl_percent, Dur: $duration, Wait: $wait_dur"
-                        FAILED_PLOTS+=("$LATEST_EXP ($PARAM_INFO)")
-                    fi
-                    
-                    echo "--- Finished Experiment $COUNTER/$TOTAL_COMBINATIONS ---"
-                    echo ""
-                done
-            done
-        done
+        # Check if plotting was skipped
+        # We need to find the experiment directory. run_experiment.sh doesn't output it easily,
+        # but we know it's in experiments/exp_YYYYMMDD_HHMMSS/analysis/PLOTS_SKIPPED
+        # Let's find the latest directory in experiments/
+        LATEST_EXP=$(ls -td experiments/exp_* 2>/dev/null | head -1)
+        if [ -f "$LATEST_EXP/analysis/PLOTS_SKIPPED" ]; then
+            PARAM_INFO="Type: $wl_type, Nodes: $NODE_COUNT (L:$linux_nodes, W:$wasix_nodes), WL%: $WORKLOAD_NODE_PERCENT, Dur: $duration, Wait: $WAIT_DURATION, Spammers: $spammer_accounts, TPS: $tps"
+            FAILED_PLOTS+=("$LATEST_EXP ($PARAM_INFO)")
+        fi
+
+        echo "--- Finished Experiment $COUNTER/$TOTAL_COMBINATIONS ---"
+        echo ""
     done
 done
 

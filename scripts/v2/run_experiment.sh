@@ -7,9 +7,12 @@ set -e
 CHAIN_ID=10
 WORKLOAD_DURATION=300 # Default workload duration in seconds
 WAIT_DURATION=1800 # Default wait duration after workload
-NODES=10
-RATIO=0
+LINUX_NODES=5
+WASIX_NODES=5
 WORKLOAD_PERCENT=""
+WORKLOAD_TYPE="exp/uber"
+SPAMMER_ACCOUNTS=4
+TPS=4
 
 usage() {
     echo "Usage: $0 [options]"
@@ -17,9 +20,12 @@ usage() {
     echo "  --duration N     Duration to run the workload in seconds (default: $WORKLOAD_DURATION)"
     echo "  --wait-duration N Wait duration after workload in seconds (default: $WAIT_DURATION)"
     echo "  --chain-id ID    Chain ID to use (default: $CHAIN_ID)"
-    echo "  --nodes N        Number of nodes to start (default: $NODES)"
-    echo "  --ratio N        Percent of rustcompiled nodes (default: $RATIO)"
+    echo "  --linux-nodes N  Number of rustcompiled nodes (default: $LINUX_NODES)"
+    echo "  --wasix-nodes N  Number of WASM-compiled nodes (default: $WASIX_NODES)"
     echo "  --workload-percent N Percent of nodes to receive workload (default: 100)"
+    echo "  --workload-type TYPE Workload type/scenario (default: $WORKLOAD_TYPE)"
+    echo "  --spammer-accounts N Number of accounts per spammer (default: $SPAMMER_ACCOUNTS)"
+    echo "  --tps N          Transactions per second (default: $TPS)"
     exit 1
 }
 
@@ -28,16 +34,19 @@ while [[ "$#" -gt 0 ]]; do
         --duration) WORKLOAD_DURATION="$2"; shift ;;
         --wait-duration) WAIT_DURATION="$2"; shift ;;
         --chain-id) CHAIN_ID="$2"; shift ;;
-        --nodes) NODES="$2"; shift ;;
-        --ratio) RATIO="$2"; shift ;;
+        --linux-nodes) LINUX_NODES="$2"; shift ;;
+        --wasix-nodes) WASIX_NODES="$2"; shift ;;
         --workload-percent) WORKLOAD_PERCENT="$2"; shift ;;
+        --workload-type) WORKLOAD_TYPE="$2"; shift ;;
+        --spammer-accounts) SPAMMER_ACCOUNTS="$2"; shift ;;
+        --tps) TPS="$2"; shift ;;
         *) usage ;;
     esac
     shift
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RATIO2=$((100 - RATIO))
+NODES=$((LINUX_NODES + WASIX_NODES))
 
 # If WORKLOAD_PERCENT is not set, default to 100
 if [ -z "$WORKLOAD_PERCENT" ]; then
@@ -58,34 +67,32 @@ if [ "$WORKLOAD_NODES" -gt "$NODES" ]; then
 fi
 
 # Calculate how many nodes of each type should get the workload
-# In start_local.sh, the first c_linux nodes are linux, and the rest are wasix.
-source "$SCRIPT_DIR/common.sh"
-read c_linux c_wasix <<< $(calculate_counts "$NODES" "$RATIO" "$RATIO2")
+# In start_local.sh, the first LINUX_NODES nodes are linux, and the rest are wasix.
+c_linux=$LINUX_NODES
+c_wasix=$WASIX_NODES
 
-# We want to distribute WORKLOAD_NODES according to the same ratio
-read w_linux w_wasix <<< $(calculate_counts "$WORKLOAD_NODES" "$RATIO" "$RATIO2")
+# We want to distribute WORKLOAD_NODES according to the same ratio of LINUX vs WASIX
+if [ "$NODES" -gt 0 ]; then
+    w_linux=$((WORKLOAD_NODES * c_linux / NODES))
+else
+    w_linux=0
+fi
+w_wasix=$((WORKLOAD_NODES - w_linux))
 
-# Adjust in case we don't have enough nodes of a certain type (though calculate_counts should handle it)
-# but we must ensure we don't exceed the actual available nodes of each type.
-# w_linux = min(w_linux, c_linux)
+# Adjust in case we don't have enough nodes of a certain type
 if [ "$w_linux" -gt "$c_linux" ]; then w_linux=$c_linux; fi
-# w_wasix = min(w_wasix, c_wasix)
 if [ "$w_wasix" -gt "$c_wasix" ]; then w_wasix=$c_wasix; fi
-
-# Final WORKLOAD_NODES might be slightly different due to rounding if we were strict,
-# but calculate_counts already ensures w_linux + w_wasix = WORKLOAD_NODES.
 
 echo "=== Starting Experiment Workflow ==="
 echo "Chain ID: $CHAIN_ID"
 echo "Workload Duration: $WORKLOAD_DURATION seconds"
 echo "Wait Duration: $WAIT_DURATION seconds"
-echo "Nodes: $NODES"
-echo "Workload Nodes: $WORKLOAD_NODES"
-echo "RATIO: $RATIO Rust-compiled, $RATIO2 WASM-compiled"
+echo "Nodes: $NODES (Linux: $c_linux, WASM: $c_wasix)"
+echo "Workload Nodes: $WORKLOAD_NODES (Linux: $w_linux, WASM: $w_wasix)"
 
 # 1. Start the local network
 echo "Step 1: Starting local network..."
-bash "$SCRIPT_DIR/start_local.sh" --nodes "$NODES" --chain-id "$CHAIN_ID" --linux "$RATIO" --wasix "$RATIO2" --setup --cleanup --registry docker.io/z4l3s5i0
+bash "$SCRIPT_DIR/start_local.sh" --chain-id "$CHAIN_ID" --linux-nodes "$c_linux" --wasix-nodes "$c_wasix" --setup --cleanup --registry docker.io/z4l3s5i0
 
 # 2. Start manage_logs
 echo "Step 2: Starting background log processor..."
@@ -144,9 +151,9 @@ for i in "${TARGET_INDICES[@]}"; do
         --seed "$SEED" \
         --duration $((WORKLOAD_DURATION)) \
         --network experiments_blockchain-net \
-        --scenario "exp/uber" \
-        --tps 4 \
-        --accounts 4 \
+        --scenario "$WORKLOAD_TYPE" \
+        --tps "$TPS" \
+        --accounts "$SPAMMER_ACCOUNTS" \
         --min-balance "100eth" \
         --rpc "$RPC_URL" < /dev/null &
     WORKLOAD_PIDS+=($!)

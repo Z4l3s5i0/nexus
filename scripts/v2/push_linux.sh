@@ -32,7 +32,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 build_push_node() {
     TYPE="linux"
     echo "Checking for $TYPE node binary..."
-    NODE_BIN="$ROOT_DIR/wasix_eth/target/x86_64-unknown-linux-gnu/release/wasix_eth"
+    NODE_BIN="$ROOT_DIR/wasix_eth/target/release/wasix_eth"
     if [ ! -f "$NODE_BIN" ]; then
         echo -e "\e[31mERROR: $TYPE node binary not found at $NODE_BIN.\e[0m"
         echo "Please build it first: cd wasix_eth && cross build --release --target x86_64-unknown-linux-gnu"

@@ -7,9 +7,9 @@ use std::collections::VecDeque;
 #[repr(u8)]
 pub enum LogLevel {
     None = 0,
-    Info = 1,
-    Debug = 2,
-    Exp = 3,
+    Exp = 1,
+    Info = 2,
+    Debug = 3,
 }
 
 static LOG_LEVEL: AtomicU8 = AtomicU8::new(LogLevel::Info as u8);
@@ -79,9 +79,9 @@ pub fn set_log_level(level: LogLevel) {
 pub fn get_log_level() -> LogLevel {
     match LOG_LEVEL.load(Ordering::Relaxed) {
         0 => LogLevel::None,
-        1 => LogLevel::Info,
-        2 => LogLevel::Debug,
-        3 => LogLevel::Exp,
+        1 => LogLevel::Exp,
+        2 => LogLevel::Info,
+        3 => LogLevel::Debug,
         _ => LogLevel::Info,
     }
 }

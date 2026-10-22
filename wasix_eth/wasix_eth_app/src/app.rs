@@ -20,7 +20,7 @@ use wasix_eth_rpc::RpcServerFacade;
 use wasix_eth_types::genesis::GenesisConfiguration;
 use wasix_eth_utils::logging;
 use wasix_eth_utils::logging::LogLevel;
-use wasix_eth_utils::{debug, error, info, exp};
+use wasix_eth_utils::{debug, error, info};
 use hyper::service::service_fn;
 use hyper::{Request, Response, body::Bytes};
 use http_body_util::Full;
