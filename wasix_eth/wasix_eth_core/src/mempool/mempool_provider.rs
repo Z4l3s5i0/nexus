@@ -6,6 +6,7 @@ use wasix_eth_storage::read::DatabaseReadProvider;
 use wasix_eth_storage::read_traits::AccountProvider;
 use crate::mempool::mempool::{Mempool, MempoolSnapshot, MempoolInternalState};
 use im::HashMap as ImmutableMap;
+use wasix_eth_storage::{ChainProvider, HeaderProvider};
 use wasix_eth_utils::info;
 
 #[async_trait]
@@ -74,6 +75,21 @@ impl MempoolProvider for Mempool {
                 (0, U256::ZERO)
             };
 
+            let chain_config = state.chain_config().ok().flatten();
+            let latest_header = state.header(wasix_eth_types::BlockId::Number(wasix_eth_types::BlockNumberOrTag::Latest)).ok().flatten();
+            let blob_base_fee = latest_header.as_ref().and_then(|h| h.excess_blob_gas).map(|excess| {
+                if let (Some(config), Some(header)) = (chain_config.as_ref(), latest_header.as_ref()) {
+                    let fork = wasix_eth_types::Hardfork::get_active_fork(config, header.number, header.timestamp);
+                    if let Some(params) = fork.blob_params(config) {
+                        wasix_eth_types::calc_blob_gasprice(excess, params.update_fraction)
+                    } else {
+                        wasix_eth_types::calc_blob_gasprice(excess, wasix_eth_types::BLOB_GASPRICE_UPDATE_FRACTION as u128)
+                    }
+                } else {
+                    wasix_eth_types::calc_blob_gasprice(excess, wasix_eth_types::BLOB_GASPRICE_UPDATE_FRACTION as u128)
+                }
+            }).unwrap_or(0);
+
             // Check pending transactions
             if let Some(queue) = mempool_state.pending_transactions.get(&address) {
                 for tx in queue.iter() {
@@ -90,9 +106,17 @@ impl MempoolProvider for Mempool {
                     let gas_limit = tx.gas_limit() as u128;
                     let max_fee_per_gas = tx.max_fee_per_gas();
                     let value = tx.value().to::<u128>();
-                    let required_balance = U256::from(gas_limit * max_fee_per_gas + value);
+                    let mut required_balance = U256::from(gas_limit * max_fee_per_gas + value);
+
+                    if tx.is_eip4844() {
+                        let blob_gas_used = tx.blob_versioned_hashes().map(|h| h.len()).unwrap_or(0) as u64 * wasix_eth_types::DATA_GAS_PER_BLOB;
+                        let blob_fee = U256::from(blob_gas_used as u128 * blob_base_fee);
+                        required_balance = required_balance.saturating_add(blob_fee);
+                    }
 
                     if tx_nonce < current_nonce || current_balance < required_balance {
+                        info!("[Mempool] Evicting transaction {:?} (nonce: {}) due to {} (balance: {}, required: {})",
+                            tx.hash(), tx_nonce, if tx_nonce < current_nonce { "stale nonce" } else { "insufficient balance" }, current_balance, required_balance);
                         to_remove.push(*tx.hash());
                         continue;
                     }
@@ -127,9 +151,17 @@ impl MempoolProvider for Mempool {
                     let gas_limit = tx.gas_limit() as u128;
                     let max_fee_per_gas = tx.max_fee_per_gas();
                     let value = tx.value().to::<u128>();
-                    let required_balance = U256::from(gas_limit * max_fee_per_gas + value);
+                    let mut required_balance = U256::from(gas_limit * max_fee_per_gas + value);
+
+                    if tx.is_eip4844() {
+                        let blob_gas_used = tx.blob_versioned_hashes().map(|h| h.len()).unwrap_or(0) as u64 * wasix_eth_types::DATA_GAS_PER_BLOB;
+                        let blob_fee = U256::from(blob_gas_used as u128 * blob_base_fee);
+                        required_balance = required_balance.saturating_add(blob_fee);
+                    }
 
                     if tx_nonce < current_nonce || current_balance < required_balance {
+                        info!("[Mempool] Evicting transaction {:?} (nonce: {}) due to {} (balance: {}, required: {})",
+                            tx.hash(), tx_nonce, if tx_nonce < current_nonce { "stale nonce" } else { "insufficient balance" }, current_balance, required_balance);
                         to_remove.push(*tx.hash());
                         continue;
                     }

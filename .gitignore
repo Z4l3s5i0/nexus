@@ -28,3 +28,6 @@ results/
 /MA/
 /results1/
 /test/
+*.zip
+/dep/
+/tests/

@@ -207,6 +207,33 @@ impl<'a> TransactionExecutor<'a> {
             }
         }
 
+        // Upfront cost verification (Yellow Paper Section 6.2)
+        let max_fee = tx.max_fee_per_gas();
+        let gas_limit = tx.gas_limit();
+        let value = tx.value();
+        
+        let gas_cost = U256::from(gas_limit)
+            .checked_mul(U256::from(max_fee))
+            .ok_or_else(|| anyhow::anyhow!("Upfront gas cost overflow"))?;
+            
+        let mut total_upfront_cost = gas_cost
+            .checked_add(value)
+            .ok_or_else(|| anyhow::anyhow!("Total upfront cost overflow"))?;
+
+        // Include blob fees if applicable (EIP-4844)
+        if self.fork >= Hardfork::Cancun {
+            if let Transaction::Eip4844(s) = tx {
+                let blob_gas_used = s.tx().blob_versioned_hashes().unwrap_or_default().len() as u64 * wasix_eth_types::DATA_GAS_PER_BLOB;
+                let blob_base_fee = self.env.blob_base_fee_per_gas.as_u64();
+                let blob_fee = U256::from(blob_gas_used) * U256::from(blob_base_fee);
+                total_upfront_cost = total_upfront_cost.checked_add(blob_fee).ok_or_else(|| anyhow::anyhow!("Total upfront cost (with blobs) overflow"))?;
+            }
+        }
+
+        if account.balance < total_upfront_cost {
+            return Err(anyhow::anyhow!("Insufficient balance for upfront cost: balance={}, cost={}", account.balance, total_upfront_cost));
+        }
+
         Ok(())
     }
 

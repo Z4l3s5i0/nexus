@@ -16,7 +16,7 @@ use wasix_eth_types::p2p::{
 };
 use wasix_eth_types::{async_trait, Block, BlockId, GossipProvider, Transaction, B256, TxPooledEnvelope, BlobTransactionSidecar, Signed, TxEip4844Variant, BlobTransactionSidecarVariant, BlobTransactionSidecarEip7594};
 use wasix_eth_utils::metrics::GOSSIP_MESSAGES_RECEIVED;
-use wasix_eth_utils::{debug, error, info};
+use wasix_eth_utils::{debug, error};
 
 use crate::peer::peer_manager::PeerManager;
 
@@ -100,7 +100,7 @@ impl SyncService {
                 if !self.peer_manager.registry.is_current_session(&peer_id, session_id).await {
                     return;
                 }
-                info!("[Sync Service] Received {} Transactions from {}", m.0.len(), peer_id);
+                debug!("[Sync Service] Received {} Transactions from {}", m.0.len(), peer_id);
                 let Some(sync) = self.sync_provider().await else {
                     return;
                 };
@@ -110,7 +110,7 @@ impl SyncService {
                 if !self.peer_manager.registry.is_current_session(&peer_id, session_id).await {
                     return;
                 }
-                info!("[Sync Service] Received {} NewPooledTransactionHashes from {}", m.hashes.len(), peer_id);
+                debug!("[Sync Service] Received {} NewPooledTransactionHashes from {}", m.hashes.len(), peer_id);
                 let Some(sync) = self.sync_provider().await else {
                     return;
                 };
@@ -537,7 +537,7 @@ impl GossipProvider for SyncService {
             hashes: hashes.clone(),
         };
 
-        info!("[Sync] Broadcasting {} pooled transaction hashes to {} peers", hashes.len(), sessions.len());
+        debug!("[Sync] Broadcasting {} pooled transaction hashes to {} peers", hashes.len(), sessions.len());
         for session in sessions {
             use wasix_eth_types::sync::P2pSession;
             let _ = session.send_new_pooled_transaction_hashes(msg.clone()).await;
