@@ -176,6 +176,8 @@ impl Engine {
                 event_tx: event_tx.clone(),
                 build_lock: Arc::new(tokio::sync::Mutex::new(())),
                 cancel_tokens: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+                rebuild_interruption_tokens: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+                in_flight_interruptions: Arc::new(DashSet::new()),
                 build_statuses: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
                 build_notify: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             },

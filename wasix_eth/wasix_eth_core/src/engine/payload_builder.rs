@@ -25,12 +25,8 @@ use wasix_eth_types::Result;
 
 use std::collections::HashMap;
 use std::sync::RwLock;
-
-// Simple CancellationToken since we don't have tokio-util
-#[derive(Clone, Default)]
-pub struct CancellationToken {
-    cancelled: Arc<std::sync::atomic::AtomicBool>,
-}
+use dashmap::DashSet;
+pub use wasix_eth_types::CancellationToken;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildStatus {
@@ -38,23 +34,6 @@ pub enum BuildStatus {
     InitialBuildInProgress,
     /// First non-empty build (or best possible one) has been completed.
     InitialBuildCompleted,
-}
-
-impl CancellationToken {
-    pub fn new() -> Self {
-        Self::default()
-    }
-    pub fn cancel(&self) {
-        self.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
-    }
-    pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(std::sync::atomic::Ordering::SeqCst)
-    }
-    pub async fn cancelled(&self) {
-        while !self.is_cancelled() {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -67,6 +46,8 @@ pub struct PayloadBuilder {
     pub event_tx: broadcast::Sender<EngineEvent>,
     pub build_lock: Arc<tokio::sync::Mutex<()>>,
     pub cancel_tokens: Arc<RwLock<HashMap<PayloadId, CancellationToken>>>,
+    pub rebuild_interruption_tokens: Arc<RwLock<HashMap<PayloadId, CancellationToken>>>,
+    pub in_flight_interruptions: Arc<DashSet<PayloadId>>,
     /// Tracks the build status of payloads.
     pub build_statuses: Arc<RwLock<HashMap<PayloadId, BuildStatus>>>,
     /// Notifies waiters when a payload's build status changes.
@@ -232,6 +213,7 @@ impl PayloadBuilder {
                 &parent_header_clone,
                 &attr_clone,
                 base_fee_per_gas,
+                None,
             )
         }).await {
             Ok(Ok(res)) => res,
@@ -364,18 +346,37 @@ impl PayloadBuilder {
         }
 
         tokio::task::yield_now().await;
+        
+        // --- Interruption management ---
+        let token = CancellationToken::new();
+        {
+            let mut tokens = self.rebuild_interruption_tokens.write().unwrap();
+            tokens.insert(payload_id, token.clone());
+        }
+        // Cleanup token when this scope ends
+        let rebuild_tokens = Arc::clone(&self.rebuild_interruption_tokens);
+        let in_flight_interruptions = Arc::clone(&self.in_flight_interruptions);
+        let payload_id_copy = payload_id;
+        let _cleanup = scopeguard::guard((), move |_| {
+            let mut tokens = rebuild_tokens.write().unwrap();
+            tokens.remove(&payload_id_copy);
+            in_flight_interruptions.remove(&payload_id_copy);
+        });
+        // --------------------------------
 
         let write_storage = self.write_storage.clone();
         // 4. Re-run execution
         let execution = Arc::clone(&self.execution);
         let parent_header_clone = parent_block.header.clone();
         let attr_clone = attr.clone();
+        let token_clone = token.clone();
         let (finalized_block, receipts, metas) = tokio::task::spawn_blocking(move || {
             execution.execute_block_for_payload(
                 transactions,
                 &parent_header_clone,
                 &attr_clone,
                 base_fee_per_gas,
+                Some(token_clone),
             )
         }).await.map_err(|e| RpcError::Internal(format!("Payload rebuilding task panicked: {}", e)))?
         .map_err(|e| RpcError::Internal(e.to_string()))?;
@@ -432,29 +433,76 @@ impl PayloadBuilder {
     }
 
     pub async fn get_payload(&self, payload_id: &PayloadId) -> RpcResult<(Block<Transaction>, Vec<Receipt>, Vec<wasix_eth_types::ReceiptMeta>, BlobsBundleV1)> {
-        let notify = {
-            let statuses = self.build_statuses.read().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?;
-            if let Some(status) = statuses.get(payload_id) {
-                if *status == BuildStatus::InitialBuildInProgress {
-                    self.build_notify.read().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?.get(payload_id).cloned()
+        let wait_start = std::time::Instant::now();
+        
+        let mut initial_wait_done = false;
+        while wait_start.elapsed() < std::time::Duration::from_secs(2) {
+            let status = {
+                let statuses = self.build_statuses.read().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?;
+                statuses.get(payload_id).cloned()
+            };
+
+            if let Some(status) = status {
+                if status == BuildStatus::InitialBuildCompleted {
+                    initial_wait_done = true;
+                    break;
+                }
+                
+                // If in progress, wait on notify
+                let notify = {
+                    self.build_notify.read().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?
+                        .get(payload_id).cloned()
+                };
+                
+                if let Some(n) = notify {
+                    let remaining = std::time::Duration::from_secs(2).saturating_sub(wait_start.elapsed());
+                    if remaining.is_zero() { break; }
+                    let _ = tokio::time::timeout(remaining, n.notified()).await;
                 } else {
-                    None
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
             } else {
-                None
+                // Not found yet
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
-        };
+        }
 
-        if let Some(notify) = notify {
-            debug!("[PayloadBuilder] get_payload called while initial build in progress for {:?}, waiting...", payload_id);
-            let timeout = std::time::Duration::from_secs(4);
-            let _ = tokio::time::timeout(timeout, notify.notified()).await;
+        if !initial_wait_done {
+            // 2s mark reached, check if we need to interrupt an active rebuild
+            let build_active = {
+                let statuses = self.build_statuses.read().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?;
+                statuses.get(payload_id) == Some(&BuildStatus::InitialBuildInProgress) || 
+                self.rebuild_interruption_tokens.read().unwrap().contains_key(payload_id)
+            };
+
+            if build_active {
+                if !self.in_flight_interruptions.contains(payload_id) {
+                    self.in_flight_interruptions.insert(*payload_id);
+                    let token = {
+                        let tokens = self.rebuild_interruption_tokens.read().unwrap();
+                        tokens.get(payload_id).cloned()
+                    };
+                    if let Some(t) = token {
+                        debug!("[PayloadBuilder] Signaling interruption for payload {:?}", payload_id);
+                        t.cancel();
+                    }
+                } else {
+                    debug!("[PayloadBuilder] Interruption already in flight for payload {:?}", payload_id);
+                }
+
+                // Wait for finalization (another 2s)
+                let remaining = std::time::Duration::from_secs(4).saturating_sub(wait_start.elapsed());
+                if !remaining.is_zero() {
+                    tokio::time::sleep(remaining).await;
+                }
+            }
         }
 
         let payload = self.read_storage.get_payload(payload_id)
             .ok_or_else(|| RpcError::BlockNotFound(wasix_eth_types::BlockId::Hash(B256::from_slice(&payload_id.0[..]).into())))?;
 
-        info!("[PayloadBuilder] Returning payload {:?} with {} transactions", payload_id, payload.0.body.transactions.len());
+        info!("[PayloadBuilder] Returning payload {:?} with {} transactions after {:?}ms", 
+            payload_id, payload.0.body.transactions.len(), wait_start.elapsed().as_millis());
         Ok(payload)
     }
 

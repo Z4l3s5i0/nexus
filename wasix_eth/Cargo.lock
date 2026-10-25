@@ -4619,6 +4619,7 @@ dependencies = [
  "futures-util",
  "im",
  "rand 0.9.5",
+ "scopeguard",
  "serde_json",
  "tempfile",
  "tokio",

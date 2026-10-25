@@ -18,14 +18,15 @@ pub trait ExecutionProvider: Send + Sync {
     fn execute_block(&self, block: Block<Transaction>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_block_with_commit(&self, block: Block<Transaction>, commit: bool) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_block_with_state_root(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
-    fn execute_block_with_state_root_and_building(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>, building: bool) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
-    fn execute_block_with_batch(&self, block: Block<Transaction>, batch: &BatchWriter, state_root: Option<B256>, building: bool) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
+    fn execute_block_with_state_root_and_building(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
+    fn execute_block_with_batch(&self, block: Block<Transaction>, batch: &BatchWriter, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_block_for_payload(
         &self,
         transactions: Vec<Transaction>,
         _header: &Header,
         _attributes: &PayloadAttributes,
         _base_fee: Option<u64>,
+        interruption_token: Option<CancellationToken>,
     ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn run_execution(
         &self,
@@ -530,15 +531,15 @@ impl ExecutionProvider for EthExecutionProvider {
     }
 
     fn execute_block_with_state_root(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
-        self.execute_block_with_state_root_and_building(block, commit, state_root, false)
+        self.execute_block_with_state_root_and_building(block, commit, state_root, false, None)
     }
 
-    fn execute_block_with_state_root_and_building(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>, building: bool) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
+    fn execute_block_with_state_root_and_building(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
         debug!("[Execution] execute_block_with_state_root: block {} commit={} state_root={:?} building={}", block.header.number, commit, state_root, building);
         self.write_storage.clear_tracking();
         let batch = self.write_storage.begin_batch()?;
         
-        let (executed_block, receipts, metas) = match self.execute_block_with_batch(block.clone(), &batch, state_root, building) {
+        let (executed_block, receipts, metas) = match self.execute_block_with_batch(block.clone(), &batch, state_root, building, interruption_token) {
             Ok(res) => res,
             Err(e) => {
                 // Batch will be dropped here, and redb::WriteTransaction will be aborted
@@ -565,7 +566,7 @@ impl ExecutionProvider for EthExecutionProvider {
         Ok((executed_block, receipts, metas))
     }
 
-    fn execute_block_with_batch(&self, mut block: Block<Transaction>, batch: &BatchWriter, state_root: Option<B256>, building: bool) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
+    fn execute_block_with_batch(&self, mut block: Block<Transaction>, batch: &BatchWriter, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
         let mut state_root = state_root;
         if state_root.is_none() && block.header.number > 0 {
             // Look up the parent header to get the correct state root for the reorged path
@@ -608,6 +609,14 @@ impl ExecutionProvider for EthExecutionProvider {
         let mut final_transactions = Vec::new();
 
         for (tx_idx, tx) in block.body.transactions.iter().enumerate() {
+            // New Interruption Check
+            if let Some(token) = &interruption_token {
+                if token.is_cancelled() {
+                    debug!("[Execution] Interruption signaled, stopping at transaction {}", tx_idx);
+                    break; 
+                }
+            }
+
             let tx_blob_gas = if fork >= Hardfork::Cancun {
                 if let Transaction::Eip4844(s) = tx {
                     s.tx().blob_versioned_hashes().unwrap_or_default().len() as u64 * DATA_GAS_PER_BLOB
@@ -692,6 +701,7 @@ impl ExecutionProvider for EthExecutionProvider {
         parent_header: &Header,
         attributes: &PayloadAttributes,
         base_fee: Option<u64>,
+        interruption_token: Option<CancellationToken>,
     ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
         let chain_id = self.read_storage.chain_id().unwrap_or(1);
         let chain_config = self.read_storage.chain_config()?.unwrap_or_else(|| ChainConfig {
@@ -783,7 +793,7 @@ impl ExecutionProvider for EthExecutionProvider {
         };
 
         // Reuse execute_block logic but don't commit
-        self.execute_block_with_state_root_and_building(block, false, Some(parent_header.state_root), true)
+        self.execute_block_with_state_root_and_building(block, false, Some(parent_header.state_root), true, interruption_token)
     }
 
     fn run_execution(

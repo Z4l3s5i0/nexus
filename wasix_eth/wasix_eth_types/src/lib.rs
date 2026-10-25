@@ -110,6 +110,31 @@ use serde::{Deserialize, Serialize};
 pub use alloy_rpc_types::TransactionRequest;
 pub use alloy_rpc_types::ReceiptWithBloom;
 pub use alloy_rpc_types::BlockTransactions as AlloyBlockTransactions;
+use jsonrpsee::tokio;
+
+// Simple CancellationToken for cross-crate use
+#[derive(Clone, Default, Debug)]
+pub struct CancellationToken {
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl CancellationToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn cancel(&self) {
+        self.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    pub async fn cancelled(&self) {
+        while !self.is_cancelled() {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+}
+
 pub type RpcBlock<T = RpcTransaction> = alloy_rpc_types::Block<T, RpcHeader>;
 
 
