@@ -116,11 +116,19 @@ use jsonrpsee::tokio;
 #[derive(Clone, Default, Debug)]
 pub struct CancellationToken {
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    id: u64,
 }
 
 impl CancellationToken {
     pub fn new() -> Self {
-        Self::default()
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self {
+            cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+        }
+    }
+    pub fn id(&self) -> u64 {
+        self.id
     }
     pub fn cancel(&self) {
         self.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -545,6 +553,16 @@ pub fn alloy_u256_to_evm_u256(u256: U256) -> EvmU256 {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReceiptMeta {
     pub contract_address: Option<Address>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PayloadExecutionResult {
+    pub block: Block<Transaction>,
+    pub receipts: Vec<Receipt>,
+    pub metas: Vec<ReceiptMeta>,
+    pub bundle: BlobsBundleV1,
+    pub account_changes: Vec<(Address, Option<Bytes>)>,
+    pub storage_changes: Vec<(Address, B256, U256)>,
 }
 
 impl alloy_rlp::Encodable for ReceiptMeta {

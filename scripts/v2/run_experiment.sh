@@ -184,8 +184,8 @@ fi
 echo "Workloads stopped."
 
 # 7. Wait another 300 seconds
-echo "Step 7: Waiting additional 300 seconds for the workload to be processed..."
-sleep 300
+echo "Step 7: Waiting additional 450 seconds for the workload to be processed..."
+sleep 450
 
 # 8. Stop manage_logs
 echo "Step 8: Stopping log processor..."

@@ -14,14 +14,12 @@ use alloy_rpc_types::RpcBlockHash;
 use tokio::sync::broadcast;
 use wasix_eth_execution::execution_provider::ExecutionProvider;
 use wasix_eth_storage::read::DatabaseReadProvider;
-use wasix_eth_storage::read_traits::BlockProvider;
-use wasix_eth_storage::read_traits::ChainProvider;
-use wasix_eth_storage::read_traits::HeaderProvider;
+use wasix_eth_storage::read_traits::{BlockProvider, ChainProvider, HeaderProvider};
 use wasix_eth_storage::write::DatabaseWriteProvider;
 use wasix_eth_types::eip6110_utils::encode_deposit_request;
 use wasix_eth_types::error::{RpcError, RpcResult};
 use wasix_eth_types::sync::SyncProvider;
-use wasix_eth_types::{Block, Header, Hardfork, ChainManager, InvalidationReason};
+use wasix_eth_types::{Block, Header, Hardfork, ChainManager, InvalidationReason, PayloadExecutionResult, BlobsBundleV1};
 use wasix_eth_types::BlockId;
 use wasix_eth_types::BlockNumberOrTag;
 use wasix_eth_types::Bytes;
@@ -45,7 +43,7 @@ use wasix_eth_types::ConsensusTransaction;
 use wasix_eth_types::B256;
 use wasix_eth_types::U256;
 use wasix_eth_types::{async_trait};
-use wasix_eth_types::{BlobAndProofV1, BlobAndProofV2, BlobsBundleV1, Decodable2718};
+use wasix_eth_types::{BlobAndProofV1, BlobAndProofV2, Decodable2718};
 use wasix_eth_types::eip4895::Withdrawal;
 use wasix_eth_types::p2p::BlockHashAndNumber;
 use wasix_eth_utils::engine_mapper::EngineMapper;
@@ -68,6 +66,8 @@ pub enum EngineEvent {
     },
 }
 
+use crate::engine::payload_cache::PayloadExecutionCache;
+
 #[derive(Clone)]
 pub struct Engine {
     pub read_storage: DatabaseReadProvider,
@@ -85,6 +85,7 @@ pub struct Engine {
     pub forkchoice_validator: ForkchoiceValidator,
     pub mempool_listener: Arc<MempoolListener>,
     pub sync_registry: Arc<SyncRegistry>,
+    pub payload_cache: PayloadExecutionCache,
 }
 
 
@@ -156,6 +157,8 @@ impl Engine {
     ) -> Self {
         let processing_payloads = Arc::new(DashSet::new());
         let in_flight_results = Arc::new(DashMap::new());
+        let execution_cancellation_tokens = Arc::new(DashMap::new());
+        let payload_cache = PayloadExecutionCache::new(2);
 
         let engine = Self {
             read_storage: read_storage.clone(),
@@ -180,10 +183,13 @@ impl Engine {
                 in_flight_interruptions: Arc::new(DashSet::new()),
                 build_statuses: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
                 build_notify: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+                execution_results: Arc::new(DashMap::new()),
+                payload_cache: payload_cache.clone(),
             },
             payload_processor: PayloadProcessor { 
                 processing_payloads: processing_payloads.clone(), 
                 in_flight_results: in_flight_results.clone(),
+                execution_cancellation_tokens: execution_cancellation_tokens.clone(),
                 block_tree: block_tree.clone(),
                 canonical: canonical.clone(),
                 consensus: consensus.clone(),
@@ -193,11 +199,13 @@ impl Engine {
                 chain: chain.clone(),
                 sync_registry: sync_registry.clone(),
                 event_tx: event_tx.clone(),
+                payload_cache: payload_cache.clone(),
             },
             rpc_engine,
             forkchoice_validator,
             mempool_listener,
             sync_registry,
+            payload_cache,
         };
 
         engine
@@ -582,11 +590,38 @@ impl Engine {
                                     let hash = block.header.hash_slow();
                                     if self.read_storage.block_body_by_hash(hash).ok().flatten().is_none() {
                                         // Block is in Payloads but not in main storage.
-                                        // We MUST re-execute and COMMIT the state changes to the database
-                                        // so that subsequent transactions in the mempool see the correct nonces.
-                                        debug!("[Engine] Re-executing and committing block {} from Payloads", hash);
-                                        self.execution.execute_block_with_commit(block.clone(), true)
-                                            .map_err(|e| RpcError::Internal(format!("Failed to execute block from payload during promotion: {}", e)))?;
+                                        
+                                        // 1. Try to use the shared payload execution cache (most recent)
+                                        if let Some(res) = self.payload_cache.get(&hash) {
+                                            debug!("[Engine] Promoting block {} using shared execution cache", hash);
+                                            self.write_storage.commit_block_results(res)
+                                                .map_err(|e| RpcError::Internal(format!("Failed to commit block results during promotion: {}", e)))?;
+                                        } else {
+                                            // 2. Try to use in-memory cached execution result (from locally built payloads)
+                                            let mut cached_res = None;
+                                            for entry in self.payload_builder.execution_results.iter() {
+                                                if entry.value().block.header.hash_slow() == hash {
+                                                    cached_res = Some(entry.value().clone());
+                                                    break;
+                                                }
+                                            }
+
+                                            if let Some(res) = cached_res {
+                                                debug!("[Engine] Promoting block {} using in-memory cached results", hash);
+                                                self.write_storage.commit_block_results(res)
+                                                    .map_err(|e| RpcError::Internal(format!("Failed to commit block results during promotion: {}", e)))?;
+                                            } else if let Some((p_block, _p_receipts, _p_metas, _p_bundle)) = self.read_storage.get_payload_by_block_hash(hash) {
+                                                // 3. Try to use DB payload cache (but this might still need re-execution if state changes aren't there)
+                                                debug!("[Engine] Re-executing and committing block {} from Payloads DB cache", hash);
+                                                self.execution.execute_block_with_commit(p_block, true)
+                                                    .map_err(|e| RpcError::Internal(format!("Failed to execute block from payload during promotion: {}", e)))?;
+                                            } else {
+                                                // 4. Fallback to re-execution of the block from context
+                                                debug!("[Engine] Re-executing and committing block {} (not found in caches)", hash);
+                                                self.execution.execute_block_with_commit(block.clone(), true)
+                                                    .map_err(|e| RpcError::Internal(format!("Failed to execute block from payload during promotion: {}", e)))?;
+                                            }
+                                        }
                                     }
                                 }
 
@@ -958,3 +993,5 @@ impl Engine {
 
 
 
+
+use wasix_eth_storage::write_traits::{AccountWriter, BlockWriter, HeaderWriter, MetadataWriter};

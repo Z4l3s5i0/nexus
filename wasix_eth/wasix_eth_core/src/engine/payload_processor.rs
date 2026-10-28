@@ -16,10 +16,13 @@ use wasix_eth_types::{Block, BlockId, ChainConfig, PayloadStatus, PayloadStatusE
 use wasix_eth_utils::{debug, error, info, exp, metrics::BLOCKS_IMPORTED_TOTAL};
 use crate::engine::engine::EngineEvent;
 
+use crate::engine::payload_cache::PayloadExecutionCache;
+
 #[derive(Clone)]
 pub struct PayloadProcessor {
     pub processing_payloads: Arc<DashSet<B256>>,
     pub in_flight_results: Arc<DashMap<B256, broadcast::Sender<PayloadStatus>>>,
+    pub execution_cancellation_tokens: Arc<DashMap<u64, wasix_eth_types::CancellationToken>>,
     pub block_tree: Arc<BlockTree>,
     pub canonical: Arc<CanonicalState>,
     pub consensus: Arc<dyn Consensus>,
@@ -29,6 +32,7 @@ pub struct PayloadProcessor {
     pub chain: Arc<dyn ChainManager>,
     pub sync_registry: Arc<SyncRegistry>,
     pub event_tx: broadcast::Sender<EngineEvent>,
+    pub payload_cache: PayloadExecutionCache,
 }
 
 impl PayloadProcessor {
@@ -116,10 +120,30 @@ impl PayloadProcessor {
         let (tx, _) = broadcast::channel(1);
         self.in_flight_results.insert(actual_hash, tx.clone());
 
+        // 3. Handle cancellation for same block height
+        // If a new payload arrives for the same height, cancel the old one.
+        let block_number = block.header.number;
+        if let Some((_, old_token)) = self.execution_cancellation_tokens.remove(&block_number) {
+            debug!("[PayloadProcessor] Cancelling existing execution for block number {}", block_number);
+            old_token.cancel();
+        }
+        let token = wasix_eth_types::CancellationToken::new();
+        self.execution_cancellation_tokens.insert(block_number, token.clone());
+
         // Helper to broadcast result and cleanup
-        let cleanup = |res: RpcResult<PayloadStatus>| {
-            self.processing_payloads.remove(&actual_hash);
-            self.in_flight_results.remove(&actual_hash);
+        let self_clone = self.clone();
+        let token_for_cleanup = token.clone();
+        let cleanup = move |res: RpcResult<PayloadStatus>| {
+            self_clone.processing_payloads.remove(&actual_hash);
+            self_clone.in_flight_results.remove(&actual_hash);
+            
+            // Only remove from execution_cancellation_tokens if it's still our token
+            if let Some(current_token) = self_clone.execution_cancellation_tokens.get(&block_number) {
+                if current_token.id() == token_for_cleanup.id() {
+                     self_clone.execution_cancellation_tokens.remove(&block_number);
+                }
+            }
+
             if let Ok(ref status) = res {
                 let _ = tx.send(status.clone());
             }
@@ -213,7 +237,7 @@ impl PayloadProcessor {
             }
         }
 
-        let result = match self.new_payload_internal_inner(block.clone(), expected_block_hash, expected_blob_versioned_hashes, parent_beacon_block_root, is_local).await {
+        let result = match self.new_payload_internal_inner(block.clone(), expected_block_hash, expected_blob_versioned_hashes, parent_beacon_block_root, is_local, token).await {
             Ok(res) => Ok(res),
             Err(e) => {
                 error!("[PayloadProcessor] internal error during payload processing: {}", e);
@@ -380,6 +404,7 @@ impl PayloadProcessor {
         expected_blob_versioned_hashes: Option<Vec<B256>>,
         parent_beacon_block_root: Option<B256>,
         is_local: bool,
+        token: wasix_eth_types::CancellationToken,
     ) -> RpcResult<PayloadStatus> {
         tokio::task::yield_now().await;
         let actual_hash = block.header.hash_slow();
@@ -600,9 +625,26 @@ impl PayloadProcessor {
         let block_clone = block.clone();
         
         let start_time = std::time::Instant::now();
-        let exec_result = tokio::task::spawn_blocking(move || {
-            execution.execute_block_with_state_root(block_clone, true, parent_state_root)
-        }).await.map_err(|e| RpcError::Internal(format!("Execution task panicked: {}", e)))?;
+        let timeout_duration = std::time::Duration::from_secs(5);
+        
+        let exec_result_wrapped = tokio::time::timeout(timeout_duration, tokio::task::spawn_blocking(move || {
+            execution.execute_block_with_state_root_and_building(block_clone, false, parent_state_root, false, Some(token))
+        })).await;
+
+        let exec_result = match exec_result_wrapped {
+            Ok(spawn_res) => {
+                spawn_res.map_err(|e| RpcError::Internal(format!("Execution task panicked: {}", e)))?
+            },
+            Err(_) => {
+                error!("[PayloadProcessor] Execution timed out for block {}", block.header.number);
+                let latest_valid = self.chain.get_latest_valid_ancestor(parent_hash).await;
+                return Ok(PayloadStatus {
+                    status: PayloadStatusEnum::Invalid { validation_error: "Execution timeout".to_string() },
+                    latest_valid_hash: latest_valid,
+                });
+            }
+        };
+
         let elapsed = start_time.elapsed();
         info!("[PayloadProcessor] Block {} executed in {:?}", block.header.number, elapsed);
 
@@ -658,55 +700,42 @@ impl PayloadProcessor {
             });
         }
 
-        // 7. Persist block
+        // 7. Store in-memory and skip DB persistence for now
         let block_hash = final_block.header.hash_slow();
         let block_number = final_block.header.number;
-        info!("[PayloadProcessor] Committing block {} (hash: {}) with {} transactions", block_number, block_hash, final_block.body.transactions.len());
-
-        let storage = self.write_storage.clone();
-        let final_block_clone = final_block.clone();
-        let receipts_clone = receipts.clone();
-        let metas_clone = metas.clone();
         
-        let parent_td = if block_number == 0 {
-            U256::ZERO
-        } else {
-            match self.read_storage.header_td(final_block.header.parent_hash) {
-                Ok(Some(td)) => td,
-                Ok(None) => return Err(RpcError::Internal(format!("Parent TD not found for block {} (parent: {})", block_number, final_block.header.parent_hash))),
-                Err(e) => return Err(RpcError::Internal(format!("Failed to retrieve parent TD for block {}: {}", block_number, e))),
-            }
+        // Collect account/storage changes if we are using execute_block_with_batch, 
+        // but here we used execute_block_with_state_root_and_building which doesn't return them directly.
+        // Wait, I should probably use a batch to execute if I want to collect changes without re-executing.
+        
+        // Let's re-evaluate: execute_block_with_state_root_and_building with commit:false 
+        // doesn't give us the account changes. I need to use execute_block_with_batch.
+        
+        let storage = self.write_storage.clone();
+        let execution = Arc::clone(&self.execution);
+        let block_clone = final_block.clone();
+        let parent_state_root = parent_header.as_ref().map(|h| h.state_root);
+
+        let (account_changes, storage_changes) = tokio::task::spawn_blocking(move || -> anyhow::Result<(Vec<_>, Vec<_>)> {
+            let batch = storage.begin_batch().map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            execution.execute_block_with_batch(block_clone, &batch, parent_state_root, false, None)?;
+            let acc = batch.collect_account_changes();
+            let st = batch.collect_storage_changes();
+            Ok((acc, st))
+        }).await.map_err(|e| RpcError::Internal(format!("Storage task panicked: {}", e)))?
+        .map_err(|e| RpcError::Internal(e.to_string()))?;
+
+        let result = wasix_eth_types::PayloadExecutionResult {
+            block: final_block.clone(),
+            receipts: receipts.clone(),
+            metas: metas.clone(),
+            bundle: wasix_eth_types::BlobsBundleV1::default(), // TODO: handle blobs if needed
+            account_changes,
+            storage_changes,
         };
-        let td = parent_td + U256::from(final_block.header.difficulty);
 
-        tokio::task::spawn_blocking(move || -> wasix_eth_types::error::RpcResult<()> {
-            let batch = storage.begin_batch().map_err(|e| RpcError::Internal(e.to_string()))?;
-
-            batch.insert_header(block_hash, final_block_clone.header.clone()).map_err(|e| RpcError::Internal(e.to_string()))?;
-            batch.insert_header_td(block_hash, td).map_err(|e| RpcError::Internal(e.to_string()))?;
-            batch.insert_block_body(block_hash, block_number, final_block_clone.body.clone()).map_err(|e| RpcError::Internal(e.to_string()))?;
-            batch.insert_block_hash(block_hash, block_number).map_err(|e| RpcError::Internal(e.to_string()))?;
-
-            // Persist receipts and transaction lookup
-            for (i, tx) in final_block_clone.body.transactions.iter().enumerate() {
-                let tx_hash = *tx.hash();
-                batch.insert_transaction(tx_hash, tx.clone()).map_err(|e| RpcError::Internal(e.to_string()))?;
-                if let Some(receipt) = receipts_clone.get(i) {
-                    batch.insert_receipt(block_hash, i as u64, receipt.clone()).map_err(|e| RpcError::Internal(e.to_string()))?;
-                }
-                if let Some(meta) = metas_clone.get(i) {
-                    batch.insert_receipt_meta(block_hash, i as u64, meta.clone()).map_err(|e| RpcError::Internal(e.to_string()))?;
-                }
-                batch.insert_transaction_lookup(tx_hash, block_hash, i as u64).map_err(|e| RpcError::Internal(e.to_string()))?;
-            }
-
-            // Also remove payload as it's now officially a block
-            let _ = batch.remove_payload_by_block_hash(block_hash);
-
-            batch.commit().map_err(|e| RpcError::Internal(e.to_string()))?;
-            info!("[PayloadProcessor] Block {} (hash: {}) successfully committed to storage", block_number, block_hash);
-            Ok(())
-        }).await.map_err(|e| RpcError::Internal(format!("Storage task panicked: {}", e)))??;
+        self.payload_cache.insert(block_hash, result);
+        info!("[PayloadProcessor] Block {} (hash: {}) stored in execution cache, skipping DB commit", block_number, block_hash);
 
         let _ = self.event_tx.send(EngineEvent::NewBlock {
             block: final_block.clone(),
@@ -742,9 +771,19 @@ impl PayloadProcessor {
                                 continue;
                             }
                             self.processing_payloads.insert(child_hash);
+                            
+                            let token = wasix_eth_types::CancellationToken::new();
+                            let block_number = block.header.number;
+                            // Check for existing execution by block number.
+                            if let Some((_, old_token)) = self.execution_cancellation_tokens.remove(&block_number) {
+                                debug!("[PayloadProcessor] Cancelling existing execution for block number {}", block_number);
+                                old_token.cancel();
+                            }
+                            self.execution_cancellation_tokens.insert(block_number, token.clone());
 
-                            let result = self.new_payload_internal_inner(block.clone(), child_hash, None, None, false).await;
-
+                            let result = self.new_payload_internal_inner(block.clone(), child_hash, None, None, false, token).await;
+                            
+                            self.execution_cancellation_tokens.remove(&block_number);
                             self.processing_payloads.remove(&child_hash);
 
                             match result {
