@@ -673,7 +673,7 @@ impl PayloadProcessor {
         
         let exec_result_wrapped = tokio::time::timeout(timeout_duration, tokio::task::spawn_blocking(move || {
             let batch = storage.begin_batch().map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            let (final_block, receipts, metas) = execution.execute_block_with_batch(block_clone, &batch, parent_state_root, false, Some(token))?;
+            let (final_block, receipts, metas) = execution.execute_block_with_batch(block_clone, &batch, parent_state_root, false, Some(token), None)?;
             let account_changes = batch.collect_account_changes();
             let storage_changes = batch.collect_storage_changes();
             Ok::<_, anyhow::Error>((final_block, receipts, metas, account_changes, storage_changes))

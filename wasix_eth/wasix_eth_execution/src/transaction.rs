@@ -40,6 +40,7 @@ impl<'a> TransactionExecutor<'a> {
         beneficiary: Address,
         cumulative_gas_used: &mut u64,
         state_root: Option<B256>,
+        skip_trie_updates: bool,
     ) -> Result<TransactionExecutionResult> {
         let recovered = tx.clone().try_into_recovered().map_err(|e| anyhow::anyhow!("Failed to recover signer: {}", e))?;
         let sender = recovered.signer();
@@ -119,11 +120,15 @@ impl<'a> TransactionExecutor<'a> {
         H160::from_slice(beneficiary.as_slice());
 
         let state_applier = StateApplier::new(self.batch);
-        state_applier.apply_changeset(&changeset, eip161, state_root)?;
+        state_applier.apply_changeset(&changeset, eip161, state_root, skip_trie_updates)?;
 
         // Ensure beneficiary exists (EIP-158/161)
         self.batch.account(beneficiary, state_root)?;
-        let intermediate_root = self.batch.calculate_state_root(eip161, state_root)?;
+        let intermediate_root = if skip_trie_updates && self.fork >= Hardfork::Byzantium {
+            B256::default()
+        } else {
+            self.batch.calculate_state_root(eip161, state_root)?
+        };
         let logs_bloom = logs_bloom(consensus_logs.iter());
 
         let status = if self.fork >= Hardfork::Byzantium {

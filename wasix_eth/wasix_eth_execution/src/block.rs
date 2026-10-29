@@ -73,7 +73,7 @@ impl<'a> BlockProcessor<'a> {
         Ok(0)
     }
 
-    pub fn process_withdrawals(&self, withdrawals: &[eip4895::Withdrawal], state_root: Option<B256>) -> Result<()> {
+    pub fn process_withdrawals(&self, withdrawals: &[eip4895::Withdrawal], state_root: Option<B256>, skip_trie_updates: bool) -> Result<()> {
         if withdrawals.is_empty() {
             return Ok(());
         }
@@ -89,7 +89,9 @@ impl<'a> BlockProcessor<'a> {
             let amount_wei = U256::from(withdrawal.amount).saturating_mul(U256::from(1_000_000_000u64));
             account.balance = account.balance.saturating_add(amount_wei);
             
-            account.storage_root = self.batch.calculate_storage_root(withdrawal.address, state_root)?;
+            if !skip_trie_updates {
+                account.storage_root = self.batch.calculate_storage_root(withdrawal.address, state_root)?;
+            }
             if account.code_hash == B256::default() {
                 account.code_hash = alloy_primitives::KECCAK256_EMPTY;
             }

@@ -22,6 +22,7 @@ impl<'a> StateApplier<'a> {
         changeset: &OverlayedChangeSet,
         eip161: bool,
         state_root: Option<B256>,
+        skip_trie_updates: bool,
     ) -> Result<()> {
         debug!("[Execution] Applying changeset: balances={}, nonces={}, codes={}, storages={}, deletes={}",
                 changeset.balances.len(), changeset.nonces.len(), changeset.codes.len(), changeset.storages.len(), changeset.deletes.len());
@@ -125,7 +126,11 @@ impl<'a> StateApplier<'a> {
             }
 
             if let Some(mut trie_account) = self.batch.account(addr, state_root)? {
-                let new_storage_root = self.batch.calculate_storage_root(addr, state_root)?;
+                let new_storage_root = if skip_trie_updates {
+                    trie_account.storage_root
+                } else {
+                    self.batch.calculate_storage_root(addr, state_root)?
+                };
 
                 trie_account.storage_root = new_storage_root;
                 if trie_account.code_hash == B256::default() {

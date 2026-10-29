@@ -66,9 +66,10 @@ impl EvmExecutor {
         _base_fee: Option<u64>,
         cumulative_gas_used: &mut u64,
         state_root: Option<B256>,
+        skip_trie_updates: bool,
     ) -> Result<TransactionExecutionResult> {
         let executor = TransactionExecutor::new(batch, env, config, invoker, fork);
-        executor.execute_transaction(tx, beneficiary, cumulative_gas_used, state_root)
+        executor.execute_transaction(tx, beneficiary, cumulative_gas_used, state_root, skip_trie_updates)
     }
 
     pub fn execute_system_call(
@@ -175,13 +176,13 @@ impl EvmExecutor {
         let eip161 = fork >= Hardfork::SpuriousDragon;
         let _coinbase = H160::from_slice(env.block_coinbase.as_bytes());
 
-        self.apply_changeset(batch, &filtered_changeset, eip161, state_root)?;
+        self.apply_changeset(batch, &filtered_changeset, eip161, state_root, false)?;
 
         Ok(SystemCallResult { output: Bytes::from(retval), used_gas: result.used_gas.as_u64() })
     }
 
-pub fn apply_changeset(&self, batch: &BatchWriter, changeset: &OverlayedChangeSet, eip161: bool, state_root: Option<B256>) -> Result<()> {
+    pub fn apply_changeset(&self, batch: &BatchWriter, changeset: &OverlayedChangeSet, eip161: bool, state_root: Option<B256>, skip_trie_updates: bool) -> Result<()> {
         let applier = StateApplier::new(batch);
-        applier.apply_changeset(changeset, eip161, state_root)
+        applier.apply_changeset(changeset, eip161, state_root, skip_trie_updates)
     }
 }

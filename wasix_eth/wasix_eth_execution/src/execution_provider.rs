@@ -19,8 +19,18 @@ pub trait ExecutionProvider: Send + Sync {
     fn execute_block_with_commit(&self, block: Block<Transaction>, commit: bool) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_block_with_state_root(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_block_with_state_root_and_building(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
-    fn execute_block_with_batch(&self, block: Block<Transaction>, batch: &BatchWriter, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
+    fn execute_block_with_batch(
+        &self,
+        block: Block<Transaction>,
+        batch: &BatchWriter,
+        state_root: Option<B256>,
+        building: bool,
+        interruption_token: Option<CancellationToken>,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
+
     fn execute_block_with_commit_and_writer(&self, block: Block<Transaction>, commit: bool, writer: &BatchWriter) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
+
     fn execute_block_for_payload(
         &self,
         transactions: Vec<Transaction>,
@@ -28,6 +38,7 @@ pub trait ExecutionProvider: Send + Sync {
         attributes: &PayloadAttributes,
         base_fee: Option<u64>,
         interruption_token: Option<CancellationToken>,
+        deadline: Option<std::time::Instant>,
     ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, Vec<(Address, Option<Bytes>)>, Vec<(Address, B256, U256)>)>;
     fn run_execution(
         &self,
@@ -489,6 +500,7 @@ impl EthExecutionProvider {
                 block.header.base_fee_per_gas,
                 &mut cumulative_gas_used,
                 state_root,
+                true, // skip_trie_updates
             )?;
 
             receipts.push(result.receipt.clone());
@@ -498,7 +510,7 @@ impl EthExecutionProvider {
 
         if apply_changes {
             if let Some(withdrawals) = &block.body.withdrawals {
-                block_processor.process_withdrawals(withdrawals, state_root)?;
+                block_processor.process_withdrawals(withdrawals, state_root, true)?;
             }
 
             block_processor.apply_block_rewards(fork, block.header.beneficiary, &block.body.ommers, state_root, block.header.number)?;
@@ -509,7 +521,7 @@ impl EthExecutionProvider {
             batch.commit()?;
         } else {
             if let Some(withdrawals) = &block.body.withdrawals {
-                block_processor.process_withdrawals(withdrawals, state_root)?;
+                block_processor.process_withdrawals(withdrawals, state_root, true)?;
             }
 
             block_processor.apply_block_rewards(fork, block.header.beneficiary, &block.body.ommers, state_root, block.header.number)?;
@@ -540,7 +552,7 @@ impl ExecutionProvider for EthExecutionProvider {
         self.write_storage.clear_tracking();
         let batch = self.write_storage.begin_batch()?;
         
-        let (executed_block, receipts, metas) = match self.execute_block_with_batch(block.clone(), &batch, state_root, building, interruption_token) {
+        let (executed_block, receipts, metas) = match self.execute_block_with_batch(block.clone(), &batch, state_root, building, interruption_token, None) {
             Ok(res) => res,
             Err(e) => {
                 // Batch will be dropped here, and redb::WriteTransaction will be aborted
@@ -570,7 +582,7 @@ impl ExecutionProvider for EthExecutionProvider {
     fn execute_block_with_commit_and_writer(&self, block: Block<Transaction>, commit: bool, writer: &BatchWriter) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
         debug!("[Execution] execute_block_with_commit_and_writer: block {} commit={} ", block.header.number, commit);
         
-        let (executed_block, receipts, metas) = self.execute_block_with_batch(block.clone(), writer, None, false, None)?;
+        let (executed_block, receipts, metas) = self.execute_block_with_batch(block.clone(), writer, None, false, None, None)?;
         
         if commit {
             debug!("[Execution] execute_block_with_commit_and_writer: applying results for block {}", block.header.number);
@@ -589,7 +601,15 @@ impl ExecutionProvider for EthExecutionProvider {
         Ok((executed_block, receipts, metas))
     }
 
-    fn execute_block_with_batch(&self, mut block: Block<Transaction>, batch: &BatchWriter, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
+    fn execute_block_with_batch(
+        &self,
+        mut block: Block<Transaction>,
+        batch: &BatchWriter,
+        state_root: Option<B256>,
+        building: bool,
+        interruption_token: Option<CancellationToken>,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
         let mut state_root = state_root;
         if state_root.is_none() && block.header.number > 0 {
             // Look up the parent header to get the correct state root for the reorged path
@@ -650,6 +670,16 @@ impl ExecutionProvider for EthExecutionProvider {
                 }
             }
 
+            // Time cap check
+            if building {
+                if let Some(dl) = deadline {
+                    if std::time::Instant::now() >= dl {
+                        info!("[Execution] Time cap reached during block building at transaction {}, stopping", tx_idx);
+                        break;
+                    }
+                }
+            }
+
             let tx_blob_gas = if fork >= Hardfork::Cancun {
                 if let Transaction::Eip4844(s) = tx {
                     s.tx().blob_versioned_hashes().unwrap_or_default().len() as u64 * DATA_GAS_PER_BLOB
@@ -671,6 +701,7 @@ impl ExecutionProvider for EthExecutionProvider {
                 block.header.base_fee_per_gas,
                 &mut cumulative_gas_used,
                 state_root,
+                true, // skip_trie_updates
             ) {
                 Ok(res) => res,
                 Err(e) => {
@@ -713,7 +744,7 @@ impl ExecutionProvider for EthExecutionProvider {
 
         if let Some(withdrawals) = &block.body.withdrawals {
             if !withdrawals.is_empty() {
-                block_processor.process_withdrawals(withdrawals, state_root)?;
+                block_processor.process_withdrawals(withdrawals, state_root, true)?;
             }
         }
 
@@ -735,6 +766,7 @@ impl ExecutionProvider for EthExecutionProvider {
         attributes: &PayloadAttributes,
         base_fee: Option<u64>,
         interruption_token: Option<CancellationToken>,
+        deadline: Option<std::time::Instant>,
     ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, Vec<(Address, Option<Bytes>)>, Vec<(Address, B256, U256)>)> {
         let chain_id = self.read_storage.chain_id().unwrap_or(1);
         let chain_config = self.read_storage.chain_config()?.unwrap_or_else(|| ChainConfig {
@@ -827,7 +859,7 @@ impl ExecutionProvider for EthExecutionProvider {
 
         // Reuse execute_block logic but don't commit
         let batch = self.write_storage.begin_simulation_batch()?;
-        let (finalized_block, receipts, metas) = self.execute_block_with_batch(block, &batch, Some(parent_header.state_root), true, interruption_token)?;
+        let (finalized_block, receipts, metas) = self.execute_block_with_batch(block, &batch, Some(parent_header.state_root), true, interruption_token, deadline)?;
         
         let account_changes = batch.collect_account_changes();
         let storage_changes = batch.collect_storage_changes();
