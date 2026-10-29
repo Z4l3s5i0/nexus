@@ -116,6 +116,13 @@ impl PayloadBuilder {
             return Err(RpcError::InvalidPayloadAttributes("Invalid timestamp".to_string()));
         }
 
+        let token = CancellationToken::new();
+        {
+            let mut tokens = self.cancel_tokens.write().unwrap();
+            if let Some(old_token) = tokens.insert(id.clone(), token.clone()) {
+                old_token.cancel();
+            }
+        }
         // 4. Build initial empty payload
         self.build_empty_payload(head_block_hash, attr.clone(), id.clone(), Some(token.clone())).await?;
 
@@ -129,13 +136,7 @@ impl PayloadBuilder {
 
         // 6. Start continuous building background task
         let builder = self.clone();
-        let token = CancellationToken::new();
-        {
-            let mut tokens = self.cancel_tokens.write().unwrap();
-            if let Some(old_token) = tokens.insert(id.clone(), token.clone()) {
-                old_token.cancel();
-            }
-        }
+
 
         let mut event_rx = self.event_tx.subscribe();
         tokio::spawn(async move {
