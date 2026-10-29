@@ -622,6 +622,12 @@ impl ExecutionProvider for EthExecutionProvider {
             }
         }
 
+        if let Some(token) = &interruption_token {
+            if token.is_cancelled() {
+                return Err(anyhow::anyhow!("Interruption signaled before transaction execution"));
+            }
+        }
+
 
         let etable = evm::interpreter::etable::Chained(GasometerEtable::new(), ExecutionEtable::new());
         let precompiles = StandardPrecompileSet;
@@ -636,7 +642,11 @@ impl ExecutionProvider for EthExecutionProvider {
             if let Some(token) = &interruption_token {
                 if token.is_cancelled() {
                     debug!("[Execution] Interruption signaled, stopping at transaction {}", tx_idx);
-                    break; 
+                    if building {
+                        break;
+                    } else {
+                        return Err(anyhow::anyhow!("Block execution interrupted at tx {}", tx_idx));
+                    }
                 }
             }
 
