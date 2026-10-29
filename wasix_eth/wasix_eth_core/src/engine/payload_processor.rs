@@ -136,7 +136,11 @@ impl PayloadProcessor {
             }
 
             if self.processing_payloads.contains(&actual_hash) || height_processing {
-                debug!("[PayloadProcessor] Block {:?} (height {}) is already being processed, skipping", actual_hash, block_number);
+                if height_processing {
+                    info!("[PayloadProcessor] Another block at height {} is currently being processed, returning SYNCING for {:?}", block_number, actual_hash);
+                } else {
+                    info!("[PayloadProcessor] Block {:?} is already being processed, returning SYNCING", actual_hash);
+                }
 
                 return Ok(PayloadStatus {
                     status: PayloadStatusEnum::Syncing,

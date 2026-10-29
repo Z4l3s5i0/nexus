@@ -157,6 +157,10 @@ impl Engine {
         sync_registry: Arc<SyncRegistry>,
         payload_cache: PayloadExecutionCache,
     ) -> Self {
+        if let Some(eth_exec) = execution.as_any().downcast_ref::<wasix_eth_execution::execution_provider::EthExecutionProvider>() {
+            eth_exec.set_state_cache(Arc::new(payload_cache.clone()));
+        }
+
         let processing_payloads = Arc::new(DashSet::new());
         let in_flight_results = Arc::new(DashMap::new());
         let execution_cancellation_tokens = Arc::new(DashMap::new());

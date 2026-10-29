@@ -108,6 +108,19 @@ pub trait BytecodeProvider {
 
 /// Trait for reading state-related information from the database.
 pub trait StateProvider: Send + Sync {
+    fn trie_node_from_cache(&self, _root: B256, _hash: B256) -> anyhow::Result<Option<Bytes>> {
+        Ok(None)
+    }
+    fn account_from_cache(&self, _root: B256, _address: Address) -> anyhow::Result<Option<TrieAccount>> {
+        Ok(None)
+    }
+    fn storage_from_cache(&self, _root: B256, _address: Address, _slot: B256) -> anyhow::Result<Option<U256>> {
+        Ok(None)
+    }
+    fn bytecode_from_cache(&self, _root: B256, _code_hash: B256) -> anyhow::Result<Option<Bytes>> {
+        Ok(None)
+    }
+
     /// Retrieves the plain state value for a given address.
     fn plain_state(&self, address: Address) -> anyhow::Result<Option<Bytes>>;
     /// Retrieves the hashed state value for a given hash.

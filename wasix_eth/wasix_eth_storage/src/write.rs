@@ -112,6 +112,7 @@ pub struct BatchWriter {
     resetted_storages: Arc<Mutex<HashSet<Address>>>,
     original_accounts: Arc<Mutex<HashMap<Address, Option<TrieAccount>>>>,
     original_storages: Arc<Mutex<HashMap<(Address, B256), U256>>>,
+    state_cache: Option<Arc<dyn StateProvider>>,
 }
 
 impl BatchWriter {
@@ -125,7 +126,13 @@ impl BatchWriter {
             resetted_storages: Arc::new(Mutex::new(HashSet::new())),
             original_accounts: Arc::new(Mutex::new(HashMap::new())),
             original_storages: Arc::new(Mutex::new(HashMap::new())),
+            state_cache: None,
         }
+    }
+
+    pub fn with_state_cache(mut self, cache: Arc<dyn StateProvider>) -> Self {
+        self.state_cache = Some(cache);
+        self
     }
 
     pub fn set_base_state_root(&self, root: B256) {
@@ -166,9 +173,24 @@ impl BatchWriter {
 
     pub fn collect_new_accounts(&self) -> Vec<(Address, TrieAccount)> {
         let touched = self.touched_accounts.lock().unwrap();
-        touched.iter().filter_map(|addr| {
-            self.account(*addr, None).ok().flatten().map(|acc| (*addr, acc))
-        }).collect()
+        let mut results = Vec::new();
+        for addr in touched.iter() {
+            match &self.handle {
+                TransactionHandle::Write(wtx) => {
+                    if let Ok(table) = wtx.open_table(Accounts::definition()) {
+                        if let Ok(Some(value)) = table.get(*addr) {
+                            results.push((*addr, value.value()));
+                        }
+                    }
+                }
+                TransactionHandle::Simulation(_, overlay) => {
+                    if let Some(acc) = overlay.accounts.get(addr) {
+                        results.push((*addr, acc.clone()));
+                    }
+                }
+            }
+        }
+        results
     }
 
     pub fn collect_new_storages(&self) -> Vec<(Address, B256, U256)> {
@@ -208,7 +230,18 @@ impl BatchWriter {
         for addr in batch_addresses {
             let hashed_addr = alloy_primitives::keccak256(addr);
 
-            if let Some(acc) = self.account(addr, state_root)? {
+            // Directly access state to avoid re-locking self.touched_accounts via self.account()
+            let acc_opt = match &self.handle {
+                TransactionHandle::Write(wtx) => {
+                    let table = wtx.open_table(Accounts::definition())?;
+                    table.get(addr)?.map(|v| v.value())
+                }
+                TransactionHandle::Simulation(_, overlay) => {
+                    overlay.accounts.get(&addr).map(|v| v.clone())
+                }
+            };
+
+            if let Some(acc) = acc_opt {
                 let storage_root = self.calculate_storage_root_internal(addr, state_root)?;
                 
                 // EIP-161 check
@@ -303,10 +336,38 @@ impl BatchWriter {
 
     fn calculate_storage_root_internal(&self, address: Address, state_root: Option<B256>) -> Result<B256> {
         let state_root = state_root.or(*self.base_state_root.lock().unwrap());
+        
+        // Avoid self.account(address, state_root) to prevent re-locking touched_accounts if we already know we're in the batch
+        // Or if not in batch, it will check touched_accounts again.
+        // Actually calculate_storage_root_internal is called from calculate_state_root_internal which holds the batch_addresses list.
+        
         let initial_storage_root = if self.resetted_storages.lock().unwrap().contains(&address) {
             alloy_trie::EMPTY_ROOT_HASH
         } else {
-            self.account(address, state_root)?.map(|acc| acc.storage_root).unwrap_or(alloy_trie::EMPTY_ROOT_HASH)
+            // Directly check batch first, then trie/base provider
+            let acc_opt = if self.touched_accounts.lock().unwrap().contains(&address) {
+                 match &self.handle {
+                    TransactionHandle::Write(wtx) => {
+                        let table = wtx.open_table(Accounts::definition())?;
+                        table.get(address)?.map(|v| v.value())
+                    }
+                    TransactionHandle::Simulation(_, overlay) => {
+                        overlay.accounts.get(&address).map(|v| v.clone())
+                    }
+                }
+            } else {
+                None
+            };
+            
+            let acc = if let Some(a) = acc_opt {
+                Some(a)
+            } else {
+                 // Fallback to trie traversal or read provider via self.account
+                 // (we know it's not in touched_accounts so it's safer)
+                 self.account(address, state_root)?
+            };
+            
+            acc.map(|acc| acc.storage_root).unwrap_or(alloy_trie::EMPTY_ROOT_HASH)
         };
         let mut trie = EthTrie::new(self, initial_storage_root);
 
@@ -321,7 +382,11 @@ impl BatchWriter {
 
         for slot in batch_slots {
             let hashed_slot = alloy_primitives::keccak256(slot);
-            if let Ok(value) = self.storage(address, slot, state_root) {
+            
+            // Directly check batch state instead of self.storage() to avoid re-locking touched_storages
+            let value_opt = self.touched_storages.lock().unwrap().get(&(address, slot)).cloned();
+            
+            if let Some(value) = value_opt {
                 if value == U256::ZERO {
                     trie.delete(hashed_slot)?;
                     
@@ -413,7 +478,16 @@ impl AccountProvider for BatchWriter {
             return Ok(None);
         }
 
-        // 2. If not modified in this block yet, read from the PARENT state root
+        // 2. Check the uncommitted state cache
+        if let Some(root) = state_root {
+            if let Some(cache) = &self.state_cache {
+                if let Ok(Some(acc)) = cache.account_from_cache(root, address) {
+                    return Ok(Some(acc));
+                }
+            }
+        }
+
+        // 3. If not modified in this block yet, read from the PARENT state root
         // If a state root is provided, we must use trie traversal that sees our wtx
         if let Some(root) = state_root {
             if root == alloy_trie::EMPTY_ROOT_HASH {
@@ -497,6 +571,15 @@ impl StorageProvider for BatchWriter {
             return Ok(U256::ZERO);
         }
 
+        // 1.5 Check the uncommitted state cache
+        if let Some(root) = state_root {
+            if let Some(cache) = &self.state_cache {
+                if let Ok(Some(val)) = cache.storage_from_cache(root, address, slot) {
+                    return Ok(val);
+                }
+            }
+        }
+
         // Check the handle for current batch state
         match &self.handle {
             TransactionHandle::Write(wtx) => {
@@ -577,6 +660,14 @@ impl StorageProvider for BatchWriter {
 
 impl BytecodeProvider for BatchWriter {
     fn bytecode(&self, code_hash: B256) -> Result<Option<Bytes>> {
+        if let Some(cache) = &self.state_cache {
+            if let Some(root) = *self.base_state_root.lock().unwrap() {
+                if let Ok(Some(code)) = cache.bytecode_from_cache(root, code_hash) {
+                    return Ok(Some(code));
+                }
+            }
+        }
+
         match &self.handle {
             TransactionHandle::Write(wtx) => {
                 let table = wtx.open_table(Bytecodes::definition())?;
@@ -797,8 +888,8 @@ impl BlockWriter for BatchWriter {
 
     fn commit_block_results(&self, res: PayloadExecutionResult) -> Result<()> {
         self.insert_block(res.block.clone(), res.receipts.clone(), res.metas.clone())?;
-        self.insert_account_change_set(res.block.header.number, res.account_changes)?;
-        self.insert_storage_change_set(res.block.header.number, res.storage_changes)?;
+        self.insert_account_change_set(res.block.header.number, res.account_changes.clone())?;
+        self.insert_storage_change_set(res.block.header.number, res.storage_changes.clone())?;
 
         // Also commit the new state and trie nodes
         for (addr, acc) in res.new_accounts {
@@ -818,6 +909,13 @@ impl BlockWriter for BatchWriter {
         if let TransactionHandle::Simulation(_, overlay) = &self.handle {
             for entry in overlay.bytecodes.iter() {
                 self.insert_bytecode(*entry.key(), entry.value().clone())?;
+            }
+            // Synchronize plain and hashed state from overlay if present
+            for entry in overlay.plain_state.iter() {
+                self.update_plain_state(*entry.key(), entry.value().clone())?;
+            }
+            for entry in overlay.hashed_state.iter() {
+                self.update_hashed_state(*entry.key(), entry.value().clone())?;
             }
         }
 
@@ -1052,6 +1150,14 @@ impl StateProvider for BatchWriter {
     }
 
     fn trie_node(&self, hash: B256) -> anyhow::Result<Option<Bytes>> {
+        if let Some(cache) = &self.state_cache {
+             if let Some(root) = *self.base_state_root.lock().unwrap() {
+                if let Ok(Some(node)) = cache.trie_node_from_cache(root, hash) {
+                    return Ok(Some(node));
+                }
+             }
+        }
+
         match &self.handle {
             TransactionHandle::Write(wtx) => {
                 let table = wtx.open_table(TrieNodes::definition())?;
@@ -1454,17 +1560,33 @@ impl AccountWriter for DatabaseWriteProvider {
                 };
 
                 // Update Accounts table with new storage root
+                let mut acc_rlp = Vec::new();
+                alloy_rlp::Encodable::encode(&trie_acc, &mut acc_rlp);
+                let acc_rlp_bytes = Bytes::from(acc_rlp);
+
                 self.with_write(|wtx| {
                     let mut a_table = wtx.open_table(Accounts::definition())?;
                     a_table.insert(addr, trie_acc.clone())?;
+
+                    let mut plain_table = wtx.open_table(PlainState::definition())?;
+                    plain_table.insert(addr, acc_rlp_bytes.clone())?;
+                    let mut hashed_table = wtx.open_table(HashedState::definition())?;
+                    hashed_table.insert(hashed_addr, acc_rlp_bytes.clone())?;
+
                     Ok(())
                 })?;
 
-                let mut buf = Vec::new();
-                alloy_rlp::Encodable::encode(&trie_acc, &mut buf);
-                trie.insert(hashed_addr, buf)?;
+                trie.insert(hashed_addr, acc_rlp_bytes.0.to_vec())?;
             } else {
                 trie.delete(hashed_addr)?;
+                // Remove from PlainState and HashedState as well
+                self.with_write(|wtx| {
+                    let mut plain_table = wtx.open_table(PlainState::definition())?;
+                    plain_table.remove(addr)?;
+                    let mut hashed_table = wtx.open_table(HashedState::definition())?;
+                    hashed_table.remove(hashed_addr)?;
+                    Ok(())
+                })?;
             }
         }
 
@@ -1487,11 +1609,27 @@ impl AccountWriter for DatabaseWriteProvider {
         for slot in batch_slots {
             let hashed_slot = alloy_primitives::keccak256(slot);
             if let Ok(value) = self.storage(address, slot, state_root) {
+                let hashed_addr = alloy_primitives::keccak256(address);
+                let combined_key = alloy_primitives::keccak256([hashed_addr.0, hashed_slot.0].concat());
+
                 if value == U256::ZERO {
                     trie.delete(hashed_slot)?;
+                    self.with_write(|wtx| {
+                        let mut hashed_table = wtx.open_table(HashedState::definition())?;
+                        hashed_table.remove(combined_key)?;
+                        Ok(())
+                    })?;
                 } else {
                     let mut buf = Vec::new();
                     alloy_rlp::Encodable::encode(&value, &mut buf);
+
+                    let val_bytes = value.to_be_bytes::<32>();
+                    self.with_write(|wtx| {
+                        let mut hashed_table = wtx.open_table(HashedState::definition())?;
+                        hashed_table.insert(combined_key, Bytes::from(val_bytes.to_vec()))?;
+                        Ok(())
+                    })?;
+
                     trie.insert(hashed_slot, buf)?;
                 }
             }

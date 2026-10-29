@@ -4,17 +4,20 @@ pub use evm::standard::TransactValueCallCreate;
 use evm::standard::{Config, EtableResolver, ExecutionEtable, GasometerEtable, Invoker};
 use evm_precompile::StandardPrecompileSet;
 use sha2::{Digest, Sha256};
-use wasix_eth_storage::read_traits::{AccountProvider, ChainProvider, HeaderProvider};
+use wasix_eth_storage::read_traits::{AccountProvider, ChainProvider, HeaderProvider, StateProvider};
 use wasix_eth_storage::write::BatchWriter;
 use wasix_eth_storage::write_traits::{AccountWriter, ChangeSetWriter, TransactionWriter};
 use wasix_eth_types::*;
 use wasix_eth_utils::{debug, info};
 use wasix_eth_types::PayloadAttributes;
+use std::sync::{Arc, Mutex};
 
 use crate::config::prepare_execution_env;
 pub use crate::executor::{EvmExecutor, TransactionExecutionResult};
 
 pub trait ExecutionProvider: Send + Sync {
+    fn as_any(&self) -> &dyn std::any::Any;
+
     fn execute_block(&self, block: Block<Transaction>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_block_with_commit(&self, block: Block<Transaction>, commit: bool) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_block_with_state_root(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
@@ -66,6 +69,7 @@ pub struct EthExecutionProvider {
     pub read_storage: wasix_eth_storage::read::DatabaseReadProvider,
     write_storage: wasix_eth_storage::write::DatabaseWriteProvider,
     executor: EvmExecutor,
+    state_cache: Mutex<Option<Arc<dyn StateProvider>>>,
 }
 
 impl EthExecutionProvider {
@@ -77,7 +81,12 @@ impl EthExecutionProvider {
             read_storage,
             write_storage,
             executor: EvmExecutor,
+            state_cache: Mutex::new(None),
         }
+    }
+
+    pub fn set_state_cache(&self, cache: Arc<dyn StateProvider>) {
+        *self.state_cache.lock().unwrap() = Some(cache);
     }
 
     fn prepare_execution_env(
@@ -535,6 +544,10 @@ impl EthExecutionProvider {
 }
 
 impl ExecutionProvider for EthExecutionProvider {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn execute_block(&self, block: Block<Transaction>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
         self.execute_block_with_commit(block, true)
     }
@@ -550,7 +563,10 @@ impl ExecutionProvider for EthExecutionProvider {
     fn execute_block_with_state_root_and_building(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
         debug!("[Execution] execute_block_with_state_root: block {} commit={} state_root={:?} building={}", block.header.number, commit, state_root, building);
         self.write_storage.clear_tracking();
-        let batch = self.write_storage.begin_batch()?;
+        let mut batch = self.write_storage.begin_batch()?;
+        if let Some(cache) = self.state_cache.lock().unwrap().clone() {
+            batch = batch.with_state_cache(cache);
+        }
         
         let (executed_block, receipts, metas) = match self.execute_block_with_batch(block.clone(), &batch, state_root, building, interruption_token, None) {
             Ok(res) => res,
@@ -754,6 +770,8 @@ impl ExecutionProvider for EthExecutionProvider {
         let calculated_root = batch.calculate_state_root(fork >= Hardfork::SpuriousDragon, state_root)?;
         debug!("[Execution] State root calculated: {:?}", calculated_root);
 
+        // In building mode, we might want to skip some expensive calculations if we're not at the end of the block,
+        // but here we are at the end of execute_block_with_batch, so we have the final calculated_root.
         self.finalize_block_header_with_requests(&mut block, &receipts, cumulative_gas_used, calculated_root, fork, building)?;
         info!("[Execution] Block header finalized for block {}", block.header.number);
         Ok((block, receipts, metas))
@@ -768,6 +786,12 @@ impl ExecutionProvider for EthExecutionProvider {
         interruption_token: Option<CancellationToken>,
         deadline: Option<std::time::Instant>,
     ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, Vec<(Address, Option<Bytes>)>, Vec<(Address, B256, U256)>, Vec<(B256, Bytes)>)> {
+        self.write_storage.clear_tracking();
+        let mut batch = self.write_storage.begin_simulation_batch()?;
+        if let Some(cache) = self.state_cache.lock().unwrap().clone() {
+            batch = batch.with_state_cache(cache);
+        }
+        
         let chain_id = self.read_storage.chain_id().unwrap_or(1);
         let chain_config = self.read_storage.chain_config()?.unwrap_or_else(|| ChainConfig {
             chain_id,
