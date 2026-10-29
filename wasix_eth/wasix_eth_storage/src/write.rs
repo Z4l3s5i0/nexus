@@ -164,6 +164,27 @@ impl BatchWriter {
         }
     }
 
+    pub fn collect_new_accounts(&self) -> Vec<(Address, TrieAccount)> {
+        let touched = self.touched_accounts.lock().unwrap();
+        touched.iter().filter_map(|addr| {
+            self.account(*addr, None).ok().flatten().map(|acc| (*addr, acc))
+        }).collect()
+    }
+
+    pub fn collect_new_storages(&self) -> Vec<(Address, B256, U256)> {
+        let touched = self.touched_storages.lock().unwrap();
+        touched.iter().map(|((addr, slot), val)| (*addr, *slot, *val)).collect()
+    }
+
+    pub fn collect_new_bytecodes(&self) -> Vec<(B256, Bytes)> {
+        match &self.handle {
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.bytecodes.iter().map(|entry| (*entry.key(), entry.value().clone())).collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
     fn calculate_state_root_internal(&self, is_eip161: bool, state_root: Option<B256>) -> Result<B256> {
         let state_root = state_root.or(*self.base_state_root.lock().unwrap());
         let initial_root = match state_root {
@@ -778,6 +799,28 @@ impl BlockWriter for BatchWriter {
         self.insert_block(res.block.clone(), res.receipts.clone(), res.metas.clone())?;
         self.insert_account_change_set(res.block.header.number, res.account_changes)?;
         self.insert_storage_change_set(res.block.header.number, res.storage_changes)?;
+
+        // Also commit the new state and trie nodes
+        for (addr, acc) in res.new_accounts {
+            self.update_account(addr, acc)?;
+        }
+        for (addr, slot, val) in res.new_storages {
+            self.update_storage(addr, slot, val)?;
+        }
+        for (hash, code) in res.new_bytecodes {
+            self.insert_bytecode(hash, code)?;
+        }
+        for (hash, node) in res.trie_nodes {
+            self.update_trie_node(hash, node)?;
+        }
+
+        // Apply touched bytecodes if any (from Simulation batch)
+        if let TransactionHandle::Simulation(_, overlay) = &self.handle {
+            for entry in overlay.bytecodes.iter() {
+                self.insert_bytecode(*entry.key(), entry.value().clone())?;
+            }
+        }
+
         Ok(())
     }
 }

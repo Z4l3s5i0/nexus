@@ -124,8 +124,8 @@ impl<'a> TransactionExecutor<'a> {
 
         // Ensure beneficiary exists (EIP-158/161)
         self.batch.account(beneficiary, state_root)?;
-        let intermediate_root = if skip_trie_updates && self.fork >= Hardfork::Byzantium {
-            B256::default()
+        let intermediate_root = if skip_trie_updates {
+            state_root.unwrap_or(B256::default())
         } else {
             self.batch.calculate_state_root(eip161, state_root)?
         };

@@ -682,10 +682,13 @@ impl PayloadProcessor {
             let account_changes = batch.collect_account_changes();
             let storage_changes = batch.collect_storage_changes();
             let trie_nodes = batch.collect_trie_nodes();
-            Ok::<_, anyhow::Error>((final_block, receipts, metas, account_changes, storage_changes, trie_nodes))
+            let new_accounts = batch.collect_new_accounts();
+            let new_storages = batch.collect_new_storages();
+            let new_bytecodes = batch.collect_new_bytecodes();
+            Ok::<_, anyhow::Error>((final_block, receipts, metas, account_changes, storage_changes, trie_nodes, new_accounts, new_storages, new_bytecodes))
         })).await;
 
-        let (final_block, receipts, metas, account_changes, storage_changes, trie_nodes) = match exec_result_wrapped {
+        let (final_block, receipts, metas, account_changes, storage_changes, trie_nodes, new_accounts, new_storages, new_bytecodes) = match exec_result_wrapped {
             Ok(spawn_res) => {
                 match spawn_res.map_err(|e| RpcError::Internal(format!("Execution task panicked: {}", e)))? {
                     Ok(res) => res,
@@ -757,6 +760,9 @@ impl PayloadProcessor {
             account_changes,
             storage_changes,
             trie_nodes,
+            new_accounts,
+            new_storages,
+            new_bytecodes,
         };
 
         self.payload_cache.insert(block_hash, result);

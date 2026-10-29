@@ -219,7 +219,7 @@ impl PayloadBuilder {
         let storage = self.write_storage.clone();
         let cached_trie_nodes = self.payload_cache.get(&head_block_hash).map(|res| res.trie_nodes.clone());
 
-        let (finalized_block, receipts, metas, account_changes, storage_changes, trie_nodes) = match tokio::task::spawn_blocking(move || {
+        let (finalized_block, receipts, metas, account_changes, storage_changes, trie_nodes, new_accounts, new_storages, new_bytecodes) = match tokio::task::spawn_blocking(move || {
             if let Some(nodes) = cached_trie_nodes {
                 let overlay = std::sync::Arc::new(wasix_eth_storage::write::SimulationOverlay::default());
                 for (hash, node) in nodes {
@@ -258,16 +258,20 @@ impl PayloadBuilder {
                 let account_changes = batch.collect_account_changes();
                 let storage_changes = batch.collect_storage_changes();
                 let trie_nodes = batch.collect_trie_nodes();
-                Ok::<_, anyhow::Error>((block, receipts, metas, account_changes, storage_changes, trie_nodes))
+                let new_accounts = batch.collect_new_accounts();
+                let new_storages = batch.collect_new_storages();
+                let new_bytecodes = batch.collect_new_bytecodes();
+                Ok::<_, anyhow::Error>((block, receipts, metas, account_changes, storage_changes, trie_nodes, new_accounts, new_storages, new_bytecodes))
             } else {
-                execution.execute_block_for_payload(
+                let (block, receipts, metas, account_changes, storage_changes, trie_nodes) = execution.execute_block_for_payload(
                     vec![], // Empty transaction set
                     &parent_header_clone,
                     &attr_clone,
                     base_fee_per_gas,
                     interruption_token,
                     Some(deadline),
-                )
+                )?;
+                Ok::<_, anyhow::Error>((block, receipts, metas, account_changes, storage_changes, trie_nodes, vec![], vec![], vec![]))
             }
         }).await {
             Ok(Ok(res)) => res,
@@ -290,6 +294,9 @@ impl PayloadBuilder {
             account_changes,
             storage_changes,
             trie_nodes,
+            new_accounts,
+            new_storages,
+            new_bytecodes,
         };
         self.execution_results.insert(id, res.clone());
         info!("[PayloadBuilder] Created initial empty payload_id={:?} for block_number={}", id, parent_block.header.number + 1);
@@ -420,7 +427,7 @@ impl PayloadBuilder {
         let head_hash_copy = head_hash; 
         let cached_trie_nodes = self.payload_cache.get(&head_hash_copy).map(|res| res.trie_nodes.clone());
 
-        let (finalized_block, receipts, metas, account_changes, storage_changes, trie_nodes) = tokio::task::spawn_blocking(move || {
+        let (finalized_block, receipts, metas, account_changes, storage_changes, trie_nodes, new_accounts, new_storages, new_bytecodes) = tokio::task::spawn_blocking(move || {
             if let Some(nodes) = cached_trie_nodes {
                  let overlay = std::sync::Arc::new(wasix_eth_storage::write::SimulationOverlay::default());
                  for (hash, node) in nodes {
@@ -459,16 +466,20 @@ impl PayloadBuilder {
                 let account_changes = batch.collect_account_changes();
                 let storage_changes = batch.collect_storage_changes();
                 let trie_nodes = batch.collect_trie_nodes();
-                Ok::<_, anyhow::Error>((block, receipts, metas, account_changes, storage_changes, trie_nodes))
+                let new_accounts = batch.collect_new_accounts();
+                let new_storages = batch.collect_new_storages();
+                let new_bytecodes = batch.collect_new_bytecodes();
+                Ok::<_, anyhow::Error>((block, receipts, metas, account_changes, storage_changes, trie_nodes, new_accounts, new_storages, new_bytecodes))
             } else {
-                execution.execute_block_for_payload(
+                let (block, receipts, metas, account_changes, storage_changes, trie_nodes) = execution.execute_block_for_payload(
                     transactions,
                     &parent_header_clone,
                     &attr_clone,
                     base_fee_per_gas,
                     Some(token_clone),
                     Some(deadline),
-                )
+                )?;
+                Ok::<_, anyhow::Error>((block, receipts, metas, account_changes, storage_changes, trie_nodes, vec![], vec![], vec![]))
             }
         }).await.map_err(|e| RpcError::Internal(format!("Payload rebuilding task panicked: {}", e)))?
         .map_err(|e| RpcError::Internal(e.to_string()))?;
@@ -521,6 +532,9 @@ impl PayloadBuilder {
             account_changes,
             storage_changes,
             trie_nodes,
+            new_accounts,
+            new_storages,
+            new_bytecodes,
         };
         self.execution_results.insert(payload_id, res.clone());
         self.payload_cache.insert(finalized_block.header.hash_slow(), res.clone());

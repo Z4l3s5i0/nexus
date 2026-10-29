@@ -564,6 +564,9 @@ pub struct PayloadExecutionResult {
     pub account_changes: Vec<(Address, Option<Bytes>)>,
     pub storage_changes: Vec<(Address, B256, U256)>,
     pub trie_nodes: Vec<(B256, Bytes)>,
+    pub new_accounts: Vec<(Address, TrieAccount)>,
+    pub new_storages: Vec<(Address, B256, U256)>,
+    pub new_bytecodes: Vec<(B256, Bytes)>,
 }
 
 impl alloy_rlp::Encodable for ReceiptMeta {
