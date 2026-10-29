@@ -299,12 +299,17 @@ impl PayloadProcessor {
             return Some(header);
         }
         
-        // 2. Check payload map
+        // 2. Check payload cache (in-memory execution results)
+        if let Some(res) = self.payload_cache.get(&hash) {
+            return Some(res.block.header.clone());
+        }
+
+        // 3. Check DB payload cache
         if let Some((payload, _, _, _)) = self.read_storage.get_payload_by_block_hash(hash) {
             return Some(payload.header.clone());
         }
         
-        // 3. Check block tree
+        // 4. Check block tree
         if let Some(block) = self.block_tree.get_block(hash).await {
             return Some(block.header.clone());
         }

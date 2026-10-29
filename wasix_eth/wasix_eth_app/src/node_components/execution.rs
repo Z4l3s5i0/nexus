@@ -7,6 +7,7 @@ use wasix_eth_core::mempool::mempool::Mempool;
 use wasix_eth_core::engine::canonicality_tracker::CanonicalState;
 use wasix_eth_core::engine::sidechain_tracker::BlockTree;
 use wasix_eth_core::engine::reorg_manager::ReorgHandler;
+use wasix_eth_core::engine::payload_cache::PayloadExecutionCache;
 use wasix_eth_core::{ChainManagerImpl, Engine, EthConsensus};
 use wasix_eth_core::sync::registry::SyncRegistry;
 use wasix_eth_execution::execution_provider::EthExecutionProvider;
@@ -33,9 +34,10 @@ impl ExecutionPayload {
         let execution_provider = Arc::new(EthExecutionProvider::new((*read_provider).clone(), (*write_provider).clone()));
         let account_manager = Arc::new(AccountManager::new_with_dev_keys());
 
+        let payload_cache = PayloadExecutionCache::new(2);
         let canonical = Arc::new(CanonicalState::new((*read_provider).clone(), (*write_provider).clone()));
         let block_tree = Arc::new(BlockTree::new());
-        let reorg_handler = Arc::new(ReorgHandler::new((*read_provider).clone(), (*write_provider).clone(), canonical.clone()));
+        let reorg_handler = Arc::new(ReorgHandler::new((*read_provider).clone(), (*write_provider).clone(), canonical.clone(), payload_cache.clone()));
 
         let chain_manager = Arc::new(ChainManagerImpl::new(
             (*read_provider).clone(),
@@ -43,6 +45,7 @@ impl ExecutionPayload {
             canonical.clone(),
             block_tree.clone(),
             reorg_handler.clone(),
+            payload_cache.clone(),
         ));
         let mempool_listener = Arc::new(MempoolListener::new(
             mempool.clone(),
@@ -53,6 +56,7 @@ impl ExecutionPayload {
         let forkchoice_validator = ForkchoiceValidator::new(
             (*read_provider).clone(),
             chain_manager.clone(),
+            payload_cache.clone(),
         );
         let rpc_engine = Arc::new(RPCEngine::new(
             (*read_provider).clone(),
@@ -81,6 +85,7 @@ impl ExecutionPayload {
             forkchoice_validator.clone(),
             mempool_listener,
             sync_registry.clone(),
+            payload_cache,
         ));
 
         Self {

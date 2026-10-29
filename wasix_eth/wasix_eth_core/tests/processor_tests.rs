@@ -29,9 +29,10 @@ mod tests {
         let execution = Arc::new(EthExecutionProvider::new(read_storage.clone(), write_storage.clone()));
         let account_manager = Arc::new(AccountManager::new());
         
+        let payload_cache = wasix_eth_core::engine::payload_cache::PayloadExecutionCache::new(2);
         let canonical = Arc::new(wasix_eth_core::engine::canonicality_tracker::CanonicalState::new(read_storage.clone(), write_storage.clone()));
         let block_tree = Arc::new(wasix_eth_core::engine::sidechain_tracker::BlockTree::new());
-        let reorg_handler = Arc::new(wasix_eth_core::engine::reorg_manager::ReorgHandler::new(read_storage.clone(), write_storage.clone(), canonical.clone()));
+        let reorg_handler = Arc::new(wasix_eth_core::engine::reorg_manager::ReorgHandler::new(read_storage.clone(), write_storage.clone(), canonical.clone(), payload_cache.clone()));
 
         let chain = Arc::new(ChainManagerImpl::new(
             read_storage.clone(),
@@ -39,6 +40,7 @@ mod tests {
             canonical.clone(),
             block_tree.clone(),
             reorg_handler.clone(),
+            payload_cache.clone(),
         ));
         let mempool = Arc::new(Mempool::new(wasix_eth_types::U256::ZERO));
         let (event_tx, _event_rx) = channel(100);
@@ -55,6 +57,7 @@ mod tests {
             event_tx.clone(),
             consensus.clone(),
             execution.clone(),
+            canonical.clone(),
         ));
 
         let engine = Engine::new(
@@ -70,8 +73,10 @@ mod tests {
             canonical,
             block_tree,
             reorg_handler,
-            wasix_eth_core::engine::forkchoice_validator::ForkchoiceValidator::new(read_storage.clone(), chain.clone()),
+            wasix_eth_core::engine::forkchoice_validator::ForkchoiceValidator::new(read_storage.clone(), chain.clone(), payload_cache.clone()),
             Arc::new(wasix_eth_core::mempool::listener::MempoolListener::new(mempool, read_storage)),
+            Arc::new(wasix_eth_core::sync::registry::SyncRegistry::new()),
+            payload_cache,
         );
 
         (Arc::new(engine), db, temp_dir)
@@ -180,7 +185,7 @@ mod tests {
             canonical,
             block_tree,
             reorg_handler,
-            wasix_eth_core::engine::forkchoice_validator::ForkchoiceValidator::new(read_storage.clone(), chain.clone()),
+            wasix_eth_core::engine::forkchoice_validator::ForkchoiceValidator::new(read_storage.clone(), chain.clone(), payload_cache.clone()),
             Arc::new(wasix_eth_core::mempool::listener::MempoolListener::new(mempool, read_storage)),
         );
         let engine = Arc::new(engine);

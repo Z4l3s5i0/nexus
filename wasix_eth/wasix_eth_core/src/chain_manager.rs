@@ -6,6 +6,7 @@ use wasix_eth_utils::{warn, info, debug};
 use crate::engine::canonicality_tracker::CanonicalState;
 pub(crate) use crate::engine::sidechain_tracker::BlockTree;
 use crate::engine::reorg_manager::ReorgHandler;
+use crate::engine::payload_cache::PayloadExecutionCache;
 use std::sync::Arc;
 use std::collections::HashSet;
 
@@ -17,6 +18,7 @@ pub struct ChainManagerImpl {
     pub canonical: Arc<CanonicalState>,
     pub block_tree: Arc<BlockTree>,
     pub reorg_handler: Arc<ReorgHandler>,
+    pub payload_cache: PayloadExecutionCache,
 }
 
 impl ChainManagerImpl {
@@ -26,6 +28,7 @@ impl ChainManagerImpl {
         canonical: Arc<CanonicalState>,
         block_tree: Arc<BlockTree>,
         reorg_handler: Arc<ReorgHandler>,
+        payload_cache: PayloadExecutionCache,
     ) -> Self {
         Self {
             read_storage,
@@ -34,6 +37,7 @@ impl ChainManagerImpl {
             canonical,
             block_tree,
             reorg_handler,
+            payload_cache,
         }
     }
 }
@@ -81,6 +85,11 @@ impl ChainManager for ChainManagerImpl {
             Err(e) => {
                 debug!("[ChainManager] Error reading header from storage for {:?}: {}", hash, e);
             }
+        }
+
+        // Check in-memory execution results
+        if self.payload_cache.get(&hash).is_some() {
+            return true;
         }
         
         // Check if block exists in block_tree (validated but not yet canonical/persistent)
@@ -257,6 +266,14 @@ impl ChainManager for ChainManagerImpl {
             };
         }
 
+        // Check in-memory execution results
+        if self.payload_cache.get(&head_block_hash).is_some() {
+            return wasix_eth_types::PayloadStatus {
+                status: wasix_eth_types::PayloadStatusEnum::Valid,
+                latest_valid_hash: Some(head_block_hash),
+            };
+        }
+
         // Check if it's in the payloads map (processed but not yet canonical)
         if let Some(_) = self.read_storage.get_payload_by_block_hash(head_block_hash) {
             return wasix_eth_types::PayloadStatus {
@@ -284,6 +301,8 @@ impl ChainManager for ChainManagerImpl {
             Some(n)
         } else if let Some(block) = self.block_tree.get_block(head).await {
             Some(block.header.number)
+        } else if let Some(res) = self.payload_cache.get(&head) {
+            Some(res.block.header.number)
         } else if let Some((payload, _, _, _)) = self.read_storage.get_payload_by_block_hash(head) {
             Some(payload.header.number)
         } else {
@@ -294,6 +313,8 @@ impl ChainManager for ChainManagerImpl {
             Some(n)
         } else if let Some(block) = self.block_tree.get_block(target).await {
             Some(block.header.number)
+        } else if let Some(res) = self.payload_cache.get(&target) {
+            Some(res.block.header.number)
         } else if let Some((payload, _, _, _)) = self.read_storage.get_payload_by_block_hash(target) {
             Some(payload.header.number)
         } else {
@@ -343,6 +364,8 @@ impl ChainManager for ChainManagerImpl {
 
             let parent_info = if let Ok(Some(header)) = self.read_storage.header(wasix_eth_types::BlockId::Hash(current.into())) {
                 Some((header.parent_hash, header.number.saturating_sub(1)))
+            } else if let Some(res) = self.payload_cache.get(&current) {
+                Some((res.block.header.parent_hash, res.block.header.number.saturating_sub(1)))
             } else if let Some((payload, _, _, _)) = self.read_storage.get_payload_by_block_hash(current) {
                 Some((payload.header.parent_hash, payload.header.number.saturating_sub(1)))
             } else if let Some(block) = self.block_tree.get_block(current).await {

@@ -7,20 +7,23 @@ use wasix_eth_types::{Block, BlockId, ReorgContext, Transaction, TrieAccount};
 use wasix_eth_utils::{debug, info};
 
 use crate::engine::canonicality_tracker::CanonicalState;
+use crate::engine::payload_cache::PayloadExecutionCache;
 use std::sync::Arc;
 
 pub struct ReorgHandler{
     read_storage: DatabaseReadProvider,
     write_storage: DatabaseWriteProvider,
     canonical: Arc<CanonicalState>,
+    payload_cache: PayloadExecutionCache,
 }
 
 impl ReorgHandler {
-    pub fn new(read_provider: DatabaseReadProvider, write_provider: DatabaseWriteProvider, canonical: Arc<CanonicalState>) -> Self {
+    pub fn new(read_provider: DatabaseReadProvider, write_provider: DatabaseWriteProvider, canonical: Arc<CanonicalState>, payload_cache: PayloadExecutionCache) -> Self {
         Self {
             read_storage: read_provider,
             write_storage: write_provider,
             canonical,
+            payload_cache,
         }
     }
 
@@ -33,8 +36,10 @@ impl ReorgHandler {
         debug!("[ChainManager] Resolving reorg from {:?} to {:?}", old_head, new_head);
 
         while current_hash != B256::ZERO {
+            info!("[ChainManager] Reorg walk-back visiting hash: {:?}", current_hash);
+
             if current_hash == old_head {
-                debug!("[ChainManager] Found old head {:?} as common ancestor", current_hash);
+                info!("[ChainManager] Found old head {:?} as common ancestor", current_hash);
                 common_ancestor_hash = old_head;
                 common_ancestor_found = true;
                 break;
@@ -44,7 +49,7 @@ impl ReorgHandler {
             if let Ok(Some(number)) = self.read_storage.block_number(current_hash) {
                 if let Ok(Some(canonical_hash)) = self.read_storage.block_hash(number) {
                     if canonical_hash == current_hash {
-                        debug!("[ChainManager] Found canonical block #{} hash {:?} as common ancestor", number, current_hash);
+                        info!("[ChainManager] Found canonical block #{} hash {:?} as common ancestor", number, current_hash);
                         common_ancestor_hash = current_hash;
                         common_ancestor_found = true;
                         break;
@@ -56,6 +61,8 @@ impl ReorgHandler {
             if let Ok(Some(header)) = self.read_storage.header(BlockId::Hash(current_hash.into())) {
                 if let Ok(Some(block)) = self.read_storage.block_by_hash(current_hash) {
                     new_canonical_blocks.push(block);
+                } else if let Some(res) = self.payload_cache.get(&current_hash) {
+                    new_canonical_blocks.push(res.block.clone());
                 } else if let Some((block, _, _, _)) = self.read_storage.get_payload_by_block_hash(current_hash) {
                     new_canonical_blocks.push(block.clone());
                 } else {
@@ -63,14 +70,19 @@ impl ReorgHandler {
                 }
 
                 current_hash = header.parent_hash;
+            } else if let Some(res) = self.payload_cache.get(&current_hash) {
+                new_canonical_blocks.push(res.block.clone());
+                current_hash = res.block.header.parent_hash;
             } else if let Some((block, _, _, _)) = self.read_storage.get_payload_by_block_hash(current_hash) {
                 new_canonical_blocks.push(block.clone());
                 current_hash = block.header.parent_hash;
             } else {
-                debug!("[ChainManager] Walk-back reached unknown block {:?}", current_hash);
+                info!("[ChainManager] Walk-back reached unknown block {:?}", current_hash);
                 break;
             }
         }
+
+        info!("[ChainManager] Reorg walk-back finished. Found {} new canonical blocks. Ancestor found: {}, Ancestor hash: {:?}", new_canonical_blocks.len(), common_ancestor_found, common_ancestor_hash);
 
         // If the new head itself is the common ancestor, it means we are attempting to move backwards.
         if common_ancestor_found && common_ancestor_hash == new_head {

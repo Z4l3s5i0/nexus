@@ -155,12 +155,14 @@ impl Engine {
         forkchoice_validator: ForkchoiceValidator,
         mempool_listener: Arc<MempoolListener>,
         sync_registry: Arc<SyncRegistry>,
+        payload_cache: PayloadExecutionCache,
     ) -> Self {
         let processing_payloads = Arc::new(DashSet::new());
         let in_flight_results = Arc::new(DashMap::new());
         let execution_cancellation_tokens = Arc::new(DashMap::new());
-        let payload_cache = PayloadExecutionCache::new(2);
+        // Use the passed payload_cache
 
+        let forkchoice_validator = ForkchoiceValidator::new(read_storage.clone(), chain.clone(), payload_cache.clone());
         let engine = Self {
             read_storage: read_storage.clone(),
             write_storage: write_storage.clone(),
@@ -497,8 +499,7 @@ impl Engine {
         let mut head_number = 0;
         if forkchoice_state.head_block_hash != B256::ZERO {
             // Check if head block actually exists in our storage or payload map before checking ancestry.
-            let head_header = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(forkchoice_state.head_block_hash))).ok().flatten()
-                .or_else(|| self.read_storage.get_payload_by_block_hash(forkchoice_state.head_block_hash).map(|(p, _, _, _)| p.header.clone()))
+            let head_header = self.payload_processor.get_header_from_anywhere(forkchoice_state.head_block_hash).await
                 .or_else(|| {
                     // Manual check for genesis if header lookup by hash failed
                     let genesis_hash = self.read_storage.block_hash(0).unwrap_or(None);
@@ -540,8 +541,6 @@ impl Engine {
              head_number = self.read_storage.block_number(forkchoice_state.head_block_hash).ok().flatten().unwrap_or(0);
         }
 
-        let _ = self.canonical.update_state(forkchoice_state, head_number).await;
-
         // 1. We already determined head_status above
         let status = head_status.clone();
 
@@ -556,8 +555,7 @@ impl Engine {
 
         // Update metrics and handle canonical chain events if VALID or SYNCING
         if status.status == PayloadStatusEnum::Valid || status.status == PayloadStatusEnum::Syncing {
-            let head_header = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(forkchoice_state.head_block_hash))).ok().flatten()
-                .or_else(|| self.read_storage.get_payload_by_block_hash(forkchoice_state.head_block_hash).map(|(p, _, _, _)| p.header.clone()));
+            let head_header = self.payload_processor.get_header_from_anywhere(forkchoice_state.head_block_hash).await;
 
             if let Some(header) = head_header {
                 if status.status == PayloadStatusEnum::Valid {
@@ -568,6 +566,9 @@ impl Engine {
                     // 1. Identify newly canonical blocks and handle reorgs
                     match self.chain.resolve_reorg(old_state.head_block_hash, forkchoice_state.head_block_hash).await {
                         Ok(context) => {
+                            // Update CanonicalState NOW, before promotion/reorg handling, but AFTER resolve_reorg
+                            let _ = self.canonical.update_state(forkchoice_state, head_number).await;
+
                             let mut batch = self.write_storage.begin_batch().map_err(|e| RpcError::Internal(format!("Failed to begin batch: {}", e)))?;
 
                             // 2. Handle reorgs FIRST: revert to common ancestor
@@ -637,6 +638,9 @@ impl Engine {
                                     TRANSACTIONS_COMMITTED_TOTAL.add(block.body.transactions.len() as f64);
                                 }
                             } else if old_state.head_block_hash != forkchoice_state.head_block_hash {
+                                // Update CanonicalState if resolve_reorg returned empty blocks but heads differ
+                                let _ = self.canonical.update_state(forkchoice_state, head_number).await;
+
                                 // Edge case: resolve_reorg returned empty blocks but heads differ
                                 // This can happen if the new head is already marked canonical somehow
                                 debug!("[Engine] Resolve reorg returned empty new blocks but heads differ ({:?} -> {:?})", old_state.head_block_hash, forkchoice_state.head_block_hash);
@@ -649,6 +653,9 @@ impl Engine {
                             return Err(RpcError::Internal(format!("Reorg resolution failed: {}", e)));
                         }
                     }
+                } else {
+                    // status is SYNCING
+                    let _ = self.canonical.update_state(forkchoice_state, head_number).await;
                 }
                 debug!("[Engine] Updating head to #{} hash {:?}", header.number, forkchoice_state.head_block_hash);
                 self.update_head_block(forkchoice_state, &header).await;
@@ -977,6 +984,14 @@ impl Engine {
         // If the block is already officially imported in main storage, it's VALID.
         // This takes precedence over any SOFT invalidation (e.g. from a bad newPayload call).
         if self.read_storage.block_body_by_hash(head_block_hash).ok().flatten().is_some() {
+            return PayloadStatus {
+                status: PayloadStatusEnum::Valid,
+                latest_valid_hash: Some(head_block_hash),
+            };
+        }
+
+        // Check in-memory payload cache as well
+        if self.payload_cache.get(&head_block_hash).is_some() {
             return PayloadStatus {
                 status: PayloadStatusEnum::Valid,
                 latest_valid_hash: Some(head_block_hash),

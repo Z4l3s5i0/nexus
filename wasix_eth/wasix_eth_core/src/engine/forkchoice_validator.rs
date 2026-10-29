@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use alloy_primitives::B256;
 use alloy_rpc_types::RpcBlockHash;
+use crate::engine::payload_cache::PayloadExecutionCache;
 use wasix_eth_storage::read::DatabaseReadProvider;
 use wasix_eth_storage::read_traits::{BlockProvider, HeaderProvider};
 use wasix_eth_types::{BlockId, BlockNumberOrTag, ChainManager, ForkchoiceState, ForkchoiceUpdated, Header};
@@ -11,11 +12,12 @@ use wasix_eth_utils::{debug, error, warn};
 pub struct ForkchoiceValidator {
     read_storage: DatabaseReadProvider,
     chain: Arc<dyn ChainManager>,
+    payload_cache: PayloadExecutionCache,
 }
 
 impl ForkchoiceValidator {
-    pub fn new(read_storage: DatabaseReadProvider, chain: Arc<dyn ChainManager>) -> Self {
-        Self { read_storage, chain }
+    pub fn new(read_storage: DatabaseReadProvider, chain: Arc<dyn ChainManager>, payload_cache: PayloadExecutionCache) -> Self {
+        Self { read_storage, chain, payload_cache }
     }
 
     pub(crate) async fn check_finalized_block(&self, forkchoice_state: ForkchoiceState, header: Header) -> Option<RpcResult<ForkchoiceUpdated>> {
@@ -27,6 +29,7 @@ impl ForkchoiceValidator {
             };
 
             let finalized_header = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(forkchoice_state.finalized_block_hash))).ok().flatten()
+                .or_else(|| self.payload_cache.get(&forkchoice_state.finalized_block_hash).map(|res| res.block.header.clone()))
                 .or_else(|| self.read_storage.get_payload_by_block_hash(forkchoice_state.finalized_block_hash).map(|(p, _, _, _)| p.header.clone()))
                 .or_else(|| {
                     let genesis_hash = self.read_storage.block_hash(0).unwrap_or(None);
@@ -42,6 +45,7 @@ impl ForkchoiceValidator {
                     header.number
                 } else {
                     self.read_storage.header(BlockId::Hash(RpcBlockHash::from(target_hash))).ok().flatten().map(|h| h.number)
+                        .or_else(|| self.payload_cache.get(&target_hash).map(|res| res.block.header.number))
                         .or_else(|| self.read_storage.get_payload_by_block_hash(target_hash).map(|(p, _, _, _)| p.header.number))
                         .or_else(|| {
                             let genesis_hash = self.read_storage.block_hash(0).unwrap_or(None);
@@ -72,6 +76,7 @@ impl ForkchoiceValidator {
     pub(crate) async fn check_safe_block(&self, forkchoice_state: ForkchoiceState, header: &Header) -> Option<RpcResult<ForkchoiceUpdated>> {
         if forkchoice_state.safe_block_hash != B256::ZERO {
             let safe_header = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(forkchoice_state.safe_block_hash))).ok().flatten()
+                .or_else(|| self.payload_cache.get(&forkchoice_state.safe_block_hash).map(|res| res.block.header.clone()))
                 .or_else(|| self.read_storage.get_payload_by_block_hash(forkchoice_state.safe_block_hash).map(|(p, _, _, _)| p.header.clone()))
                 .or_else(|| {
                     let genesis_hash = self.read_storage.block_hash(0).unwrap_or(None);
