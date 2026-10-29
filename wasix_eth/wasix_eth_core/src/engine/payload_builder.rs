@@ -25,6 +25,7 @@ use wasix_eth_types::Result;
 
 use std::collections::HashMap;
 use std::sync::RwLock;
+use alloy_consensus::Header;
 use dashmap::{DashMap, DashSet};
 pub use wasix_eth_types::CancellationToken;
 
@@ -215,15 +216,59 @@ impl PayloadBuilder {
         let attr_clone = attr.clone();
         
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
-        let (finalized_block, receipts, metas, account_changes, storage_changes) = match tokio::task::spawn_blocking(move || {
-            execution.execute_block_for_payload(
-                vec![], // Empty transaction set
-                &parent_header_clone,
-                &attr_clone,
-                base_fee_per_gas,
-                interruption_token,
-                Some(deadline),
-            )
+        let storage = self.write_storage.clone();
+        let cached_trie_nodes = self.payload_cache.get(&head_block_hash).map(|res| res.trie_nodes.clone());
+
+        let (finalized_block, receipts, metas, account_changes, storage_changes, trie_nodes) = match tokio::task::spawn_blocking(move || {
+            if let Some(nodes) = cached_trie_nodes {
+                let overlay = std::sync::Arc::new(wasix_eth_storage::write::SimulationOverlay::default());
+                for (hash, node) in nodes {
+                    overlay.trie_nodes().insert(hash, node);
+                }
+                let batch = storage.begin_simulation_batch_with_overlay(overlay).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                let (block, receipts, metas) = execution.execute_block_with_batch(
+                    Block {
+                        header: Header {
+                            parent_hash: parent_header_clone.hash_slow(),
+                            beneficiary: attr_clone.suggested_fee_recipient,
+                            number: parent_header_clone.number + 1,
+                            timestamp: attr_clone.timestamp,
+                            mix_hash: attr_clone.prev_randao,
+                            base_fee_per_gas,
+                            gas_limit: parent_header_clone.gas_limit,
+                            ..Default::default()
+                        },
+                        body: wasix_eth_types::BlockBody {
+                            transactions: vec![],
+                            ommers: vec![],
+                            withdrawals: attr_clone.withdrawals.map(|w| wasix_eth_types::eip4895::Withdrawals::new(w.into_iter().map(|wi| wasix_eth_types::eip4895::Withdrawal {
+                                index: wi.index,
+                                validator_index: wi.validator_index,
+                                address: wi.address,
+                                amount: wi.amount,
+                            }).collect())),
+                        },
+                    },
+                    &batch,
+                    Some(parent_header_clone.state_root),
+                    true,
+                    interruption_token,
+                    Some(deadline),
+                )?;
+                let account_changes = batch.collect_account_changes();
+                let storage_changes = batch.collect_storage_changes();
+                let trie_nodes = batch.collect_trie_nodes();
+                Ok::<_, anyhow::Error>((block, receipts, metas, account_changes, storage_changes, trie_nodes))
+            } else {
+                execution.execute_block_for_payload(
+                    vec![], // Empty transaction set
+                    &parent_header_clone,
+                    &attr_clone,
+                    base_fee_per_gas,
+                    interruption_token,
+                    Some(deadline),
+                )
+            }
         }).await {
             Ok(Ok(res)) => res,
             Ok(Err(e)) => {
@@ -244,6 +289,7 @@ impl PayloadBuilder {
             bundle: bundle.clone(),
             account_changes,
             storage_changes,
+            trie_nodes,
         };
         self.execution_results.insert(id, res.clone());
         info!("[PayloadBuilder] Created initial empty payload_id={:?} for block_number={}", id, parent_block.header.number + 1);
@@ -366,21 +412,64 @@ impl PayloadBuilder {
         // --------------------------------
 
         let write_storage = self.write_storage.clone();
-        // 4. Re-run execution
         let execution = Arc::clone(&self.execution);
         let parent_header_clone = parent_block.header.clone();
         let attr_clone = attr.clone();
         let token_clone = token.clone();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
-        let (finalized_block, receipts, metas, account_changes, storage_changes) = tokio::task::spawn_blocking(move || {
-            execution.execute_block_for_payload(
-                transactions,
-                &parent_header_clone,
-                &attr_clone,
-                base_fee_per_gas,
-                Some(token_clone),
-                Some(deadline),
-            )
+        let head_hash_copy = head_hash; 
+        let cached_trie_nodes = self.payload_cache.get(&head_hash_copy).map(|res| res.trie_nodes.clone());
+
+        let (finalized_block, receipts, metas, account_changes, storage_changes, trie_nodes) = tokio::task::spawn_blocking(move || {
+            if let Some(nodes) = cached_trie_nodes {
+                 let overlay = std::sync::Arc::new(wasix_eth_storage::write::SimulationOverlay::default());
+                 for (hash, node) in nodes {
+                     overlay.trie_nodes().insert(hash, node);
+                 }
+                 let batch = write_storage.begin_simulation_batch_with_overlay(overlay).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                 let (block, receipts, metas) = execution.execute_block_with_batch(
+                    Block {
+                        header: Header {
+                            parent_hash: parent_header_clone.hash_slow(),
+                            beneficiary: attr_clone.suggested_fee_recipient,
+                            number: parent_header_clone.number + 1,
+                            timestamp: attr_clone.timestamp,
+                            mix_hash: attr_clone.prev_randao,
+                            base_fee_per_gas,
+                            gas_limit: parent_header_clone.gas_limit,
+                            ..Default::default()
+                        },
+                        body: wasix_eth_types::BlockBody {
+                            transactions,
+                            ommers: vec![],
+                            withdrawals: attr_clone.withdrawals.map(|w| wasix_eth_types::eip4895::Withdrawals::new(w.into_iter().map(|wi| wasix_eth_types::eip4895::Withdrawal {
+                                index: wi.index,
+                                validator_index: wi.validator_index,
+                                address: wi.address,
+                                amount: wi.amount,
+                            }).collect())),
+                        },
+                    },
+                    &batch,
+                    Some(parent_header_clone.state_root),
+                    true,
+                    Some(token_clone),
+                    Some(deadline),
+                )?;
+                let account_changes = batch.collect_account_changes();
+                let storage_changes = batch.collect_storage_changes();
+                let trie_nodes = batch.collect_trie_nodes();
+                Ok::<_, anyhow::Error>((block, receipts, metas, account_changes, storage_changes, trie_nodes))
+            } else {
+                execution.execute_block_for_payload(
+                    transactions,
+                    &parent_header_clone,
+                    &attr_clone,
+                    base_fee_per_gas,
+                    Some(token_clone),
+                    Some(deadline),
+                )
+            }
         }).await.map_err(|e| RpcError::Internal(format!("Payload rebuilding task panicked: {}", e)))?
         .map_err(|e| RpcError::Internal(e.to_string()))?;
 
@@ -431,6 +520,7 @@ impl PayloadBuilder {
             bundle: bundle.clone(),
             account_changes,
             storage_changes,
+            trie_nodes,
         };
         self.execution_results.insert(payload_id, res.clone());
         self.payload_cache.insert(finalized_block.header.hash_slow(), res.clone());

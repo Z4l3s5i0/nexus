@@ -681,10 +681,11 @@ impl PayloadProcessor {
             let (final_block, receipts, metas) = execution.execute_block_with_batch(block_clone, &batch, parent_state_root, false, Some(token), None)?;
             let account_changes = batch.collect_account_changes();
             let storage_changes = batch.collect_storage_changes();
-            Ok::<_, anyhow::Error>((final_block, receipts, metas, account_changes, storage_changes))
+            let trie_nodes = batch.collect_trie_nodes();
+            Ok::<_, anyhow::Error>((final_block, receipts, metas, account_changes, storage_changes, trie_nodes))
         })).await;
 
-        let (final_block, receipts, metas, account_changes, storage_changes) = match exec_result_wrapped {
+        let (final_block, receipts, metas, account_changes, storage_changes, trie_nodes) = match exec_result_wrapped {
             Ok(spawn_res) => {
                 match spawn_res.map_err(|e| RpcError::Internal(format!("Execution task panicked: {}", e)))? {
                     Ok(res) => res,
@@ -755,6 +756,7 @@ impl PayloadProcessor {
             bundle: wasix_eth_types::BlobsBundleV1::default(), // TODO: handle blobs if needed
             account_changes,
             storage_changes,
+            trie_nodes,
         };
 
         self.payload_cache.insert(block_hash, result);

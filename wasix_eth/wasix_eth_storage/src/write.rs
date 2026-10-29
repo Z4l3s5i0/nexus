@@ -37,6 +37,12 @@ pub struct SimulationOverlay {
     pub metadata: DashMap<String, Bytes>,
 }
 
+impl SimulationOverlay {
+    pub fn trie_nodes(&self) -> &DashMap<B256, Bytes> {
+        &self.trie_nodes
+    }
+}
+
 enum TransactionHandle {
     Write(WriteTransaction),
     Simulation(ReadTransaction, Arc<SimulationOverlay>),
@@ -84,6 +90,11 @@ impl DatabaseWriteProvider {
     pub fn begin_simulation_batch(&self) -> Result<BatchWriter> {
         let rtx = self.db.begin_read()?;
         Ok(BatchWriter::new(TransactionHandle::Simulation(rtx, Arc::new(SimulationOverlay::default())), DatabaseReadProvider::new(self.db.clone())))
+    }
+
+    pub fn begin_simulation_batch_with_overlay(&self, overlay: Arc<SimulationOverlay>) -> Result<BatchWriter> {
+        let rtx = self.db.begin_read()?;
+        Ok(BatchWriter::new(TransactionHandle::Simulation(rtx, overlay), DatabaseReadProvider::new(self.db.clone())))
     }
 
     pub fn clear_tracking(&self) {
@@ -142,6 +153,15 @@ impl BatchWriter {
         originals.iter().map(|((addr, slot), val)| {
             (*addr, *slot, *val)
         }).collect()
+    }
+
+    pub fn collect_trie_nodes(&self) -> Vec<(B256, Bytes)> {
+        match &self.handle {
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.trie_nodes.iter().map(|entry| (*entry.key(), entry.value().clone())).collect()
+            }
+            _ => Vec::new(),
+        }
     }
 
     fn calculate_state_root_internal(&self, is_eip161: bool, state_root: Option<B256>) -> Result<B256> {

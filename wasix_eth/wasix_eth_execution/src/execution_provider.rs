@@ -39,7 +39,7 @@ pub trait ExecutionProvider: Send + Sync {
         base_fee: Option<u64>,
         interruption_token: Option<CancellationToken>,
         deadline: Option<std::time::Instant>,
-    ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, Vec<(Address, Option<Bytes>)>, Vec<(Address, B256, U256)>)>;
+    ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, Vec<(Address, Option<Bytes>)>, Vec<(Address, B256, U256)>, Vec<(B256, Bytes)>)>;
     fn run_execution(
         &self,
         transactions: Vec<Transaction>,
@@ -767,7 +767,7 @@ impl ExecutionProvider for EthExecutionProvider {
         base_fee: Option<u64>,
         interruption_token: Option<CancellationToken>,
         deadline: Option<std::time::Instant>,
-    ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, Vec<(Address, Option<Bytes>)>, Vec<(Address, B256, U256)>)> {
+    ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, Vec<(Address, Option<Bytes>)>, Vec<(Address, B256, U256)>, Vec<(B256, Bytes)>)> {
         let chain_id = self.read_storage.chain_id().unwrap_or(1);
         let chain_config = self.read_storage.chain_config()?.unwrap_or_else(|| ChainConfig {
             chain_id,
@@ -863,8 +863,9 @@ impl ExecutionProvider for EthExecutionProvider {
         
         let account_changes = batch.collect_account_changes();
         let storage_changes = batch.collect_storage_changes();
+        let trie_nodes = batch.collect_trie_nodes();
         
-        Ok((finalized_block, receipts, metas, account_changes, storage_changes))
+        Ok((finalized_block, receipts, metas, account_changes, storage_changes, trie_nodes))
     }
 
     fn run_execution(
