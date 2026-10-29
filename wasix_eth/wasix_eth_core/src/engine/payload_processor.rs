@@ -548,6 +548,15 @@ impl PayloadProcessor {
         // 5. Check if block is already known and validated
         // We already checked this at the very beginning of new_payload_internal.
 
+        // Optimization: check payload cache before execution
+        if let Some(_) = self.payload_cache.get(&actual_hash) {
+            info!("[PayloadProcessor] Block {} (hash: {}) already found in execution cache, returning VALID", block_number, actual_hash);
+            return Ok(PayloadStatus {
+                status: PayloadStatusEnum::Valid,
+                latest_valid_hash: Some(actual_hash),
+            });
+        }
+
         // Before executing, check if parent header is available in storage or Payloads table.
         let parent_header = self.read_storage.header(BlockId::Hash(parent_hash.into())).ok().flatten();
             // .or_else(|| {
@@ -619,21 +628,39 @@ impl PayloadProcessor {
             }
         }
 
-        // 5. Execute block
-        let parent_state_root = parent_header.as_ref().map(|h| h.state_root);
+        // 5. Execute block and collect changes in one go using a batch
+        let storage = self.write_storage.clone();
         let execution = Arc::clone(&self.execution);
         let block_clone = block.clone();
-        
+        let parent_state_root = parent_header.as_ref().map(|h| h.state_root);
+
         let start_time = std::time::Instant::now();
         let timeout_duration = std::time::Duration::from_secs(5);
         
         let exec_result_wrapped = tokio::time::timeout(timeout_duration, tokio::task::spawn_blocking(move || {
-            execution.execute_block_with_state_root_and_building(block_clone, false, parent_state_root, false, Some(token))
+            let batch = storage.begin_batch().map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            let (final_block, receipts, metas) = execution.execute_block_with_batch(block_clone, &batch, parent_state_root, false, Some(token))?;
+            let account_changes = batch.collect_account_changes();
+            let storage_changes = batch.collect_storage_changes();
+            Ok::<_, anyhow::Error>((final_block, receipts, metas, account_changes, storage_changes))
         })).await;
 
-        let exec_result = match exec_result_wrapped {
+        let (final_block, receipts, metas, account_changes, storage_changes) = match exec_result_wrapped {
             Ok(spawn_res) => {
-                spawn_res.map_err(|e| RpcError::Internal(format!("Execution task panicked: {}", e)))?
+                match spawn_res.map_err(|e| RpcError::Internal(format!("Execution task panicked: {}", e)))? {
+                    Ok(res) => res,
+                    Err(e) => {
+                        error!("[PayloadProcessor] Execution failed for block {}: {}", block.header.number, e);
+                        info!("[PayloadProcessor] Marking block {} as INVALID (execution failure)", actual_hash);
+                        self.chain.add_invalid_block(actual_hash, parent_hash, InvalidationReason::Hard).await;
+                        let _ = self.write_storage.remove_payload_by_block_hash(actual_hash);
+                        let latest_valid = self.chain.get_latest_valid_ancestor(parent_hash).await;
+                        return Ok(PayloadStatus {
+                            status: PayloadStatusEnum::Invalid { validation_error: e.to_string() },
+                            latest_valid_hash: latest_valid,
+                        });
+                    }
+                }
             },
             Err(_) => {
                 error!("[PayloadProcessor] Execution timed out for block {}", block.header.number);
@@ -646,30 +673,8 @@ impl PayloadProcessor {
         };
 
         let elapsed = start_time.elapsed();
-        info!("[PayloadProcessor] Block {} executed in {:?}", block.header.number, elapsed);
-
+        info!("[PayloadProcessor] Block {} executed and changes collected in {:?}", block.header.number, elapsed);
         exp!("[EXP] BLOCK_EXEC_END number={} hash={:?} elapsed_ms={}", block.header.number, actual_hash, elapsed.as_millis());
-
-        
-        let (final_block, receipts, metas) = match exec_result {
-            Ok(res) => res,
-            Err(e) => {
-                error!("[PayloadProcessor] Execution failed for block {}: {}", block.header.number, e);
-                
-                // For execution errors (state dependent), we should be careful about blacklisting
-                // if we might be on a side-branch or syncing.
-                // We mark it as invalid to preserve the parent hash and allow walk-back.
-                info!("[PayloadProcessor] Marking block {} as INVALID (execution failure)", actual_hash);
-                self.chain.add_invalid_block(actual_hash, parent_hash, InvalidationReason::Hard).await;
-                
-                let _ = self.write_storage.remove_payload_by_block_hash(actual_hash);
-                let latest_valid = self.chain.get_latest_valid_ancestor(parent_hash).await;
-                return Ok(PayloadStatus {
-                    status: PayloadStatusEnum::Invalid { validation_error: e.to_string() },
-                    latest_valid_hash: latest_valid,
-                });
-            }
-        };
 
         // 6. Post-execution validation
         let cumulative_gas_used = receipts.last().map(|r| r.receipt.cumulative_gas_used).unwrap_or(0);
@@ -704,27 +709,6 @@ impl PayloadProcessor {
         let block_hash = final_block.header.hash_slow();
         let block_number = final_block.header.number;
         
-        // Collect account/storage changes if we are using execute_block_with_batch, 
-        // but here we used execute_block_with_state_root_and_building which doesn't return them directly.
-        // Wait, I should probably use a batch to execute if I want to collect changes without re-executing.
-        
-        // Let's re-evaluate: execute_block_with_state_root_and_building with commit:false 
-        // doesn't give us the account changes. I need to use execute_block_with_batch.
-        
-        let storage = self.write_storage.clone();
-        let execution = Arc::clone(&self.execution);
-        let block_clone = final_block.clone();
-        let parent_state_root = parent_header.as_ref().map(|h| h.state_root);
-
-        let (account_changes, storage_changes) = tokio::task::spawn_blocking(move || -> anyhow::Result<(Vec<_>, Vec<_>)> {
-            let batch = storage.begin_batch().map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            execution.execute_block_with_batch(block_clone, &batch, parent_state_root, false, None)?;
-            let acc = batch.collect_account_changes();
-            let st = batch.collect_storage_changes();
-            Ok((acc, st))
-        }).await.map_err(|e| RpcError::Internal(format!("Storage task panicked: {}", e)))?
-        .map_err(|e| RpcError::Internal(e.to_string()))?;
-
         let result = wasix_eth_types::PayloadExecutionResult {
             block: final_block.clone(),
             receipts: receipts.clone(),

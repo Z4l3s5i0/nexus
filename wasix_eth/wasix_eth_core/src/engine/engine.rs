@@ -86,6 +86,7 @@ pub struct Engine {
     pub mempool_listener: Arc<MempoolListener>,
     pub sync_registry: Arc<SyncRegistry>,
     pub payload_cache: PayloadExecutionCache,
+    pub reorg_handler: Arc<ReorgHandler>,
 }
 
 
@@ -150,7 +151,7 @@ impl Engine {
         chain: Arc<dyn ChainManager>,
         canonical: Arc<CanonicalState>,
         block_tree: Arc<BlockTree>,
-        _reorg_handler: Arc<ReorgHandler>,
+        reorg_handler: Arc<ReorgHandler>,
         forkchoice_validator: ForkchoiceValidator,
         mempool_listener: Arc<MempoolListener>,
         sync_registry: Arc<SyncRegistry>,
@@ -206,6 +207,7 @@ impl Engine {
             mempool_listener,
             sync_registry,
             payload_cache,
+            reorg_handler,
         };
 
         engine
@@ -561,26 +563,21 @@ impl Engine {
                     // 1. Identify newly canonical blocks and handle reorgs
                     match self.chain.resolve_reorg(old_state.head_block_hash, forkchoice_state.head_block_hash).await {
                         Ok(context) => {
+                            let mut batch = self.write_storage.begin_batch().map_err(|e| RpcError::Internal(format!("Failed to begin batch: {}", e)))?;
+
                             // 2. Handle reorgs FIRST: revert to common ancestor
+                            let mut is_reorg = false;
+                            let mut common_ancestor_height = 0;
                             if context.is_reorg {
+                                is_reorg = true;
                                 // Find common ancestor height
-                                let common_ancestor_height = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(context.common_ancestor_hash)))
+                                common_ancestor_height = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(context.common_ancestor_hash)))
                                     .ok()
                                     .flatten()
                                     .map(|h| h.number)
                                     .unwrap_or(0);
                                 
                                 info!("[Engine] Reorg detected! Reverting chain to height {} (common ancestor: {:?})", common_ancestor_height, context.common_ancestor_hash);
-
-                                // Physically roll back state to common ancestor
-                                if let Err(e) = self.revert_to_height(common_ancestor_height).await {
-                                    error!("[Engine] Failed to revert to height {}: {}", common_ancestor_height, e);
-                                    // Rollback forkchoice if reorg fails
-                                    let _ = self.canonical.update_state(old_state, old_head_number).await;
-                                    return Err(RpcError::Internal(format!("Revert failed: {}", e)));
-                                }
-
-                                self.handle_reorgs_for_mempool(forkchoice_state, old_state.head_block_hash, context.common_ancestor_hash).await;
                             }
 
                             // 3. Mark the new branch as canonical SECOND
@@ -594,53 +591,52 @@ impl Engine {
                                         // 1. Try to use the shared payload execution cache (most recent)
                                         if let Some(res) = self.payload_cache.get(&hash) {
                                             debug!("[Engine] Promoting block {} using shared execution cache", hash);
-                                            self.write_storage.commit_block_results(res)
+                                            batch.commit_block_results(res)
                                                 .map_err(|e| RpcError::Internal(format!("Failed to commit block results during promotion: {}", e)))?;
+                                        } else if let Some((p_block, _p_receipts, _p_metas, _p_bundle)) = self.read_storage.get_payload_by_block_hash(hash) {
+                                            // 2. Try to use DB payload cache (but this might still need re-execution if state changes aren't there)
+                                            debug!("[Engine] Re-executing and committing block {} from Payloads DB cache", hash);
+                                            self.execution.execute_block_with_commit_and_writer(p_block, true, &batch)
+                                                .map_err(|e| RpcError::Internal(format!("Failed to execute block from payload during promotion: {}", e)))?;
                                         } else {
-                                            // 2. Try to use in-memory cached execution result (from locally built payloads)
-                                            let mut cached_res = None;
-                                            for entry in self.payload_builder.execution_results.iter() {
-                                                if entry.value().block.header.hash_slow() == hash {
-                                                    cached_res = Some(entry.value().clone());
-                                                    break;
-                                                }
-                                            }
-
-                                            if let Some(res) = cached_res {
-                                                debug!("[Engine] Promoting block {} using in-memory cached results", hash);
-                                                self.write_storage.commit_block_results(res)
-                                                    .map_err(|e| RpcError::Internal(format!("Failed to commit block results during promotion: {}", e)))?;
-                                            } else if let Some((p_block, _p_receipts, _p_metas, _p_bundle)) = self.read_storage.get_payload_by_block_hash(hash) {
-                                                // 3. Try to use DB payload cache (but this might still need re-execution if state changes aren't there)
-                                                debug!("[Engine] Re-executing and committing block {} from Payloads DB cache", hash);
-                                                self.execution.execute_block_with_commit(p_block, true)
-                                                    .map_err(|e| RpcError::Internal(format!("Failed to execute block from payload during promotion: {}", e)))?;
-                                            } else {
-                                                // 4. Fallback to re-execution of the block from context
-                                                debug!("[Engine] Re-executing and committing block {} (not found in caches)", hash);
-                                                self.execution.execute_block_with_commit(block.clone(), true)
-                                                    .map_err(|e| RpcError::Internal(format!("Failed to execute block from payload during promotion: {}", e)))?;
-                                            }
+                                            // 3. Fallback to re-execution of the block from context
+                                            debug!("[Engine] Re-executing and committing block {} (not found in caches)", hash);
+                                            self.execution.execute_block_with_commit_and_writer(block.clone(), true, &batch)
+                                                .map_err(|e| RpcError::Internal(format!("Failed to execute block from payload during promotion: {}", e)))?;
                                         }
                                     }
                                 }
 
-                                if let Err(e) = self.chain.mark_branch_canonical(&context.new_canonical_blocks).await {
-                                    error!("[Engine] Failed to mark branch canonical: {}", e);
-                                    return Err(RpcError::Internal(format!("Canonical marking failed: {}", e)));
+                                if is_reorg {
+                                    // 1. Physically roll back state to common ancestor
+                                    self.reorg_handler.revert_to_height_with_writer(common_ancestor_height, &batch).await
+                                        .map_err(|e| RpcError::Internal(format!("Revert failed: {}", e)))?;
+
+                                    // 2. Mark the new branch as canonical
+                                    self.reorg_handler.mark_branch_canonical_with_writer(&context.new_canonical_blocks, &batch).await
+                                        .map_err(|e| RpcError::Internal(format!("Canonical marking failed: {}", e)))?;
+
+                                    self.handle_reorgs_for_mempool(forkchoice_state, old_state.head_block_hash, context.common_ancestor_hash).await;
+                                } else {
+                                    // Use the batch for non-reorg canonical marking too
+                                    self.reorg_handler.mark_branch_canonical_with_writer(&context.new_canonical_blocks, &batch).await
+                                        .map_err(|e| RpcError::Internal(format!("Canonical marking failed: {}", e)))?;
                                 }
 
+                                // Commit the batch
+                                batch.commit().map_err(|e| RpcError::Internal(format!("Failed to commit batch: {}", e)))?;
 
                                 // 4. Emit CanonicalBlock events for the newly canonical blocks
                                 for block in context.new_canonical_blocks {
                                     self.mempool_listener.handle_canonical_block(block.clone()).await;
                                     TRANSACTIONS_COMMITTED_TOTAL.add(block.body.transactions.len() as f64);
-
                                 }
                             } else if old_state.head_block_hash != forkchoice_state.head_block_hash {
                                 // Edge case: resolve_reorg returned empty blocks but heads differ
                                 // This can happen if the new head is already marked canonical somehow
                                 debug!("[Engine] Resolve reorg returned empty new blocks but heads differ ({:?} -> {:?})", old_state.head_block_hash, forkchoice_state.head_block_hash);
+                                // We should still commit the batch just in case it had something (though here it probably doesn't)
+                                batch.commit().map_err(|e| RpcError::Internal(format!("Failed to commit batch: {}", e)))?;
                             }
                         }
                         Err(e) => {

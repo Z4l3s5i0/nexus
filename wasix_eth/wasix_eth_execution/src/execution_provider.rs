@@ -20,6 +20,7 @@ pub trait ExecutionProvider: Send + Sync {
     fn execute_block_with_state_root(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_block_with_state_root_and_building(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_block_with_batch(&self, block: Block<Transaction>, batch: &BatchWriter, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
+    fn execute_block_with_commit_and_writer(&self, block: Block<Transaction>, commit: bool, writer: &BatchWriter) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_block_for_payload(
         &self,
         transactions: Vec<Transaction>,
@@ -561,6 +562,28 @@ impl ExecutionProvider for EthExecutionProvider {
             }
 
             batch.commit()?;
+        }
+        
+        Ok((executed_block, receipts, metas))
+    }
+
+    fn execute_block_with_commit_and_writer(&self, block: Block<Transaction>, commit: bool, writer: &BatchWriter) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
+        debug!("[Execution] execute_block_with_commit_and_writer: block {} commit={} ", block.header.number, commit);
+        
+        let (executed_block, receipts, metas) = self.execute_block_with_batch(block.clone(), writer, None, false, None)?;
+        
+        if commit {
+            debug!("[Execution] execute_block_with_commit_and_writer: applying results for block {}", block.header.number);
+
+            // Persist ChangeSets
+            let account_changes = writer.collect_account_changes();
+            let storage_changes = writer.collect_storage_changes();
+            writer.insert_account_change_set(executed_block.header.number, account_changes)?;
+            writer.insert_storage_change_set(executed_block.header.number, storage_changes)?;
+
+            for (i, meta) in metas.iter().enumerate() {
+                writer.insert_receipt_meta(executed_block.header.hash_slow(), i as u64, meta.clone())?;
+            }
         }
         
         Ok((executed_block, receipts, metas))
