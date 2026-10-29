@@ -7,7 +7,7 @@ use wasix_eth_storage::read::DatabaseReadProvider;
 use wasix_eth_storage::read_traits::{BlockProvider, ChainProvider};
 use wasix_eth_storage::write::DatabaseWriteProvider;
 use wasix_eth_storage::write_traits::BlockWriter;
-use wasix_eth_types::{error::{RpcError, RpcResult}, PayloadExecutionResult, ReceiptMeta};
+use wasix_eth_types::error::{RpcError, RpcResult};
 use wasix_eth_types::Block;
 use wasix_eth_types::ChainConfig;
 use wasix_eth_types::PayloadAttributes;
@@ -25,7 +25,7 @@ use wasix_eth_types::Result;
 
 use std::collections::HashMap;
 use std::sync::RwLock;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashSet;
 pub use wasix_eth_types::CancellationToken;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,8 +35,6 @@ pub enum BuildStatus {
     /// First non-empty build (or best possible one) has been completed.
     InitialBuildCompleted,
 }
-
-use crate::engine::payload_cache::PayloadExecutionCache;
 
 #[derive(Clone)]
 pub struct PayloadBuilder {
@@ -54,9 +52,6 @@ pub struct PayloadBuilder {
     pub build_statuses: Arc<RwLock<HashMap<PayloadId, BuildStatus>>>,
     /// Notifies waiters when a payload's build status changes.
     pub build_notify: Arc<RwLock<HashMap<PayloadId, Arc<Notify>>>>,
-    /// In-memory cache of execution results for payloads.
-    pub execution_results: Arc<DashMap<PayloadId, PayloadExecutionResult>>,
-    pub payload_cache: PayloadExecutionCache,
 }
 
 impl PayloadBuilder {
@@ -212,7 +207,7 @@ impl PayloadBuilder {
         let parent_header_clone = parent_block.header.clone();
         let attr_clone = attr.clone();
         
-        let (finalized_block, receipts, metas, account_changes, storage_changes) = match tokio::task::spawn_blocking(move || {
+        let (finalized_block, receipts, metas) = match tokio::task::spawn_blocking(move || {
             execution.execute_block_for_payload(
                 vec![], // Empty transaction set
                 &parent_header_clone,
@@ -233,14 +228,26 @@ impl PayloadBuilder {
         };
 
         let bundle = BlobsBundleV1::default();
-        let res = PayloadExecutionResult {
-            block: finalized_block.clone(),
-            receipts: receipts.clone(),
-            metas: metas.clone(),
-            bundle: bundle.clone(),
-            account_changes,
-            storage_changes,
-        };
+        let write_storage = self.write_storage.clone();
+        let finalized_block_clone = finalized_block.clone();
+        let receipts_clone = receipts.clone();
+        let metas_clone = metas.clone();
+        let id_clone = id.clone();
+
+        match tokio::task::spawn_blocking(move || {
+            write_storage.add_payload(id_clone, finalized_block_clone, receipts_clone, metas_clone, bundle)
+        }).await {
+            Ok(Ok(_)) => {},
+            Ok(Err(e)) => {
+                error!("[PayloadBuilder] Failed to persist empty payload: {}", e);
+                return Err(RpcError::Internal(e.to_string()));
+            }
+            Err(e) => {
+                error!("[PayloadBuilder] Empty payload persistence task panicked: {}", e);
+                return Err(RpcError::Internal(e.to_string()));
+            }
+        }
+
         info!("[PayloadBuilder] Created initial empty payload_id={:?} for block_number={}", id, parent_block.header.number + 1);
         Ok(())
     }
@@ -266,20 +273,20 @@ impl PayloadBuilder {
         &self,
         payload_id: PayloadId,
     ) -> Result<()> {
-        let (p_block, p_receipts, _p_metas, _p_bundle) = match self.read_storage.get_payload(&payload_id) {
+        let (payload_block, payload_receipts, _payload_metas, _payload_bundle) = match self.read_storage.get_payload(&payload_id) {
             Some(p) => p,
             None => return Ok(()),
         };
 
-        let head_hash = p_block.header.parent_hash;
-        let old_value = self.calculate_block_value(&p_block, &p_receipts);
+        let head_hash = payload_block.header.parent_hash;
+        let old_value = self.calculate_block_value(&payload_block, &payload_receipts);
 
         let attr = PayloadAttributes {
-                timestamp: p_block.header.timestamp,
-                prev_randao: p_block.header.mix_hash,
-                suggested_fee_recipient: p_block.header.beneficiary,
-                withdrawals: p_block.body.withdrawals.as_ref().map(|w| w.0.clone()),
-                parent_beacon_block_root: p_block.header.parent_beacon_block_root,
+                timestamp: payload_block.header.timestamp,
+                prev_randao: payload_block.header.mix_hash,
+                suggested_fee_recipient: payload_block.header.beneficiary,
+                withdrawals: payload_block.body.withdrawals.as_ref().map(|w| w.0.clone()),
+                parent_beacon_block_root: payload_block.header.parent_beacon_block_root,
                 slot_number: None,
                 target_gas_limit: None,
         };
@@ -320,9 +327,9 @@ impl PayloadBuilder {
         );
 
         // Optimization: if transaction set is identical, skip rebuilding
-        if transactions.len() == p_block.body.transactions.len() {
+        if transactions.len() == payload_block.body.transactions.len() {
             let mut identical = true;
-            for (new_tx, old_tx) in transactions.iter().zip(p_block.body.transactions.iter()) {
+            for (new_tx, old_tx) in transactions.iter().zip(payload_block.body.transactions.iter()) {
                 if new_tx.hash() != old_tx.hash() {
                     identical = false;
                     break;
@@ -333,7 +340,7 @@ impl PayloadBuilder {
             }
         }
 
-        if transactions.is_empty() && !p_block.body.transactions.is_empty() {
+        if transactions.is_empty() && !payload_block.body.transactions.is_empty() {
              // Should not happen if we already have a payload with transactions, but good to be safe.
              return Ok(());
         }
@@ -363,7 +370,7 @@ impl PayloadBuilder {
         let parent_header_clone = parent_block.header.clone();
         let attr_clone = attr.clone();
         let token_clone = token.clone();
-        let (finalized_block, receipts, metas, account_changes, storage_changes) = tokio::task::spawn_blocking(move || {
+        let (finalized_block, receipts, metas) = tokio::task::spawn_blocking(move || {
             execution.execute_block_for_payload(
                 transactions,
                 &parent_header_clone,
@@ -382,19 +389,19 @@ impl PayloadBuilder {
         let should_replace = if new_value > old_value {
             true
         } else if new_value == old_value {
-            finalized_block.body.transactions.len() >= p_block.body.transactions.len()
+            finalized_block.body.transactions.len() >= payload_block.body.transactions.len()
         } else {
             false
         };
 
-        if !should_replace && !p_block.body.transactions.is_empty() {
+        if !should_replace && !payload_block.body.transactions.is_empty() {
             debug!("[PayloadBuilder] NOT rebuilding payload {:?}: new value {} is not better than old value {} (tx count: {} vs {})", 
-                payload_id, new_value, old_value, finalized_block.body.transactions.len(), p_block.body.transactions.len());
+                payload_id, new_value, old_value, finalized_block.body.transactions.len(), payload_block.body.transactions.len());
             return Ok(());
         }
 
         info!("[PayloadBuilder] Rebuilding payload {:?}: value {} -> {} (tx count: {} -> {})", 
-            payload_id, old_value, new_value, p_block.body.transactions.len(), finalized_block.body.transactions.len());
+            payload_id, old_value, new_value, payload_block.body.transactions.len(), finalized_block.body.transactions.len());
 
         // 6. Collect blobs
         let mut bundle = BlobsBundleV1::default();
@@ -414,16 +421,13 @@ impl PayloadBuilder {
             }
         }
 
-        let res = PayloadExecutionResult {
-            block: finalized_block.clone(),
-            receipts: receipts.clone(),
-            metas: metas.clone(),
-            bundle: bundle.clone(),
-            account_changes,
-            storage_changes,
-        };
-        self.execution_results.insert(payload_id, res.clone());
-        self.payload_cache.insert(finalized_block.header.hash_slow(), res);
+        let finalized_block_clone = finalized_block.clone();
+        let receipts_clone = receipts.clone();
+        let metas_clone = metas.clone();
+        tokio::task::spawn_blocking(move || {
+            write_storage.add_payload(payload_id, finalized_block_clone, receipts_clone, metas_clone, bundle)
+        }).await.map_err(|e| RpcError::Internal(format!("Payload rebuilding task panicked: {}", e)))?
+        .map_err(|e| RpcError::Internal(e.to_string()))?;
 
         Ok(())
     }
@@ -486,28 +490,20 @@ impl PayloadBuilder {
                     debug!("[PayloadBuilder] Interruption already in flight for payload {:?}", payload_id);
                 }
 
-                // Wait for finalization (another sec)
-                let remaining = std::time::Duration::from_secs(3).saturating_sub(wait_start.elapsed());
+                // Wait for finalization (another 2s)
+                let remaining = std::time::Duration::from_secs(4).saturating_sub(wait_start.elapsed());
                 if !remaining.is_zero() {
                     tokio::time::sleep(remaining).await;
                 }
             }
         }
 
-        // Try in-memory execution results first
-        if let Some(res) = self.execution_results.get(payload_id) {
-            let res = res.value();
-            info!("[PayloadBuilder] Returning payload {:?} from execution_results with {} transactions after {:?}ms", 
-                payload_id, res.block.body.transactions.len(), wait_start.elapsed().as_millis());
-            return Ok((res.block.clone(), res.receipts.clone(), res.metas.clone(), res.bundle.clone()));
-        }
-
-        let (p_block, p_receipts, p_metas, p_bundle) = self.read_storage.get_payload(payload_id)
+        let payload = self.read_storage.get_payload(payload_id)
             .ok_or_else(|| RpcError::BlockNotFound(wasix_eth_types::BlockId::Hash(B256::from_slice(&payload_id.0[..]).into())))?;
 
         info!("[PayloadBuilder] Returning payload {:?} with {} transactions after {:?}ms", 
-            payload_id, p_block.body.transactions.len(), wait_start.elapsed().as_millis());
-        Ok((p_block, p_receipts, p_metas, p_bundle))
+            payload_id, payload.0.body.transactions.len(), wait_start.elapsed().as_millis());
+        Ok(payload)
     }
 
     pub fn calculate_block_value(&self, block: &Block<Transaction>, receipts: &[Receipt]) -> U256 {

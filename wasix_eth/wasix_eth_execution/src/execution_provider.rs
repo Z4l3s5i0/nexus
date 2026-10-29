@@ -23,11 +23,11 @@ pub trait ExecutionProvider: Send + Sync {
     fn execute_block_for_payload(
         &self,
         transactions: Vec<Transaction>,
-        parent_header: &Header,
-        attributes: &PayloadAttributes,
-        base_fee: Option<u64>,
+        _header: &Header,
+        _attributes: &PayloadAttributes,
+        _base_fee: Option<u64>,
         interruption_token: Option<CancellationToken>,
-    ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, Vec<(Address, Option<Bytes>)>, Vec<(Address, B256, U256)>)>;
+    ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn run_execution(
         &self,
         transactions: Vec<Transaction>,
@@ -702,7 +702,7 @@ impl ExecutionProvider for EthExecutionProvider {
         attributes: &PayloadAttributes,
         base_fee: Option<u64>,
         interruption_token: Option<CancellationToken>,
-    ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, Vec<(Address, Option<Bytes>)>, Vec<(Address, B256, U256)>)> {
+    ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
         let chain_id = self.read_storage.chain_id().unwrap_or(1);
         let chain_config = self.read_storage.chain_config()?.unwrap_or_else(|| ChainConfig {
             chain_id,
@@ -793,13 +793,7 @@ impl ExecutionProvider for EthExecutionProvider {
         };
 
         // Reuse execute_block logic but don't commit
-        let batch = self.write_storage.begin_batch()?;
-        let (finalized_block, receipts, metas) = self.execute_block_with_batch(block, &batch, Some(parent_header.state_root), true, interruption_token)?;
-        
-        let account_changes = batch.collect_account_changes();
-        let storage_changes = batch.collect_storage_changes();
-        
-        Ok((finalized_block, receipts, metas, account_changes, storage_changes))
+        self.execute_block_with_state_root_and_building(block, false, Some(parent_header.state_root), true, interruption_token)
     }
 
     fn run_execution(

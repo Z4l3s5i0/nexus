@@ -1,4 +1,4 @@
-use wasix_eth_types::{Address, Block, BlockBody, Bytes, Header, PayloadId, PeerEntry, Receipt, Result, Transaction, TrieAccount, B256, U256, BlockId, BlockNumberOrTag, BlobsBundleV1, PayloadExecutionResult};
+use wasix_eth_types::{Address, Block, BlockBody, Bytes, Header, PayloadId, PeerEntry, Receipt, Result, Transaction, TrieAccount, B256, U256, BlockId, BlockNumberOrTag, BlobsBundleV1};
 use wasix_eth_utils::debug;
 use redb::{Database, WriteTransaction, ReadableTable, ReadableDatabase};
 use crate::codecs::Table;
@@ -526,13 +526,6 @@ impl BlockWriter for BatchWriter {
 
         Ok(())
     }
-
-    fn commit_block_results(&self, res: PayloadExecutionResult) -> Result<()> {
-        self.insert_block(res.block.clone(), res.receipts.clone(), res.metas.clone())?;
-        self.insert_account_change_set(res.block.header.number, res.account_changes)?;
-        self.insert_storage_change_set(res.block.header.number, res.storage_changes)?;
-        Ok(())
-    }
 }
 
 impl TransactionWriter for BatchWriter {
@@ -859,13 +852,6 @@ impl BlockWriter for DatabaseWriteProvider {
     fn insert_block(&self, block: Block<Transaction>, receipts: Vec<Receipt>, metas: Vec<ReceiptMeta>) -> Result<()> {
         let batch = self.begin_batch()?;
         batch.insert_block(block, receipts, metas)?;
-        batch.commit()?;
-        Ok(())
-    }
-
-    fn commit_block_results(&self, res: PayloadExecutionResult) -> Result<()> {
-        let batch = self.begin_batch()?;
-        batch.commit_block_results(res)?;
         batch.commit()?;
         Ok(())
     }

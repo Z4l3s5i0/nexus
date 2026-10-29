@@ -79,7 +79,7 @@ async fn test_contract_deployment_and_call() {
     // Lookup state root for block 0
     let state_root_0 = read_provider.header(BlockId::Number(BlockNumberOrTag::Number(0))).unwrap().unwrap().state_root;
 
-    let (final_block, receipts, metas) = execution.execute_block_with_state_root_and_building(block, true, Some(state_root_0), false, None).expect("Deployment execution failed");
+    let (final_block, receipts, metas) = execution.execute_block_with_state_root_and_building(block, true, Some(state_root_0), false).expect("Deployment execution failed");
     assert!(match receipts[0].receipt.status { Eip658Value::Eip658(s) => s, _ => false }, "Deployment failed");
     let contract_address = metas[0].contract_address.expect("No contract address");
 
@@ -111,7 +111,7 @@ async fn test_contract_deployment_and_call() {
     block_same.body.transactions.push(tx_deploy.clone());
     block_same.body.transactions.push(tx_call_same);
 
-    let (_, receipts_same, _) = execution.execute_block_with_state_root_and_building(block_same, false, Some(state_root_0), false, None).expect("Same block execution failed");
+    let (_, receipts_same, _) = execution.execute_block_with_state_root_and_building(block_same, false, Some(state_root_0), false).expect("Same block execution failed");
     assert!(match receipts_same[0].receipt.status { Eip658Value::Eip658(s) => s, _ => false }, "Deployment in same block failed");
     assert!(match receipts_same[1].receipt.status { Eip658Value::Eip658(s) => s, _ => false }, "Call in same block failed");
 
@@ -144,7 +144,7 @@ async fn test_contract_deployment_and_call() {
     block2.header.base_fee_per_gas = Some(10);
     block2.body.transactions.push(tx_call);
 
-    let (final_block2, receipts2, _metas2) = execution.execute_block_with_state_root_and_building(block2, true, Some(final_block.header.state_root), false, None).expect("Call execution failed");
+    let (final_block2, receipts2, _metas2) = execution.execute_block_with_state_root_and_building(block2, true, Some(final_block.header.state_root), false).expect("Call execution failed");
     assert!(match receipts2[0].receipt.status { Eip658Value::Eip658(s) => s, _ => false }, "Contract call failed");
 
     // 3. Call contract in NEXT block again (testing persistence across many blocks)
@@ -175,6 +175,6 @@ async fn test_contract_deployment_and_call() {
     block3.body.transactions.push(tx_call2);
 
     let state_root_3 = final_block2.header.state_root;
-    let (_, receipts3, _) = execution.execute_block_with_state_root_and_building(block3, true, Some(state_root_3), false, None).expect("Call execution failed");
+    let (_, receipts3, _) = execution.execute_block_with_state_root_and_building(block3, true, Some(state_root_3), false).expect("Call execution failed");
     assert!(match receipts3[0].receipt.status { Eip658Value::Eip658(s) => s, _ => false }, "Contract call in block 4 failed");
 }
