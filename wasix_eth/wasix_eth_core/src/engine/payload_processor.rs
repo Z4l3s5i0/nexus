@@ -792,21 +792,29 @@ impl PayloadProcessor {
                             }
                             self.execution_cancellation_tokens.insert(block_number, token.clone());
 
-                            let result = self.new_payload_internal_inner(block.clone(), child_hash, None, None, false, token).await;
-                            
-                            self.execution_cancellation_tokens.remove(&block_number);
-                            self.processing_payloads.remove(&child_hash);
+                            {
+                                let _guard = ProcessingPayloadGuard {
+                                    hash: child_hash,
+                                    processing_payloads: self.processing_payloads.clone(),
+                                    in_flight_results: self.in_flight_results.clone(),
+                                    execution_cancellation_tokens: self.execution_cancellation_tokens.clone(),
+                                    block_number,
+                                    token: token.clone(),
+                                };
 
-                            match result {
-                                Ok(status) => {
-                                    if status.status == PayloadStatusEnum::Valid {
-                                        info!("[PayloadProcessor] Successfully revalidated child block {} (hash: {})", block.header.number, child_hash);
-                                        parents_to_process.push(child_hash);
+                                let result = self.new_payload_internal_inner(block.clone(), child_hash, None, None, false, token).await;
+
+                                match result {
+                                    Ok(status) => {
+                                        if status.status == PayloadStatusEnum::Valid {
+                                            info!("[PayloadProcessor] Successfully revalidated child block {} (hash: {})", block.header.number, child_hash);
+                                            parents_to_process.push(child_hash);
+                                        }
                                     }
-                                }
 
-                                Err(e) => {
-                                    error!("[PayloadProcessor] Failed to revalidate dependent payload {:?}: {}", child_hash, e);
+                                    Err(e) => {
+                                        error!("[PayloadProcessor] Failed to revalidate dependent payload {:?}: {}", child_hash, e);
+                                    }
                                 }
                             }
                         }

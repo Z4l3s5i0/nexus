@@ -243,6 +243,7 @@ impl PayloadBuilder {
             account_changes,
             storage_changes,
         };
+        self.execution_results.insert(id, res.clone());
         info!("[PayloadBuilder] Created initial empty payload_id={:?} for block_number={}", id, parent_block.header.number + 1);
         Ok(())
     }
@@ -268,9 +269,12 @@ impl PayloadBuilder {
         &self,
         payload_id: PayloadId,
     ) -> Result<()> {
-        let (p_block, p_receipts, _p_metas, _p_bundle) = match self.read_storage.get_payload(&payload_id) {
-            Some(p) => p,
-            None => return Ok(()),
+        let (p_block, p_receipts, _p_metas, _p_bundle) = if let Some(res) = self.execution_results.get(&payload_id) {
+            (res.block.clone(), res.receipts.clone(), res.metas.clone(), res.bundle.clone())
+        } else if let Some(p) = self.read_storage.get_payload(&payload_id) {
+            p
+        } else {
+            return Ok(());
         };
 
         let head_hash = p_block.header.parent_hash;
@@ -425,7 +429,18 @@ impl PayloadBuilder {
             storage_changes,
         };
         self.execution_results.insert(payload_id, res.clone());
-        self.payload_cache.insert(finalized_block.header.hash_slow(), res);
+        self.payload_cache.insert(finalized_block.header.hash_slow(), res.clone());
+
+        // Commit to persistent storage - this is a short-lived write lock
+        let write_storage = self.write_storage.clone();
+        let payload_id_copy = payload_id;
+        let res_copy = res;
+        tokio::task::spawn_blocking(move || {
+            if let Ok(batch) = write_storage.begin_batch() {
+                let _ = batch.add_payload(payload_id_copy, res_copy.block, res_copy.receipts, res_copy.metas, res_copy.bundle);
+                let _ = batch.commit();
+            }
+        }).await.map_err(|e| RpcError::Internal(format!("Failed to commit payload to storage: {}", e)))?;
 
         Ok(())
     }

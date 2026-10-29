@@ -1,6 +1,6 @@
 use wasix_eth_types::{Address, Block, BlockBody, Bytes, Header, PayloadId, PeerEntry, Receipt, Result, Transaction, TrieAccount, B256, U256, BlockId, BlockNumberOrTag, BlobsBundleV1, PayloadExecutionResult};
 use wasix_eth_utils::debug;
-use redb::{Database, WriteTransaction, ReadableTable, ReadableDatabase};
+use redb::{Database, WriteTransaction, ReadTransaction, ReadableTable, ReadableDatabase};
 use crate::codecs::Table;
 use crate::tables::*;
 use std::collections::{HashSet, HashMap};
@@ -11,6 +11,36 @@ use crate::read_traits::{AccountProvider, BytecodeProvider, StateProvider, Stora
 use crate::read::DatabaseReadProvider;
 use wasix_eth_types::ReceiptMeta;
 use alloy_rlp::Decodable;
+use dashmap::DashMap;
+
+#[derive(Default)]
+pub struct SimulationOverlay {
+    pub accounts: DashMap<Address, TrieAccount>,
+    pub storages: DashMap<(Address, B256), U256>,
+    pub bytecodes: DashMap<B256, Bytes>,
+    pub trie_nodes: DashMap<B256, Bytes>,
+    pub plain_state: DashMap<Address, Bytes>,
+    pub hashed_state: DashMap<B256, Bytes>,
+    pub receipts: DashMap<(B256, u64), Receipt>,
+    pub receipts_meta: DashMap<(B256, u64), ReceiptMeta>,
+    pub headers: DashMap<B256, Header>,
+    pub header_numbers: DashMap<B256, u64>,
+    pub header_td: DashMap<B256, U256>,
+    pub block_bodies: DashMap<B256, BlockBody<Transaction>>,
+    pub transactions: DashMap<B256, Transaction>,
+    pub transaction_lookup: DashMap<B256, (B256, u64)>,
+    pub payloads: DashMap<PayloadId, (Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1)>,
+    pub canonical_heads: DashMap<u64, B256>,
+    pub forkchoice: DashMap<String, B256>,
+    pub account_changes: DashMap<u64, Vec<(Address, Option<Bytes>)>>,
+    pub storage_changes: DashMap<u64, Vec<(Address, B256, U256)>>,
+    pub metadata: DashMap<String, Bytes>,
+}
+
+enum TransactionHandle {
+    Write(WriteTransaction),
+    Simulation(ReadTransaction, Arc<SimulationOverlay>),
+}
 
 /// Implementation of database write providers using a `redb` database.
 #[derive(Clone)]
@@ -48,7 +78,12 @@ impl DatabaseWriteProvider {
 
     pub fn begin_batch(&self) -> Result<BatchWriter> {
         let wtx = self.db.begin_write()?;
-        Ok(BatchWriter::new(wtx, DatabaseReadProvider::new(self.db.clone())))
+        Ok(BatchWriter::new(TransactionHandle::Write(wtx), DatabaseReadProvider::new(self.db.clone())))
+    }
+
+    pub fn begin_simulation_batch(&self) -> Result<BatchWriter> {
+        let rtx = self.db.begin_read()?;
+        Ok(BatchWriter::new(TransactionHandle::Simulation(rtx, Arc::new(SimulationOverlay::default())), DatabaseReadProvider::new(self.db.clone())))
     }
 
     pub fn clear_tracking(&self) {
@@ -58,7 +93,7 @@ impl DatabaseWriteProvider {
 }
 
 pub struct BatchWriter {
-    wtx: WriteTransaction,
+    handle: TransactionHandle,
     read_provider: DatabaseReadProvider,
     base_state_root: Arc<Mutex<Option<B256>>>,
     touched_accounts: Arc<Mutex<HashSet<Address>>>,
@@ -69,9 +104,9 @@ pub struct BatchWriter {
 }
 
 impl BatchWriter {
-    pub fn new(wtx: WriteTransaction, read_provider: DatabaseReadProvider) -> Self {
+    fn new(handle: TransactionHandle, read_provider: DatabaseReadProvider) -> Self {
         Self {
-            wtx,
+            handle,
             read_provider,
             base_state_root: Arc::new(Mutex::new(None)),
             touched_accounts: Arc::new(Mutex::new(HashSet::new())),
@@ -141,14 +176,23 @@ impl BatchWriter {
                         debug!("[Trie] Deleting empty account from trie: addr={:?}", addr);
                         trie.delete(hashed_addr)?;
                         // Also remove from Accounts table
-                        let mut table = self.wtx.open_table(Accounts::definition())?;
-                        table.remove(addr)?;
-                        
-                        // Sync PlainState and HashedState removal
-                        let mut plain_table = self.wtx.open_table(PlainState::definition())?;
-                        plain_table.remove(addr)?;
-                        let mut hashed_table = self.wtx.open_table(HashedState::definition())?;
-                        hashed_table.remove(hashed_addr)?;
+                        match &self.handle {
+                            TransactionHandle::Write(wtx) => {
+                                let mut table = wtx.open_table(Accounts::definition())?;
+                                table.remove(addr)?;
+                                
+                                // Sync PlainState and HashedState removal
+                                let mut plain_table = wtx.open_table(PlainState::definition())?;
+                                plain_table.remove(addr)?;
+                                let mut hashed_table = wtx.open_table(HashedState::definition())?;
+                                hashed_table.remove(hashed_addr)?;
+                            }
+                            TransactionHandle::Simulation(_, overlay) => {
+                                overlay.accounts.remove(&addr);
+                                overlay.plain_state.remove(&addr);
+                                overlay.hashed_state.remove(&hashed_addr);
+                            }
+                        }
                         continue;
                     }
                 }
@@ -162,29 +206,46 @@ impl BatchWriter {
 
                 debug!("[Trie] Updating account in trie: addr={:?}, balance={}, nonce={}, storage={:?}, code={:?}", addr, trie_acc.balance, trie_acc.nonce, trie_acc.storage_root, trie_acc.code_hash);
 
-                // Update Accounts table with new storage root
-                let mut table = self.wtx.open_table(Accounts::definition())?;
-                table.insert(addr, trie_acc)?;
-
                 // Sync PlainState and HashedState
                 let mut acc_rlp = Vec::new();
                 alloy_rlp::Encodable::encode(&trie_acc, &mut acc_rlp);
                 let acc_rlp_bytes = Bytes::from(acc_rlp);
-                
-                let mut plain_table = self.wtx.open_table(PlainState::definition())?;
-                plain_table.insert(addr, acc_rlp_bytes.clone())?;
-                let mut hashed_table = self.wtx.open_table(HashedState::definition())?;
-                hashed_table.insert(hashed_addr, acc_rlp_bytes.clone())?;
+
+                // Update Accounts table with new storage root
+                match &self.handle {
+                    TransactionHandle::Write(wtx) => {
+                        let mut table = wtx.open_table(Accounts::definition())?;
+                        table.insert(addr, trie_acc)?;
+
+                        let mut plain_table = wtx.open_table(PlainState::definition())?;
+                        plain_table.insert(addr, acc_rlp_bytes.clone())?;
+                        let mut hashed_table = wtx.open_table(HashedState::definition())?;
+                        hashed_table.insert(hashed_addr, acc_rlp_bytes.clone())?;
+                    }
+                    TransactionHandle::Simulation(_, overlay) => {
+                        overlay.accounts.insert(addr, trie_acc);
+                        overlay.plain_state.insert(addr, acc_rlp_bytes.clone());
+                        overlay.hashed_state.insert(hashed_addr, acc_rlp_bytes.clone());
+                    }
+                }
 
                 trie.insert(hashed_addr, acc_rlp_bytes.0.to_vec())?;
             } else {
                 debug!("[Trie] Account not found for trie update: addr={:?}", addr);
                 trie.delete(hashed_addr)?;
                 // Remove from PlainState and HashedState as well
-                let mut plain_table = self.wtx.open_table(PlainState::definition())?;
-                plain_table.remove(addr)?;
-                let mut hashed_table = self.wtx.open_table(HashedState::definition())?;
-                hashed_table.remove(hashed_addr)?;
+                match &self.handle {
+                    TransactionHandle::Write(wtx) => {
+                        let mut plain_table = wtx.open_table(PlainState::definition())?;
+                        plain_table.remove(addr)?;
+                        let mut hashed_table = wtx.open_table(HashedState::definition())?;
+                        hashed_table.remove(hashed_addr)?;
+                    }
+                    TransactionHandle::Simulation(_, overlay) => {
+                        overlay.plain_state.remove(&addr);
+                        overlay.hashed_state.remove(&hashed_addr);
+                    }
+                }
             }
         }
 
@@ -226,8 +287,15 @@ impl BatchWriter {
                     // Sync HashedState
                     let hashed_addr = alloy_primitives::keccak256(address);
                     let combined_key = alloy_primitives::keccak256([hashed_addr.0, hashed_slot.0].concat());
-                    let mut table = self.wtx.open_table(HashedState::definition())?;
-                    table.remove(combined_key)?;
+                    match &self.handle {
+                        TransactionHandle::Write(wtx) => {
+                            let mut table = wtx.open_table(HashedState::definition())?;
+                            table.remove(combined_key)?;
+                        }
+                        TransactionHandle::Simulation(_, overlay) => {
+                            overlay.hashed_state.remove(&combined_key);
+                        }
+                    }
                 } else {
                     let mut buf = Vec::new();
                     alloy_rlp::Encodable::encode(&value, &mut buf);
@@ -236,8 +304,15 @@ impl BatchWriter {
                     let val_bytes = value.to_be_bytes::<32>();
                     let hashed_addr = alloy_primitives::keccak256(address);
                     let combined_key = alloy_primitives::keccak256([hashed_addr.0, hashed_slot.0].concat());
-                    let mut table = self.wtx.open_table(HashedState::definition())?;
-                    table.insert(combined_key, Bytes::from(val_bytes.to_vec()))?;
+                    match &self.handle {
+                        TransactionHandle::Write(wtx) => {
+                            let mut table = wtx.open_table(HashedState::definition())?;
+                            table.insert(combined_key, Bytes::from(val_bytes.to_vec()))?;
+                        }
+                        TransactionHandle::Simulation(_, overlay) => {
+                            overlay.hashed_state.insert(combined_key, Bytes::from(val_bytes.to_vec()));
+                        }
+                    }
 
                     trie.insert(hashed_slot, buf)?;
                 }
@@ -251,7 +326,14 @@ impl BatchWriter {
     }
 
     pub fn commit(self) -> Result<()> {
-        self.wtx.commit()?;
+        match self.handle {
+            TransactionHandle::Write(wtx) => {
+                wtx.commit()?;
+            }
+            TransactionHandle::Simulation(_, _) => {
+                // No-op for simulation
+            }
+        }
         Ok(())
     }
 
@@ -274,9 +356,18 @@ impl AccountProvider for BatchWriter {
         let state_root = state_root.or(*self.base_state_root.lock().unwrap());
         // 1. Check if modified in CURRENT block's batch
         if self.touched_accounts.lock().unwrap().contains(&address) {
-            let table = self.wtx.open_table(Accounts::definition())?;
-            if let Some(value) = table.get(address)? {
-                return Ok(Some(value.value()));
+            match &self.handle {
+                TransactionHandle::Write(wtx) => {
+                    let table = wtx.open_table(Accounts::definition())?;
+                    if let Some(value) = table.get(address)? {
+                        return Ok(Some(value.value()));
+                    }
+                }
+                TransactionHandle::Simulation(_, overlay) => {
+                    if let Some(acc) = overlay.accounts.get(&address) {
+                        return Ok(Some(acc.clone()));
+                    }
+                }
             }
             return Ok(None);
         }
@@ -302,11 +393,20 @@ impl AccountProvider for BatchWriter {
     }
 
     fn accounts(&self) -> Result<Vec<(Address, TrieAccount)>> {
-        let table = self.wtx.open_table(Accounts::definition())?;
         let mut accounts = Vec::new();
-        for entry in table.iter()? {
-            let (key, value) = entry?;
-            accounts.push((key.value(), value.value()));
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let table = wtx.open_table(Accounts::definition())?;
+                for entry in table.iter()? {
+                    let (key, value) = entry?;
+                    accounts.push((key.value(), value.value()));
+                }
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                for entry in overlay.accounts.iter() {
+                    accounts.push((*entry.key(), entry.value().clone()));
+                }
+            }
         }
         Ok(accounts)
     }
@@ -320,10 +420,19 @@ impl AccountProvider for BatchWriter {
         }
         
         // Add/update addresses from current batch
-        let table = self.wtx.open_table(Accounts::definition())?;
-        for entry in table.iter()? {
-            let (key, _) = entry?;
-            addresses.insert(key.value());
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let table = wtx.open_table(Accounts::definition())?;
+                for entry in table.iter()? {
+                    let (key, _) = entry?;
+                    addresses.insert(key.value());
+                }
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                for entry in overlay.accounts.iter() {
+                    addresses.insert(*entry.key());
+                }
+            }
         }
         
         Ok(addresses.into_iter().collect())
@@ -345,6 +454,21 @@ impl StorageProvider for BatchWriter {
 
         if self.resetted_storages.lock().unwrap().contains(&address) {
             return Ok(U256::ZERO);
+        }
+
+        // Check the handle for current batch state
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let table = wtx.open_table(Storages::definition())?;
+                if let Some(value) = table.get((address, slot))? {
+                    return Ok(value.value());
+                }
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                if let Some(value) = overlay.storages.get(&(address, slot)) {
+                    return Ok(*value);
+                }
+            }
         }
 
         // 2. If not in current batch, do lookup in read_provider (latest or historical)
@@ -384,14 +508,26 @@ impl StorageProvider for BatchWriter {
         // 2. Overlay from current batch
         // We ALWAYS need the overlay because SputnikVM applies changes to the batch, 
         // and then we calculate root.
-        let table = self.wtx.open_table(Storages::definition())?;
-        let start = (address, B256::ZERO);
-        let end = (address, B256::repeat_byte(0xff));
-        
-        for entry in table.range(start..=end)? {
-            let (key, value) = entry?;
-            let (_, slot) = key.value();
-            storages.insert(slot, value.value());
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let table = wtx.open_table(Storages::definition())?;
+                let start = (address, B256::ZERO);
+                let end = (address, B256::repeat_byte(0xff));
+                
+                for entry in table.range(start..=end)? {
+                    let (key, value) = entry?;
+                    let (_, slot) = key.value();
+                    storages.insert(slot, value.value());
+                }
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                for entry in overlay.storages.iter() {
+                    let (key, value) = entry.pair();
+                    if key.0 == address {
+                        storages.insert(key.1, *value);
+                    }
+                }
+            }
         }
         
         Ok(storages.into_iter().collect())
@@ -400,9 +536,18 @@ impl StorageProvider for BatchWriter {
 
 impl BytecodeProvider for BatchWriter {
     fn bytecode(&self, code_hash: B256) -> Result<Option<Bytes>> {
-        let table = self.wtx.open_table(Bytecodes::definition())?;
-        if let Some(value) = table.get(code_hash)? {
-            return Ok(Some(value.value()));
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let table = wtx.open_table(Bytecodes::definition())?;
+                if let Some(value) = table.get(code_hash)? {
+                    return Ok(Some(value.value()));
+                }
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                if let Some(bytes) = overlay.bytecodes.get(&code_hash) {
+                    return Ok(Some(bytes.clone()));
+                }
+            }
         }
         self.read_provider.bytecode(code_hash)
     }
@@ -411,91 +556,173 @@ impl BytecodeProvider for BatchWriter {
 impl HeaderWriter for BatchWriter {
     fn insert_header(&self, hash: B256, header: Header) -> Result<()> {
         let number = header.number;
-        let mut h_table = self.wtx.open_table(Headers::definition())?;
-        h_table.insert(hash, header)?;
-        
-        let mut hn_table = self.wtx.open_table(HeaderNumbers::definition())?;
-        hn_table.insert(hash, number)?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut h_table = wtx.open_table(Headers::definition())?;
+                h_table.insert(hash, header)?;
+                
+                let mut hn_table = wtx.open_table(HeaderNumbers::definition())?;
+                hn_table.insert(hash, number)?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.headers.insert(hash, header);
+                overlay.header_numbers.insert(hash, number);
+            }
+        }
         Ok(())
     }
 
     fn insert_block_hash(&self, hash: B256, number: u64) -> Result<()> {
-        let mut table = self.wtx.open_table(HeaderNumbers::definition())?;
-        table.insert(hash, number)?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(HeaderNumbers::definition())?;
+                table.insert(hash, number)?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.header_numbers.insert(hash, number);
+            }
+        }
         Ok(())
     }
 
     fn insert_header_td(&self, hash: B256, td: U256) -> Result<()> {
-        let mut table = self.wtx.open_table(HeaderTD::definition())?;
-        table.insert(hash, td)?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(HeaderTD::definition())?;
+                table.insert(hash, td)?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.header_td.insert(hash, td);
+            }
+        }
         Ok(())
     }
 
     fn insert_header_number(&self, hash: B256, number: u64) -> Result<()> {
-        let mut table = self.wtx.open_table(HeaderNumbers::definition())?;
-        table.insert(hash, number)?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(HeaderNumbers::definition())?;
+                table.insert(hash, number)?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.header_numbers.insert(hash, number);
+            }
+        }
         Ok(())
     }
 }
 
 impl BlockWriter for BatchWriter {
     fn set_canonical(&self, number: u64, hash: B256) -> Result<()> {
-        let mut table = self.wtx.open_table(CanonicalHeads::definition())?;
-        table.insert(number, hash)?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(CanonicalHeads::definition())?;
+                table.insert(number, hash)?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.canonical_heads.insert(number, hash);
+            }
+        }
         Ok(())
     }
 
     fn remove_canonical(&self, number: u64) -> Result<()> {
-        let mut table = self.wtx.open_table(CanonicalHeads::definition())?;
-        table.remove(number)?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(CanonicalHeads::definition())?;
+                table.remove(number)?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.canonical_heads.remove(&number);
+            }
+        }
         Ok(())
     }
 
     fn insert_block_body(&self, hash: B256, _number: u64, body: BlockBody<Transaction>) -> Result<()> {
-        let mut b_table = self.wtx.open_table(BlockBodies::definition())?;
-        b_table.insert(hash, body.clone())?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut b_table = wtx.open_table(BlockBodies::definition())?;
+                b_table.insert(hash, body.clone())?;
 
-        let mut tx_table = self.wtx.open_table(Transactions::definition())?;
-        let mut l_table = self.wtx.open_table(TransactionLookup::definition())?;
-        
-        for (index, tx) in body.transactions.iter().enumerate() {
-            let tx_hash = *tx.hash();
-            tx_table.insert(tx_hash, tx.clone())?;
-            l_table.insert(tx_hash, (hash, index as u64))?;
+                let mut tx_table = wtx.open_table(Transactions::definition())?;
+                let mut l_table = wtx.open_table(TransactionLookup::definition())?;
+                
+                for (index, tx) in body.transactions.iter().enumerate() {
+                    let tx_hash = *tx.hash();
+                    tx_table.insert(tx_hash, tx.clone())?;
+                    l_table.insert(tx_hash, (hash, index as u64))?;
+                }
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.block_bodies.insert(hash, body.clone());
+                for (index, tx) in body.transactions.iter().enumerate() {
+                    let tx_hash = *tx.hash();
+                    overlay.transactions.insert(tx_hash, tx.clone());
+                    overlay.transaction_lookup.insert(tx_hash, (hash, index as u64));
+                }
+            }
         }
         Ok(())
     }
 
     fn update_forkchoice(&self, head: B256, safe: Option<B256>, finalized: Option<B256>) -> Result<()> {
-        let mut table = self.wtx.open_table(Forkchoice::definition())?;
-        table.insert("head".to_string(), head)?;
-        if let Some(s) = safe {
-            table.insert("safe".to_string(), s)?;
-        }
-        if let Some(f) = finalized {
-            table.insert("finalized".to_string(), f)?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(Forkchoice::definition())?;
+                table.insert("head".to_string(), head)?;
+                if let Some(s) = safe {
+                    table.insert("safe".to_string(), s)?;
+                }
+                if let Some(f) = finalized {
+                    table.insert("finalized".to_string(), f)?;
+                }
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.forkchoice.insert("head".to_string(), head);
+                if let Some(s) = safe {
+                    overlay.forkchoice.insert("safe".to_string(), s);
+                }
+                if let Some(f) = finalized {
+                    overlay.forkchoice.insert("finalized".to_string(), f);
+                }
+            }
         }
         Ok(())
     }
 
     fn add_payload(&self, id: PayloadId, block: Block<Transaction>, receipts: Vec<Receipt>, metas: Vec<ReceiptMeta>, bundle: BlobsBundleV1) -> Result<()> {
-        let mut table = self.wtx.open_table(Payloads::definition())?;
-        table.insert(id, (block, receipts, metas, bundle))?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(Payloads::definition())?;
+                table.insert(id, (block, receipts, metas, bundle))?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.payloads.insert(id, (block, receipts, metas, bundle));
+            }
+        }
         Ok(())
     }
 
     fn remove_payload_by_block_hash(&self, hash: B256) -> Result<()> {
-        let mut table = self.wtx.open_table(Payloads::definition())?;
-        let mut to_remove = Vec::new();
-        for entry in table.iter()? {
-            let (id, value) = entry?;
-            let (block, _, _, _): (Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1) = value.value();
-            if block.header.hash_slow() == hash {
-                to_remove.push(id.value());
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(Payloads::definition())?;
+                let mut to_remove = Vec::new();
+                for entry in table.iter()? {
+                    let (id, value) = entry?;
+                    let (block, _, _, _): (Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1) = value.value();
+                    if block.header.hash_slow() == hash {
+                        to_remove.push(id.value());
+                    }
+                }
+                for id in to_remove {
+                    table.remove(id)?;
+                }
             }
-        }
-        for id in to_remove {
-            table.remove(id)?;
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.payloads.retain(|_, (block, _, _, _)| block.header.hash_slow() != hash);
+            }
         }
         Ok(())
     }
@@ -537,32 +764,67 @@ impl BlockWriter for BatchWriter {
 
 impl TransactionWriter for BatchWriter {
     fn insert_transaction(&self, hash: B256, tx: Transaction) -> Result<()> {
-        let mut table = self.wtx.open_table(Transactions::definition())?;
-        table.insert(hash, tx)?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(Transactions::definition())?;
+                table.insert(hash, tx)?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.transactions.insert(hash, tx);
+            }
+        }
         Ok(())
     }
 
     fn insert_receipt(&self, block_hash: B256, index: u64, receipt: Receipt) -> Result<()> {
-        let mut table = self.wtx.open_table(Receipts::definition())?;
-        table.insert((block_hash, index), receipt)?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(Receipts::definition())?;
+                table.insert((block_hash, index), receipt)?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.receipts.insert((block_hash, index), receipt);
+            }
+        }
         Ok(())
     }
 
     fn insert_receipt_meta(&self, block_hash: B256, index: u64, meta: ReceiptMeta) -> Result<()> {
-        let mut table = self.wtx.open_table(ReceiptsMeta::definition())?;
-        table.insert((block_hash, index), meta)?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(ReceiptsMeta::definition())?;
+                table.insert((block_hash, index), meta)?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.receipts_meta.insert((block_hash, index), meta);
+            }
+        }
         Ok(())
     }
 
     fn remove_receipt_meta(&self, block_hash: B256, index: u64) -> Result<()> {
-        let mut table = self.wtx.open_table(ReceiptsMeta::definition())?;
-        table.remove((block_hash, index))?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(ReceiptsMeta::definition())?;
+                table.remove((block_hash, index))?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.receipts_meta.remove(&(block_hash, index));
+            }
+        }
         Ok(())
     }
 
     fn insert_transaction_lookup(&self, hash: B256, block_hash: B256, index: u64) -> Result<()> {
-        let mut table = self.wtx.open_table(TransactionLookup::definition())?;
-        table.insert(hash, (block_hash, index))?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(TransactionLookup::definition())?;
+                table.insert(hash, (block_hash, index))?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.transaction_lookup.insert(hash, (block_hash, index));
+            }
+        }
         Ok(())
     }
 }
@@ -576,8 +838,15 @@ impl AccountWriter for BatchWriter {
                 originals.insert(address, old);
             }
         }
-        let mut table = self.wtx.open_table(Accounts::definition())?;
-        table.insert(address, account)?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(Accounts::definition())?;
+                table.insert(address, account)?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.accounts.insert(address, account);
+            }
+        }
         self.touched_accounts.lock().unwrap().insert(address);
         Ok(())
     }
@@ -590,8 +859,15 @@ impl AccountWriter for BatchWriter {
                 originals.insert(address, old);
             }
         }
-        let mut table = self.wtx.open_table(Accounts::definition())?;
-        table.remove(address)?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(Accounts::definition())?;
+                table.remove(address)?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.accounts.remove(&address);
+            }
+        }
         self.touched_accounts.lock().unwrap().insert(address);
         Ok(())
     }
@@ -622,11 +898,22 @@ impl StorageWriter for BatchWriter {
                 originals.insert((address, slot), old);
             }
         }
-        let mut table = self.wtx.open_table(Storages::definition())?;
-        if value == U256::ZERO {
-            let _ = table.remove((address, slot))?;
-        } else {
-            table.insert((address, slot), value)?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(Storages::definition())?;
+                if value == U256::ZERO {
+                    let _ = table.remove((address, slot))?;
+                } else {
+                    table.insert((address, slot), value)?;
+                }
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                if value == U256::ZERO {
+                    overlay.storages.remove(&(address, slot));
+                } else {
+                    overlay.storages.insert((address, slot), value);
+                }
+            }
         }
         self.touched_storages.lock().unwrap().insert((address, slot), value);
         
@@ -653,33 +940,67 @@ impl StorageWriter for BatchWriter {
 
 impl BytecodeWriter for BatchWriter {
     fn insert_bytecode(&self, code_hash: B256, bytecode: Bytes) -> Result<()> {
-        let mut table = self.wtx.open_table(Bytecodes::definition())?;
-        table.insert(code_hash, bytecode)?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(Bytecodes::definition())?;
+                table.insert(code_hash, bytecode)?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.bytecodes.insert(code_hash, bytecode);
+            }
+        }
         Ok(())
     }
 }
 
 impl StateProvider for BatchWriter {
     fn plain_state(&self, address: Address) -> anyhow::Result<Option<Bytes>> {
-        let table = self.wtx.open_table(PlainState::definition())?;
-        if let Some(value) = table.get(address)? {
-            return Ok(Some(value.value()));
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let table = wtx.open_table(PlainState::definition())?;
+                if let Some(value) = table.get(address)? {
+                    return Ok(Some(value.value()));
+                }
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                if let Some(bytes) = overlay.plain_state.get(&address) {
+                    return Ok(Some(bytes.clone()));
+                }
+            }
         }
         self.read_provider.plain_state(address)
     }
 
     fn hashed_state(&self, hash: B256) -> anyhow::Result<Option<Bytes>> {
-        let table = self.wtx.open_table(HashedState::definition())?;
-        if let Some(value) = table.get(hash)? {
-            return Ok(Some(value.value()));
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let table = wtx.open_table(HashedState::definition())?;
+                if let Some(value) = table.get(hash)? {
+                    return Ok(Some(value.value()));
+                }
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                if let Some(bytes) = overlay.hashed_state.get(&hash) {
+                    return Ok(Some(bytes.clone()));
+                }
+            }
         }
         self.read_provider.hashed_state(hash)
     }
 
     fn trie_node(&self, hash: B256) -> anyhow::Result<Option<Bytes>> {
-        let table = self.wtx.open_table(TrieNodes::definition())?;
-        if let Some(value) = table.get(hash)? {
-            return Ok(Some(value.value()));
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let table = wtx.open_table(TrieNodes::definition())?;
+                if let Some(value) = table.get(hash)? {
+                    return Ok(Some(value.value()));
+                }
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                if let Some(bytes) = overlay.trie_nodes.get(&hash) {
+                    return Ok(Some(bytes.clone()));
+                }
+            }
         }
         self.read_provider.trie_node(hash)
     }
@@ -687,58 +1008,115 @@ impl StateProvider for BatchWriter {
 
 impl StateWriter for BatchWriter {
     fn update_plain_state(&self, address: Address, state: Bytes) -> Result<()> {
-        let mut table = self.wtx.open_table(PlainState::definition())?;
-        table.insert(address, state)?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(PlainState::definition())?;
+                table.insert(address, state)?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.plain_state.insert(address, state);
+            }
+        }
         self.touched_accounts.lock().unwrap().insert(address);
         Ok(())
     }
 
     fn remove_plain_state(&self, address: Address) -> Result<()> {
-        let mut table = self.wtx.open_table(PlainState::definition())?;
-        table.remove(address)?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(PlainState::definition())?;
+                table.remove(address)?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.plain_state.remove(&address);
+            }
+        }
         self.touched_accounts.lock().unwrap().insert(address);
         Ok(())
     }
 
     fn update_hashed_state(&self, hash: B256, state: Bytes) -> Result<()> {
-        let mut table = self.wtx.open_table(HashedState::definition())?;
-        table.insert(hash, state)?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(HashedState::definition())?;
+                table.insert(hash, state)?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.hashed_state.insert(hash, state);
+            }
+        }
         Ok(())
     }
 
     fn update_trie_node(&self, hash: B256, node: Bytes) -> Result<()> {
-        let mut table = self.wtx.open_table(TrieNodes::definition())?;
-        table.insert(hash, node.clone())?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(TrieNodes::definition())?;
+                table.insert(hash, node.clone())?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.trie_nodes.insert(hash, node.clone());
+            }
+        }
         Ok(())
     }
 }
 
 impl ChangeSetWriter for BatchWriter {
     fn insert_account_change_set(&self, number: u64, change_set: Vec<(Address, Option<Bytes>)>) -> Result<()> {
-        let mut table = self.wtx.open_table(AccountChangeSets::definition())?;
-        table.insert(number, change_set)?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(AccountChangeSets::definition())?;
+                table.insert(number, change_set)?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.account_changes.insert(number, change_set);
+            }
+        }
         Ok(())
     }
 
     fn insert_storage_change_set(&self, number: u64, change_set: Vec<(Address, B256, U256)>) -> Result<()> {
-        let mut table = self.wtx.open_table(StorageChangeSets::definition())?;
-        table.insert(number, change_set)?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(StorageChangeSets::definition())?;
+                table.insert(number, change_set)?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.storage_changes.insert(number, change_set);
+            }
+        }
         Ok(())
     }
 
     fn remove_change_set(&self, number: u64) -> Result<()> {
-        let mut acs_table = self.wtx.open_table(AccountChangeSets::definition())?;
-        acs_table.remove(number)?;
-        let mut scs_table = self.wtx.open_table(StorageChangeSets::definition())?;
-        scs_table.remove(number)?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut acs_table = wtx.open_table(AccountChangeSets::definition())?;
+                acs_table.remove(number)?;
+                let mut scs_table = wtx.open_table(StorageChangeSets::definition())?;
+                scs_table.remove(number)?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.account_changes.remove(&number);
+                overlay.storage_changes.remove(&number);
+            }
+        }
         Ok(())
     }
 }
 
 impl MetadataWriter for BatchWriter {
     fn set_metadata(&self, key: String, value: Bytes) -> Result<()> {
-        let mut table = self.wtx.open_table(Metadata::definition())?;
-        table.insert(key, value)?;
+        match &self.handle {
+            TransactionHandle::Write(wtx) => {
+                let mut table = wtx.open_table(Metadata::definition())?;
+                table.insert(key, value)?;
+            }
+            TransactionHandle::Simulation(_, overlay) => {
+                overlay.metadata.insert(key, value);
+            }
+        }
         Ok(())
     }
 }

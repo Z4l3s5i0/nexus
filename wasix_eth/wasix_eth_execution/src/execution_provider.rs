@@ -826,7 +826,7 @@ impl ExecutionProvider for EthExecutionProvider {
         };
 
         // Reuse execute_block logic but don't commit
-        let batch = self.write_storage.begin_batch()?;
+        let batch = self.write_storage.begin_simulation_batch()?;
         let (finalized_block, receipts, metas) = self.execute_block_with_batch(block, &batch, Some(parent_header.state_root), true, interruption_token)?;
         
         let account_changes = batch.collect_account_changes();
