@@ -85,6 +85,7 @@ pub struct Engine {
     pub forkchoice_validator: ForkchoiceValidator,
     pub mempool_listener: Arc<MempoolListener>,
     pub sync_registry: Arc<SyncRegistry>,
+    pub reorg_handler: Arc<ReorgHandler>,
 }
 
 
@@ -149,7 +150,7 @@ impl Engine {
         chain: Arc<dyn ChainManager>,
         canonical: Arc<CanonicalState>,
         block_tree: Arc<BlockTree>,
-        _reorg_handler: Arc<ReorgHandler>,
+        reorg_handler: Arc<ReorgHandler>,
         forkchoice_validator: ForkchoiceValidator,
         mempool_listener: Arc<MempoolListener>,
         sync_registry: Arc<SyncRegistry>,
@@ -198,6 +199,7 @@ impl Engine {
             forkchoice_validator,
             mempool_listener,
             sync_registry,
+            reorg_handler
         };
 
         engine
@@ -578,16 +580,22 @@ impl Engine {
                             // 3. Mark the new branch as canonical SECOND
                             if !context.new_canonical_blocks.is_empty() {
                                 // 3.1. Ensure all blocks in context are in main storage and their state is committed
+                                let mut blocks_to_execute = Vec::new();
                                 for block in &context.new_canonical_blocks {
                                     let hash = block.header.hash_slow();
                                     if self.read_storage.block_body_by_hash(hash).ok().flatten().is_none() {
                                         // Block is in Payloads but not in main storage.
                                         // We MUST re-execute and COMMIT the state changes to the database
                                         // so that subsequent transactions in the mempool see the correct nonces.
-                                        debug!("[Engine] Re-executing and committing block {} from Payloads", hash);
-                                        self.execution.execute_block_with_commit(block.clone(), true)
-                                            .map_err(|e| RpcError::Internal(format!("Failed to execute block from payload during promotion: {}", e)))?;
+                                        debug!("[Engine] Queuing block {} from Payloads for batched re-execution", hash);
+                                        blocks_to_execute.push(block.clone());
                                     }
+                                }
+
+                                if !blocks_to_execute.is_empty() {
+                                    info!("[Engine] Re-executing and committing {} blocks from Payloads in a single batch", blocks_to_execute.len());
+                                    self.execution.execute_blocks_with_batch(blocks_to_execute)
+                                        .map_err(|e| RpcError::Internal(format!("Failed to execute blocks from payload during promotion: {}", e)))?;
                                 }
 
                                 if let Err(e) = self.chain.mark_branch_canonical(&context.new_canonical_blocks).await {

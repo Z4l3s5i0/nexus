@@ -20,6 +20,7 @@ pub trait ExecutionProvider: Send + Sync {
     fn execute_block_with_state_root(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_block_with_state_root_and_building(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_block_with_batch(&self, block: Block<Transaction>, batch: &BatchWriter, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
+    fn execute_blocks_with_batch(&self, blocks: Vec<Block<Transaction>>) -> Result<()>;
     fn execute_block_for_payload(
         &self,
         transactions: Vec<Transaction>,
@@ -564,6 +565,35 @@ impl ExecutionProvider for EthExecutionProvider {
         }
         
         Ok((executed_block, receipts, metas))
+    }
+
+    fn execute_blocks_with_batch(&self, blocks: Vec<Block<Transaction>>) -> Result<()> {
+        if blocks.is_empty() {
+            return Ok(());
+        }
+
+        self.write_storage.clear_tracking();
+        let batch = self.write_storage.begin_batch()?;
+
+        for block in blocks {
+            let (executed_block, _receipts, metas) = self.execute_block_with_batch(block, &batch, None, false, None)?;
+
+            // Persist ChangeSets for this block
+            let account_changes = batch.collect_account_changes();
+            let storage_changes = batch.collect_storage_changes();
+            batch.insert_account_change_set(executed_block.header.number, account_changes)?;
+            batch.insert_storage_change_set(executed_block.header.number, storage_changes)?;
+
+            for (i, meta) in metas.iter().enumerate() {
+                batch.insert_receipt_meta(executed_block.header.hash_slow(), i as u64, meta.clone())?;
+            }
+            
+            // Clear tracking for next block in batch
+            batch.clear_tracking();
+        }
+
+        batch.commit()?;
+        Ok(())
     }
 
     fn execute_block_with_batch(&self, mut block: Block<Transaction>, batch: &BatchWriter, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
