@@ -16,8 +16,31 @@ use wasix_eth_types::{Block, BlockId, ChainConfig, PayloadStatus, PayloadStatusE
 use wasix_eth_utils::{debug, error, info, exp, metrics::BLOCKS_IMPORTED_TOTAL};
 use crate::engine::engine::EngineEvent;
 
+struct ProcessingPayloadGuard {
+    hash: B256,
+    processing_payloads: Arc<DashSet<B256>>,
+    in_flight_results: Arc<DashMap<B256, broadcast::Sender<PayloadStatus>>>,
+    execution_cancellation_tokens: Arc<DashMap<u64, wasix_eth_types::CancellationToken>>,
+    block_number: u64,
+    token: wasix_eth_types::CancellationToken,
+}
+
+impl Drop for ProcessingPayloadGuard {
+    fn drop(&mut self) {
+        self.processing_payloads.remove(&self.hash);
+        self.in_flight_results.remove(&self.hash);
+        // Only remove from execution_cancellation_tokens if it's still our token
+        if let Some(current_token) = self.execution_cancellation_tokens.get(&self.block_number) {
+            if current_token.id() == self.token.id() {
+                drop(current_token);
+                self.execution_cancellation_tokens.remove(&self.block_number);
+            }
+        }
+    }
+}
 #[derive(Clone)]
 pub struct PayloadProcessor {
+    pub execution_cancellation_tokens: Arc<DashMap<u64, wasix_eth_types::CancellationToken>>,
     pub processing_payloads: Arc<DashSet<B256>>,
     pub in_flight_results: Arc<DashMap<B256, broadcast::Sender<PayloadStatus>>>,
     pub block_tree: Arc<BlockTree>,
@@ -116,16 +139,25 @@ impl PayloadProcessor {
         let (tx, _) = broadcast::channel(1);
         self.in_flight_results.insert(actual_hash, tx.clone());
 
-        // Helper to broadcast result and cleanup
-        let cleanup = |res: RpcResult<PayloadStatus>| {
-            self.processing_payloads.remove(&actual_hash);
-            self.in_flight_results.remove(&actual_hash);
-            if let Ok(ref status) = res {
-                let _ = tx.send(status.clone());
-            }
-            res
-        };
+        // If a new payload arrives for the same height, cancel the old one.
+        let block_number = block.header.number;
+        if let Some((_, old_token)) = self.execution_cancellation_tokens.remove(&block_number) {
+            debug!("[PayloadProcessor] Cancelling existing execution for block number {}", block_number);
+            old_token.cancel();
+        }
+        let token = wasix_eth_types::CancellationToken::new();
+        self.execution_cancellation_tokens.insert(block_number, token.clone());
 
+        // Helper to broadcast result and cleanup
+        // Use a guard to ensure cleanup on drop (e.g. if the future is dropped due to timeout)
+        let _guard = ProcessingPayloadGuard {
+            hash: actual_hash,
+            processing_payloads: self.processing_payloads.clone(),
+            in_flight_results: self.in_flight_results.clone(),
+            execution_cancellation_tokens: self.execution_cancellation_tokens.clone(),
+            block_number,
+            token: token.clone(),
+        };
         // Cancun validation (versioned hashes)
         if active_fork >= Hardfork::Cancun {
             if let Err(e) = self.consensus.validate_cancun(&block, expected_blob_versioned_hashes.as_deref()) {
@@ -141,10 +173,13 @@ impl PayloadProcessor {
                 }
                 
                 let latest_valid = self.chain.get_latest_valid_ancestor(block.header.parent_hash).await;
-                return cleanup(Ok(PayloadStatus {
+
+                let status = PayloadStatus {
                     status: PayloadStatusEnum::Invalid { validation_error: e },
                     latest_valid_hash: latest_valid,
-                }));
+                };
+                let _ = tx.send(status.clone());
+                return Ok(status);
             }
             if let Err(e) = self.consensus.validate_parent_beacon_block_root(&block.header, parent_beacon_block_root) {
                 error!("[PayloadProcessor] Cancun validation (parent beacon block root) failed for block {}: {}", actual_hash, e);
@@ -159,29 +194,35 @@ impl PayloadProcessor {
                 }
 
                 let latest_valid = self.chain.get_latest_valid_ancestor(block.header.parent_hash).await;
-                return cleanup(Ok(PayloadStatus {
+                let status = PayloadStatus {
                     status: PayloadStatusEnum::Invalid { validation_error: e },
                     latest_valid_hash: latest_valid,
-                }));
+                };
+                let _ = tx.send(status.clone());
+                return Ok(status);
             }
         }
 
         // Idempotency check: If block is in storage, it's VALID
         if let Ok(Some(_)) = self.read_storage.block_body_by_hash(actual_hash) {
-            return cleanup(Ok(PayloadStatus {
+            let status = PayloadStatus {
                 status: PayloadStatusEnum::Valid,
                 latest_valid_hash: Some(actual_hash)
-            }));
+            };
+            let _ = tx.send(status.clone());
+            return Ok(status);
         }
 
         // Check if it's a known invalid block
         if let Some(reason) = self.chain.get_invalidation_reason(actual_hash).await {
             if reason == InvalidationReason::Hard {
                 let latest_valid = self.chain.get_latest_valid_ancestor(block.header.parent_hash).await;
-                return cleanup(Ok(PayloadStatus {
+                let status = PayloadStatus {
                     status: PayloadStatusEnum::Invalid { validation_error: "Block is known to be invalid".to_string() },
                     latest_valid_hash: latest_valid,
-                }));
+                };
+                let _ = tx.send(status.clone());
+                return Ok(status);
             }
         }
 
@@ -195,25 +236,28 @@ impl PayloadProcessor {
                 
                 // Also mark this block as invalid
                 self.chain.add_invalid_block(actual_hash, parent_hash, InvalidationReason::Hard).await;
-                
-                return cleanup(Ok(PayloadStatus {
+
+                let status = PayloadStatus {
                     status: PayloadStatusEnum::Invalid { validation_error: "Parent block is known to be invalid".to_string() },
                     latest_valid_hash: latest_valid,
-                }));
+                };
+                let _ = tx.send(status.clone());
+                return Ok(status);
             } else if reason == InvalidationReason::Soft {
                  let latest_valid = self.chain.get_latest_valid_ancestor(parent_hash).await;
                  info!("[PayloadProcessor] rejecting payload {:?} because parent {:?} is known invalid (Soft). Latest valid: {:?}", actual_hash, parent_hash, latest_valid);
 
                 self.chain.add_invalid_block(actual_hash, parent_hash, InvalidationReason::Soft).await;
 
-                 return cleanup(Ok(PayloadStatus {
+                let status = PayloadStatus {
                     status: PayloadStatusEnum::Invalid { validation_error: "Parent block is known to be invalid (Soft)".to_string() },
                     latest_valid_hash: latest_valid,
-                 }));
-            }
+                 };
+                let _ = tx.send(status.clone());
+                return Ok(status);            }
         }
 
-        let result = match self.new_payload_internal_inner(block.clone(), expected_block_hash, expected_blob_versioned_hashes, parent_beacon_block_root, is_local).await {
+        let result = match self.new_payload_internal_inner(block.clone(), expected_block_hash, expected_blob_versioned_hashes, parent_beacon_block_root, is_local, token.clone()).await {
             Ok(res) => Ok(res),
             Err(e) => {
                 error!("[PayloadProcessor] internal error during payload processing: {}", e);
@@ -221,10 +265,8 @@ impl PayloadProcessor {
             }
         };
 
-        let result = cleanup(result);
-
         if let Ok(ref status) = result {
-
+            let _ = tx.send(status.clone());
             if status.status == PayloadStatusEnum::Valid {
                 self.revalidate_dependent_payloads(actual_hash).await;
                 
@@ -380,6 +422,7 @@ impl PayloadProcessor {
         expected_blob_versioned_hashes: Option<Vec<B256>>,
         parent_beacon_block_root: Option<B256>,
         is_local: bool,
+        token: wasix_eth_types::CancellationToken,
     ) -> RpcResult<PayloadStatus> {
         tokio::task::yield_now().await;
         let actual_hash = block.header.hash_slow();
@@ -600,9 +643,25 @@ impl PayloadProcessor {
         let block_clone = block.clone();
         
         let start_time = std::time::Instant::now();
-        let exec_result = tokio::task::spawn_blocking(move || {
-            execution.execute_block_with_state_root(block_clone, true, parent_state_root)
-        }).await.map_err(|e| RpcError::Internal(format!("Execution task panicked: {}", e)))?;
+        let timeout_duration = std::time::Duration::from_secs(4);
+
+        let exec_result_wrapped = tokio::time::timeout(timeout_duration, tokio::task::spawn_blocking(move || {
+            execution.execute_block_with_state_root_and_building(block_clone, false, parent_state_root, false, Some(token))
+        })).await;
+
+        let exec_result = match exec_result_wrapped {
+            Ok(spawn_res) => {
+                spawn_res.map_err(|e| RpcError::Internal(format!("Execution task panicked: {}", e)))?
+            },
+            Err(_) => {
+                error!("[PayloadProcessor] Execution timed out for block {}", block.header.number);
+                let latest_valid = self.chain.get_latest_valid_ancestor(parent_hash).await;
+                return Ok(PayloadStatus {
+                    status: PayloadStatusEnum::Invalid { validation_error: "Execution timeout".to_string() },
+                    latest_valid_hash: latest_valid,
+                });
+            }
+        };
         let elapsed = start_time.elapsed();
         info!("[PayloadProcessor] Block {} executed in {:?}", block.header.number, elapsed);
 
@@ -743,9 +802,25 @@ impl PayloadProcessor {
                             }
                             self.processing_payloads.insert(child_hash);
 
-                            let result = self.new_payload_internal_inner(block.clone(), child_hash, None, None, false).await;
 
-                            self.processing_payloads.remove(&child_hash);
+                            let token = wasix_eth_types::CancellationToken::new();
+                            let block_number = block.header.number;
+                            // Check for existing execution by block number.
+                            if let Some((_, old_token)) = self.execution_cancellation_tokens.remove(&block_number) {
+                                debug!("[PayloadProcessor] Cancelling existing execution for block number {}", block_number);
+                                old_token.cancel();
+                            }
+                            self.execution_cancellation_tokens.insert(block_number, token.clone());
+
+                            let _guard = ProcessingPayloadGuard {
+                                hash: child_hash,
+                                processing_payloads: self.processing_payloads.clone(),
+                                in_flight_results: self.in_flight_results.clone(),
+                                execution_cancellation_tokens: self.execution_cancellation_tokens.clone(),
+                                block_number,
+                                token: token.clone(),
+                            };
+                            let result = self.new_payload_internal_inner(block.clone(), child_hash, None, None, false, token.clone()).await;
 
                             match result {
                                 Ok(status) => {

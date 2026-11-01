@@ -110,9 +110,16 @@ impl PayloadBuilder {
         if attr.timestamp <= parent_block.header.timestamp {
             return Err(RpcError::InvalidPayloadAttributes("Invalid timestamp".to_string()));
         }
+        let token = CancellationToken::new();
+        {
+            let mut tokens = self.cancel_tokens.write().unwrap();
+            if let Some(old_token) = tokens.insert(id.clone(), token.clone()) {
+                old_token.cancel();
+            }
+        }
 
         // 4. Build initial empty payload
-        self.build_empty_payload(head_block_hash, attr.clone(), id.clone()).await?;
+        self.build_empty_payload(head_block_hash, attr.clone(), id.clone(), Some(token.clone())).await?;
 
 
         // Initialize build status and notify
@@ -124,14 +131,6 @@ impl PayloadBuilder {
 
         // 6. Start continuous building background task
         let builder = self.clone();
-        let token = CancellationToken::new();
-        {
-            let mut tokens = self.cancel_tokens.write().unwrap();
-            if let Some(old_token) = tokens.insert(id.clone(), token.clone()) {
-                old_token.cancel();
-            }
-        }
-
         let mut event_rx = self.event_tx.subscribe();
         tokio::spawn(async move {
             let start_time = std::time::Instant::now();
@@ -189,6 +188,7 @@ impl PayloadBuilder {
         head_block_hash: B256,
         attr: PayloadAttributes,
         id: PayloadId,
+        interruption_token: Option<CancellationToken>,
     ) -> RpcResult<()> {
         let parent_block = self.read_storage.block_by_hash(head_block_hash).map_err(|e| RpcError::Internal(e.to_string()))?
             .or_else(|| {
@@ -213,7 +213,7 @@ impl PayloadBuilder {
                 &parent_header_clone,
                 &attr_clone,
                 base_fee_per_gas,
-                None,
+                interruption_token
             )
         }).await {
             Ok(Ok(res)) => res,

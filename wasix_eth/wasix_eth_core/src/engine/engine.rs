@@ -182,8 +182,9 @@ impl Engine {
                 build_statuses: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
                 build_notify: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             },
-            payload_processor: PayloadProcessor { 
-                processing_payloads: processing_payloads.clone(), 
+            payload_processor: PayloadProcessor {
+                execution_cancellation_tokens: Arc::new(DashMap::new()),
+                processing_payloads: processing_payloads.clone(),
                 in_flight_results: in_flight_results.clone(),
                 block_tree: block_tree.clone(),
                 canonical: canonical.clone(),

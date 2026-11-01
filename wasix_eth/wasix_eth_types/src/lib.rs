@@ -116,11 +116,19 @@ use jsonrpsee::tokio;
 #[derive(Clone, Default, Debug)]
 pub struct CancellationToken {
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    id: u64,
 }
 
 impl CancellationToken {
     pub fn new() -> Self {
-        Self::default()
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self {
+            cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+        }
+    }
+    pub fn id(&self) -> u64 {
+        self.id
     }
     pub fn cancel(&self) {
         self.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
