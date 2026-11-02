@@ -17,30 +17,35 @@ use wasix_eth_utils::{debug, error, info, exp, metrics::BLOCKS_IMPORTED_TOTAL};
 use crate::engine::engine::EngineEvent;
 
 struct ProcessingPayloadGuard {
-    hash: B256,
     processing_payloads: Arc<DashSet<B256>>,
     in_flight_results: Arc<DashMap<B256, broadcast::Sender<PayloadStatus>>>,
-    execution_cancellation_tokens: Arc<DashMap<u64, wasix_eth_types::CancellationToken>>,
-    block_number: u64,
+    execution_cancellation_tokens: Arc<DashMap<B256, wasix_eth_types::CancellationToken>>,
+    block_hash: B256,
     token: wasix_eth_types::CancellationToken,
 }
 
 impl Drop for ProcessingPayloadGuard {
     fn drop(&mut self) {
-        self.processing_payloads.remove(&self.hash);
-        self.in_flight_results.remove(&self.hash);
+        self.processing_payloads.remove(&self.block_hash);
+        self.in_flight_results.remove(&self.block_hash);
         // Only remove from execution_cancellation_tokens if it's still our token
-        if let Some(current_token) = self.execution_cancellation_tokens.get(&self.block_number) {
+        if let Some(current_token) = self.execution_cancellation_tokens.get(&self.block_hash) {
             if current_token.id() == self.token.id() {
+                let id = self.token.id();
                 drop(current_token);
-                self.execution_cancellation_tokens.remove(&self.block_number);
+                self.execution_cancellation_tokens.remove(&self.block_hash);
+                info!("[PayloadProcessor] Guard dropped: token {} removed for block {:?}", id, self.block_hash);
+            } else {
+                debug!("[PayloadProcessor] Guard dropped: token ID mismatch for block {:?}, keeping current token", self.block_hash);
             }
+        } else {
+             debug!("[PayloadProcessor] Guard dropped: no active token for block {:?}", self.block_hash);
         }
     }
 }
 #[derive(Clone)]
 pub struct PayloadProcessor {
-    pub execution_cancellation_tokens: Arc<DashMap<u64, wasix_eth_types::CancellationToken>>,
+    pub execution_cancellation_tokens: Arc<DashMap<B256, wasix_eth_types::CancellationToken>>,
     pub processing_payloads: Arc<DashSet<B256>>,
     pub in_flight_results: Arc<DashMap<B256, broadcast::Sender<PayloadStatus>>>,
     pub block_tree: Arc<BlockTree>,
@@ -58,11 +63,19 @@ impl PayloadProcessor {
     pub async fn add_sync_target(&self, hash: B256, peer_id: Option<String>) {
         self.sync_registry.add_target(hash, peer_id, self.chain.clone()).await;
     }
-    pub fn abort_execution(&self, block_number: u64) {
-        if let Some(token) = self.execution_cancellation_tokens.get(&block_number) {
-            info!("[PayloadProcessor] Aborting execution of block number {}", block_number);
+    pub fn abort_execution(&self, block_hash: B256) {
+        if let Some(token) = self.execution_cancellation_tokens.get(&block_hash) {
+            info!("[PayloadProcessor] Aborting execution of block hash {:?}", block_hash);
             token.cancel();
         }
+    }
+
+    pub fn abort_all_executions(&self) {
+        info!("[PayloadProcessor] Aborting all active block executions");
+        for entry in self.execution_cancellation_tokens.iter() {
+            entry.value().cancel();
+        }
+        self.execution_cancellation_tokens.clear();
     }
 
     pub async fn new_payload_internal(
@@ -146,22 +159,37 @@ impl PayloadProcessor {
         self.in_flight_results.insert(actual_hash, tx.clone());
 
         // If a new payload arrives for the same height, cancel the old one.
+        // We still want this to avoid multiple executions for the same height.
         let block_number = block.header.number;
-        if let Some((_, old_token)) = self.execution_cancellation_tokens.remove(&block_number) {
-            debug!("[PayloadProcessor] Cancelling existing execution for block number {}", block_number);
-            old_token.cancel();
+        for entry in self.execution_cancellation_tokens.iter() {
+            let (hash, token) = entry.pair();
+            // We need to know the height of the block being executed to cancel by height.
+            // Since we don't have it easily here without another lookup, and aborting all on reorg
+            // is handled in Engine, we can keep hash-based cancellation.
+            // But for new_payload at same height, let's try to find it.
+            if let Ok(Some(header)) = self.read_storage.header(BlockId::Hash((*hash).into())) {
+                if header.number == block_number && *hash != actual_hash {
+                    debug!("[PayloadProcessor] Cancelling existing execution for block number {} (hash {:?})", block_number, hash);
+                    token.cancel();
+                }
+            } else if let Some((p, _, _, _)) = self.read_storage.get_payload_by_block_hash(*hash) {
+                if p.header.number == block_number && *hash != actual_hash {
+                    debug!("[PayloadProcessor] Cancelling existing execution for block number {} (hash {:?} from payload)", block_number, hash);
+                    token.cancel();
+                }
+            }
         }
+
         let token = wasix_eth_types::CancellationToken::new();
-        self.execution_cancellation_tokens.insert(block_number, token.clone());
+        self.execution_cancellation_tokens.insert(actual_hash, token.clone());
 
         // Helper to broadcast result and cleanup
         // Use a guard to ensure cleanup on drop (e.g. if the future is dropped due to timeout)
         let _guard = ProcessingPayloadGuard {
-            hash: actual_hash,
+            block_hash: actual_hash,
             processing_payloads: self.processing_payloads.clone(),
             in_flight_results: self.in_flight_results.clone(),
             execution_cancellation_tokens: self.execution_cancellation_tokens.clone(),
-            block_number,
             token: token.clone(),
         };
         // Cancun validation (versioned hashes)
@@ -649,23 +677,13 @@ impl PayloadProcessor {
         let block_clone = block.clone();
         
         let start_time = std::time::Instant::now();
-        let timeout_duration = std::time::Duration::from_secs(4);
 
-        let exec_result_wrapped = tokio::time::timeout(timeout_duration, tokio::task::spawn_blocking(move || {
-            execution.execute_block_with_state_root_and_building(block_clone, false, parent_state_root, false, Some(token))
-        })).await;
-
-        let exec_result = match exec_result_wrapped {
-            Ok(spawn_res) => {
-                spawn_res.map_err(|e| RpcError::Internal(format!("Execution task panicked: {}", e)))?
-            },
-            Err(_) => {
-                error!("[PayloadProcessor] Execution timed out for block {}", block.header.number);
-                let latest_valid = self.chain.get_latest_valid_ancestor(parent_hash).await;
-                return Ok(PayloadStatus {
-                    status: PayloadStatusEnum::Invalid { validation_error: "Execution timeout".to_string() },
-                    latest_valid_hash: latest_valid,
-                });
+        let exec_result = match tokio::task::spawn_blocking(move || {
+            execution.execute_block_with_state_root_and_building(block_clone, true, parent_state_root, false, Some(token))
+        }).await {
+            Ok(spawn_res) => spawn_res,
+            Err(e) => {
+                return Err(RpcError::Internal(format!("Execution task failed to join: {}", e)));
             }
         };
         let elapsed = start_time.elapsed();
@@ -768,6 +786,9 @@ impl PayloadProcessor {
             // Also remove payload as it's now officially a block
             let _ = batch.remove_payload_by_block_hash(block_hash);
 
+            // Note: Trie nodes were already committed in execute_block_with_state_root_and_building
+            // if we passed commit=true above.
+
             batch.commit().map_err(|e| RpcError::Internal(e.to_string()))?;
             info!("[PayloadProcessor] Block {} (hash: {}) successfully committed to storage", block_number, block_hash);
             Ok(())
@@ -810,20 +831,18 @@ impl PayloadProcessor {
 
 
                             let token = wasix_eth_types::CancellationToken::new();
-                            let block_number = block.header.number;
-                            // Check for existing execution by block number.
-                            if let Some((_, old_token)) = self.execution_cancellation_tokens.remove(&block_number) {
-                                debug!("[PayloadProcessor] Cancelling existing execution for block number {}", block_number);
+                            // Check for existing execution by hash.
+                            if let Some((_, old_token)) = self.execution_cancellation_tokens.remove(&child_hash) {
+                                debug!("[PayloadProcessor] Cancelling existing execution for block hash {:?}", child_hash);
                                 old_token.cancel();
                             }
-                            self.execution_cancellation_tokens.insert(block_number, token.clone());
+                            self.execution_cancellation_tokens.insert(child_hash, token.clone());
 
                             let _guard = ProcessingPayloadGuard {
-                                hash: child_hash,
+                                block_hash: child_hash,
                                 processing_payloads: self.processing_payloads.clone(),
                                 in_flight_results: self.in_flight_results.clone(),
                                 execution_cancellation_tokens: self.execution_cancellation_tokens.clone(),
-                                block_number,
                                 token: token.clone(),
                             };
                             let result = self.new_payload_internal_inner(block.clone(), child_hash, None, None, false, token.clone()).await;

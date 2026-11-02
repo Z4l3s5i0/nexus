@@ -133,7 +133,7 @@ pub trait StateProvider: Send + Sync {
             let data = match source {
                 NodeSource::Hash(hash) => match self.trie_node(hash)? {
                     Some(bytes) => bytes.to_vec(),
-                    None => continue,
+                    None => return Err(anyhow::anyhow!("Trie node not found during iteration: {:?}", hash)),
                 },
                 NodeSource::Raw(raw) => raw,
             };
@@ -141,7 +141,7 @@ pub trait StateProvider: Send + Sync {
             let mut data_slice = &data[..];
             let node = match MyTrieNode::decode(&mut data_slice) {
                 Ok(n) => n,
-                Err(_) => continue,
+                Err(e) => return Err(anyhow::anyhow!("Failed to decode trie node: {:?}", e)),
             };
 
             match node {

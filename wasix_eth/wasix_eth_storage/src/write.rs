@@ -251,6 +251,7 @@ impl BatchWriter {
     }
 
     pub fn commit(self) -> Result<()> {
+        debug!("[BatchWriter] Committing redb transaction");
         self.wtx.commit()?;
         Ok(())
     }
@@ -700,6 +701,7 @@ impl StateWriter for BatchWriter {
     }
 
     fn update_trie_node(&self, hash: B256, node: Bytes) -> Result<()> {
+        debug!("[BatchWriter] update_trie_node: hash={:?}, len={}", hash, node.len());
         let mut table = self.wtx.open_table(TrieNodes::definition())?;
         table.insert(hash, node.clone())?;
         Ok(())

@@ -565,6 +565,7 @@ impl<'a, S: StateProvider + StateWriter> EthTrie<'a, S> {
             match self.state.trie_node(hash)? {
                 Some(bytes) => bytes.to_vec(),
                 None => {
+                    wasix_eth_utils::error!("[Trie] Node not found in cache, dirty or DB: {:?}", hash);
                     return Err(anyhow::anyhow!("Trie node not found: {:?}", hash));
                 }
             }

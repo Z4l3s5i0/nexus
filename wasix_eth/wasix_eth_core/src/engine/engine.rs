@@ -522,9 +522,9 @@ impl Engine {
 
         // Save current forkchoice state for potential rollback
         let (old_state, old_head_number) = self.canonical.get_state().await;
-        // If we are currently executing a block at a different fork, abort it
+        // If we are currently executing the old head block, abort it
         if forkchoice_state.head_block_hash != old_state.head_block_hash {
-            self.payload_processor.abort_execution(head_number);
+            self.payload_processor.abort_execution(old_state.head_block_hash);
         }
         // Update forkchoice in storage
         if head_number == 0 && forkchoice_state.head_block_hash != B256::ZERO {
@@ -569,6 +569,9 @@ impl Engine {
                                     .unwrap_or(0);
                                 
                                 info!("[Engine] Reorg detected! Reverting chain to height {} (common ancestor: {:?})", common_ancestor_height, context.common_ancestor_hash);
+                                
+                                // Cancel ALL ongoing executions to prevent node freeze during reorg
+                                self.payload_processor.abort_all_executions();
 
                                 // Physically roll back state to common ancestor
                                 if let Err(e) = self.revert_to_height(common_ancestor_height).await {
