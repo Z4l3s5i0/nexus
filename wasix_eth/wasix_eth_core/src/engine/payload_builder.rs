@@ -206,14 +206,16 @@ impl PayloadBuilder {
         let execution = Arc::clone(&self.execution);
         let parent_header_clone = parent_block.header.clone();
         let attr_clone = attr.clone();
-        
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+
         let (finalized_block, receipts, metas) = match tokio::task::spawn_blocking(move || {
             execution.execute_block_for_payload(
                 vec![], // Empty transaction set
                 &parent_header_clone,
                 &attr_clone,
                 base_fee_per_gas,
-                interruption_token
+                interruption_token,
+                Some(deadline)
             )
         }).await {
             Ok(Ok(res)) => res,
@@ -370,6 +372,7 @@ impl PayloadBuilder {
         let parent_header_clone = parent_block.header.clone();
         let attr_clone = attr.clone();
         let token_clone = token.clone();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
         let (finalized_block, receipts, metas) = tokio::task::spawn_blocking(move || {
             execution.execute_block_for_payload(
                 transactions,
@@ -377,6 +380,7 @@ impl PayloadBuilder {
                 &attr_clone,
                 base_fee_per_gas,
                 Some(token_clone),
+                Some(deadline)
             )
         }).await.map_err(|e| RpcError::Internal(format!("Payload rebuilding task panicked: {}", e)))?
         .map_err(|e| RpcError::Internal(e.to_string()))?;

@@ -58,6 +58,12 @@ impl PayloadProcessor {
     pub async fn add_sync_target(&self, hash: B256, peer_id: Option<String>) {
         self.sync_registry.add_target(hash, peer_id, self.chain.clone()).await;
     }
+    pub fn abort_execution(&self, block_number: u64) {
+        if let Some(token) = self.execution_cancellation_tokens.get(&block_number) {
+            info!("[PayloadProcessor] Aborting execution of block number {}", block_number);
+            token.cancel();
+        }
+    }
 
     pub async fn new_payload_internal(
         &self,

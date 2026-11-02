@@ -522,7 +522,10 @@ impl Engine {
 
         // Save current forkchoice state for potential rollback
         let (old_state, old_head_number) = self.canonical.get_state().await;
-
+        // If we are currently executing a block at a different fork, abort it
+        if forkchoice_state.head_block_hash != old_state.head_block_hash {
+            self.payload_processor.abort_execution(head_number);
+        }
         // Update forkchoice in storage
         if head_number == 0 && forkchoice_state.head_block_hash != B256::ZERO {
              head_number = self.read_storage.block_number(forkchoice_state.head_block_hash).ok().flatten().unwrap_or(0);
