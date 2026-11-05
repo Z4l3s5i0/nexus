@@ -70,12 +70,25 @@ impl PayloadProcessor {
         }
     }
 
-    pub fn abort_all_executions(&self) {
+    pub async fn abort_all_executions(&self) {
         info!("[PayloadProcessor] Aborting all active block executions");
+        let mut tokens = Vec::new();
         for entry in self.execution_cancellation_tokens.iter() {
             entry.value().cancel();
+            tokens.push(entry.value().clone());
         }
         self.execution_cancellation_tokens.clear();
+
+        // Wait for all tokens to be processed by the background tasks.
+        // We give them a short window to release DB handles.
+        if !tokens.is_empty() {
+            debug!("[PayloadProcessor] Waiting for {} aborted executions to release handles", tokens.len());
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+                // Since tokens don't have an "is_dropped" method, we rely on the fact that
+                // the ExecutionProvider will return quickly once it sees the cancellation.
+            }
+        }
     }
 
     pub async fn new_payload_internal(

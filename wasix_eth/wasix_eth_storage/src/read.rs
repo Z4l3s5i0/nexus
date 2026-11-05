@@ -727,6 +727,10 @@ impl StateWriter for DatabaseReadProvider {
     fn update_trie_node(&self, _hash: B256, _node: Bytes) -> anyhow::Result<()> {
         Err(anyhow::anyhow!("DatabaseReadProvider is read-only"))
     }
+
+    fn update_trie_nodes(&self, _nodes: Vec<(B256, Bytes)>) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!("DatabaseReadProvider is read-only"))
+    }
 }
 
 impl StorageProvider for DatabaseReadProvider {

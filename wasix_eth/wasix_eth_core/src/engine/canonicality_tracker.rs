@@ -4,6 +4,7 @@ use wasix_eth_storage::{BlockProvider, BlockWriter};
 use wasix_eth_storage::read::DatabaseReadProvider;
 use wasix_eth_storage::write::DatabaseWriteProvider;
 use wasix_eth_types::ForkchoiceState;
+use wasix_eth_utils::error;
 
 pub struct CanonicalState {
     write_storage: DatabaseWriteProvider,
@@ -59,10 +60,20 @@ impl CanonicalState {
         lock.0.head_block_hash = hash;
         lock.1 = number;
         let state = lock.0;
+        drop(lock);
+
         let storage = self.write_storage.clone();
-        tokio::task::spawn_blocking(move || {
-            storage.update_forkchoice(state.head_block_hash, Some(state.safe_block_hash), Some(state.finalized_block_hash))
-        }).await.map_err(|e| anyhow::anyhow!("Storage task panicked: {}", e))??;
+        tokio::spawn(async move {
+            let res = tokio::task::spawn_blocking(move || {
+                storage.update_forkchoice(state.head_block_hash, Some(state.safe_block_hash), Some(state.finalized_block_hash))
+            }).await;
+            
+            if let Err(e) = res {
+                error!("Storage task panicked during head update: {}", e);
+            } else if let Ok(Err(e)) = res {
+                error!("Storage error during head update: {}", e);
+            }
+        });
         Ok(())
     }
 
@@ -73,10 +84,20 @@ impl CanonicalState {
         }
         lock.0.safe_block_hash = hash;
         let state = lock.0;
+        drop(lock);
+
         let storage = self.write_storage.clone();
-        tokio::task::spawn_blocking(move || {
-            storage.update_forkchoice(state.head_block_hash, Some(state.safe_block_hash), Some(state.finalized_block_hash))
-        }).await.map_err(|e| anyhow::anyhow!("Storage task panicked: {}", e))??;
+        tokio::spawn(async move {
+            let res = tokio::task::spawn_blocking(move || {
+                storage.update_forkchoice(state.head_block_hash, Some(state.safe_block_hash), Some(state.finalized_block_hash))
+            }).await;
+
+            if let Err(e) = res {
+                error!("Storage task panicked during safe update: {}", e);
+            } else if let Ok(Err(e)) = res {
+                error!("Storage error during safe update: {}", e);
+            }
+        });
         Ok(())
     }
 
@@ -87,10 +108,20 @@ impl CanonicalState {
         }
         lock.0.finalized_block_hash = hash;
         let state = lock.0;
+        drop(lock);
+
         let storage = self.write_storage.clone();
-        tokio::task::spawn_blocking(move || {
-            storage.update_forkchoice(state.head_block_hash, Some(state.safe_block_hash), Some(state.finalized_block_hash))
-        }).await.map_err(|e| anyhow::anyhow!("Storage task panicked: {}", e))??;
+        tokio::spawn(async move {
+            let res = tokio::task::spawn_blocking(move || {
+                storage.update_forkchoice(state.head_block_hash, Some(state.safe_block_hash), Some(state.finalized_block_hash))
+            }).await;
+
+            if let Err(e) = res {
+                error!("Storage task panicked during finalized update: {}", e);
+            } else if let Ok(Err(e)) = res {
+                error!("Storage error during finalized update: {}", e);
+            }
+        });
         Ok(())
     }
 
@@ -100,10 +131,20 @@ impl CanonicalState {
             return Ok(());
         }
         *lock = (state, head_number);
+        drop(lock);
+
         let storage = self.write_storage.clone();
-        tokio::task::spawn_blocking(move || {
-            storage.update_forkchoice(state.head_block_hash, Some(state.safe_block_hash), Some(state.finalized_block_hash))
-        }).await.map_err(|e| anyhow::anyhow!("Storage task panicked: {}", e))??;
+        tokio::spawn(async move {
+            let res = tokio::task::spawn_blocking(move || {
+                storage.update_forkchoice(state.head_block_hash, Some(state.safe_block_hash), Some(state.finalized_block_hash))
+            }).await;
+
+            if let Err(e) = res {
+                error!("Storage task panicked during state update: {}", e);
+            } else if let Ok(Err(e)) = res {
+                error!("Storage error during state update: {}", e);
+            }
+        });
         Ok(())
     }
 }

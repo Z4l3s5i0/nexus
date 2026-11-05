@@ -173,7 +173,7 @@ impl Engine {
                 execution: execution.clone(),
                 mempool: mempool.clone(),
                 event_tx: event_tx.clone(),
-                build_lock: Arc::new(tokio::sync::Mutex::new(())),
+                build_locks: Arc::new(DashMap::new()),
                 cancel_tokens: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
                 rebuild_interruption_tokens: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
                 in_flight_interruptions: Arc::new(DashSet::new()),
@@ -562,7 +562,7 @@ impl Engine {
                                 info!("[Engine] Reorg detected! Attempting Fast Switch to hash {:?}", forkchoice_state.head_block_hash);
                                 
                                 // Cancel ALL ongoing executions to prevent node freeze during reorg
-                                self.payload_processor.abort_all_executions();
+                                self.payload_processor.abort_all_executions().await;
 
                                 let mut fast_switch_success = false;
                                 if let Ok(Some(state_root)) = self.read_storage.state_root(forkchoice_state.head_block_hash) {
@@ -594,47 +594,71 @@ impl Engine {
                                 }
 
                                 self.handle_reorgs_for_mempool(forkchoice_state, old_state.head_block_hash, context.common_ancestor_hash).await;
-                                // Revalidate mempool after reorg
-                                self.mempool.revalidate(&self.read_storage, None).await;
+                                // Revalidate mempool after reorg asynchronously to avoid blocking the critical path
+                                let mempool = self.mempool.clone();
+                                let read_storage = self.read_storage.clone();
+                                tokio::spawn(async move {
+                                    mempool.revalidate(&read_storage, None).await;
+                                });
                             }
 
-                            // 3. Mark the new branch as canonical SECOND
+                            // 3. Handle canonical updates and re-execution
                             if !context.new_canonical_blocks.is_empty() {
-                                // 3.1. Ensure all blocks in context are in main storage and their state is committed
-                                let mut blocks_to_execute = Vec::new();
-                                for block in &context.new_canonical_blocks {
-                                    let hash = block.header.hash_slow();
-                                    if self.read_storage.block_body_by_hash(hash).ok().flatten().is_none() {
-                                        // Block is in Payloads but not in main storage.
-                                        // We MUST re-execute and COMMIT the state changes to the database
-                                        // so that subsequent transactions in the mempool see the correct nonces.
-                                        debug!("[Engine] Queuing block {} from Payloads for batched re-execution", hash);
-                                        blocks_to_execute.push(block.clone());
+                                let engine = Arc::new(self.clone());
+                                let context_cloned = context.clone();
+                                let forkchoice_state_cloned = forkchoice_state.clone();
+
+                                tokio::spawn(async move {
+                                    // 3.1. Ensure all blocks in context are in main storage and their state is committed
+                                    let mut blocks_to_execute = Vec::new();
+                                    for block in &context_cloned.new_canonical_blocks {
+                                        let hash = block.header.hash_slow();
+                                        if engine.read_storage.block_body_by_hash(hash).ok().flatten().is_none() {
+                                            // Block is in Payloads but not in main storage.
+                                            // We MUST re-execute and COMMIT the state changes to the database
+                                            // so that subsequent transactions in the mempool see the correct nonces.
+                                            debug!("[Engine] Queuing block {} from Payloads for background re-execution", hash);
+                                            blocks_to_execute.push(block.clone());
+                                        }
                                     }
-                                }
 
-                                if !blocks_to_execute.is_empty() {
-                                    info!("[Engine] Re-executing and committing {} blocks from Payloads in a single batch", blocks_to_execute.len());
-                                    self.execution.execute_blocks_with_batch(blocks_to_execute)
-                                        .map_err(|e| RpcError::Internal(format!("Failed to execute blocks from payload during promotion: {}", e)))?;
-                                }
+                                    if !blocks_to_execute.is_empty() {
+                                        info!("[Engine] Re-executing and committing {} blocks from Payloads in background", blocks_to_execute.len());
+                                        if let Err(e) = engine.execution.execute_blocks_with_batch(blocks_to_execute.clone()) {
+                                            error!("[Engine] Background promotion failed during execution: {}", e);
+                                            // Robust recovery: mark the first block that failed (and its descendants) as invalid.
+                                            // We don't know exactly which block failed if it was a batch, 
+                                            // but marking the first one in the batch is a safe bet for the whole branch.
+                                            if let Some(first_block) = blocks_to_execute.first() {
+                                                let hash = first_block.header.hash_slow();
+                                                engine.chain.add_invalid_block(hash, first_block.header.parent_hash, InvalidationReason::Soft).await;
+                                                engine.invalidate_descendants(hash).await;
+                                            }
+                                            return;
+                                        }
+                                    }
 
-                                if let Err(e) = self.chain.mark_branch_canonical(&context.new_canonical_blocks).await {
-                                    error!("[Engine] Failed to mark branch canonical: {}", e);
-                                    return Err(RpcError::Internal(format!("Canonical marking failed: {}", e)));
-                                }
+                                    if let Err(e) = engine.reorg_handler.mark_branch_canonical(&context_cloned.new_canonical_blocks).await {
+                                        error!("[Engine] Failed to mark branch canonical in background: {}", e);
+                                        // If marking canonical fails, we might have partial state. 
+                                        // Mark the branch as invalid to be safe.
+                                        if let Some(first_block) = context_cloned.new_canonical_blocks.first() {
+                                            let hash = first_block.header.hash_slow();
+                                            engine.chain.add_invalid_block(hash, first_block.header.parent_hash, InvalidationReason::Hard).await;
+                                            engine.invalidate_descendants(hash).await;
+                                        }
+                                        return;
+                                    }
 
+                                    // 4. Emit CanonicalBlock events and revalidate mempool
+                                    for block in context_cloned.new_canonical_blocks {
+                                        engine.mempool_listener.handle_canonical_block(block.clone()).await;
+                                        TRANSACTIONS_COMMITTED_TOTAL.add(block.body.transactions.len() as f64);
+                                    }
 
-                                // 4. Emit CanonicalBlock events for the newly canonical blocks
-                                for block in context.new_canonical_blocks {
-                                    self.mempool_listener.handle_canonical_block(block.clone()).await;
-                                    TRANSACTIONS_COMMITTED_TOTAL.add(block.body.transactions.len() as f64);
-
-                                }
-                            } else if old_state.head_block_hash != forkchoice_state.head_block_hash {
-                                // Edge case: resolve_reorg returned empty blocks but heads differ
-                                // This can happen if the new head is already marked canonical somehow
-                                debug!("[Engine] Resolve reorg returned empty new blocks but heads differ ({:?} -> {:?})", old_state.head_block_hash, forkchoice_state.head_block_hash);
+                                    // Trigger mempool revalidation AFTER canonical updates are finished
+                                    engine.mempool.revalidate(&engine.read_storage, None).await;
+                                });
                             }
                         }
                         Err(e) => {

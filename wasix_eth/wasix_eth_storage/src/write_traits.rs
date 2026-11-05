@@ -90,6 +90,13 @@ pub trait BytecodeWriter {
 pub trait StateWriter {
     /// Updates a trie node at the given path.
     fn update_trie_node(&self, hash: B256, node: Bytes) -> anyhow::Result<()>;
+    /// Batch updates trie nodes.
+    fn update_trie_nodes(&self, nodes: Vec<(B256, Bytes)>) -> anyhow::Result<()> {
+        for (hash, node) in nodes {
+            self.update_trie_node(hash, node)?;
+        }
+        Ok(())
+    }
 }
 
 /// Trait for writing state change sets to the database.

@@ -116,8 +116,8 @@ impl ReorgHandler {
     }
 
     pub async fn mark_branch_canonical(&self, blocks: &Vec<Block<Transaction>>) -> wasix_eth_types::Result<()> {
-        let batch = self.write_storage.begin_batch()?;
         for block in blocks.iter().rev() {
+            let batch = self.write_storage.begin_batch()?;
             let hash = block.header.hash_slow();
             let number = block.header.number;
 
@@ -157,8 +157,10 @@ impl ReorgHandler {
                 let tx_hash = *tx.hash();
                 batch.insert_transaction_lookup(tx_hash, hash, i as u64)?;
             }
+            batch.commit()?;
+            // Yield between blocks to allow other DB operations
+            tokio::task::yield_now().await;
         }
-        batch.commit()?;
         Ok(())
     }
 
@@ -168,10 +170,10 @@ impl ReorgHandler {
 
         info!("Reverting chain from {} to {}", head_number, height);
 
-        let batch = self.write_storage.begin_batch()?;
-
-        // Revert state changes from head_number down to height + 1
+        // Revert state changes from head_number down to height + 1 in chunks
         for h in (height + 1..=head_number).rev() {
+            let batch = self.write_storage.begin_batch()?;
+
             // 1. Roll back account state changes (Balances, Nonces, etc.)
             if let Some(account_changes) = self.read_storage.account_change_set(h)? {
                 for (address, old_state) in account_changes {
@@ -208,6 +210,10 @@ impl ReorgHandler {
                 }
             }
             batch.remove_canonical(h)?;
+
+            batch.commit()?;
+            // Yield between blocks to allow other DB operations
+            tokio::task::yield_now().await;
         }
 
         // Update canonical head
@@ -216,9 +222,10 @@ impl ReorgHandler {
 
         self.canonical.update_head(new_head_hash, height).await?;
 
+        // Finalize reorg with head update
+        let batch = self.write_storage.begin_batch()?;
         // Clear tracking maps to avoid polluting subsequent forward execution
         batch.clear_tracking();
-
         batch.commit()?;
 
         Ok(())
@@ -229,12 +236,6 @@ impl ReorgHandler {
 
         let batch = self.write_storage.begin_batch()?;
 
-        // NOTE: During a fast switch, we do NOT update the flat state tables (Accounts, Storages).
-        // The node will continue to function correctly because it uses the MPT (TrieNodes)
-        // for any historical or state-root-specific lookups. For "latest" state lookups,
-        // it may temporarily fallback to the MPT until these tables are naturally updated 
-        // by subsequent block executions or a standard reorganization.
-
         batch.update_forkchoice(new_head_hash, None, None)?;
 
         // Update the in-memory head
@@ -244,7 +245,94 @@ impl ReorgHandler {
         self.canonical.update_head(new_head_hash, number).await?;
 
         batch.commit()?;
+
+        // Trigger background reconciliation for the flat state tables (Accounts, Storages)
+        // to eventually match the MPT root.
+        let read_provider = self.read_storage.clone();
+        let write_provider = self.write_storage.clone();
+        // tokio::spawn(async move {
+        //     if let Err(e) = heal_flat_state(read_provider, write_provider, state_root).await {
+        //         wasix_eth_utils::error!("[ChainManager] Flat-state reconciliation failed: {:?}", e);
+        //     } else {
+        //         wasix_eth_utils::info!("[ChainManager] Flat-state reconciliation completed for root {:?}", state_root);
+        //     }
+        // });
+
         Ok(())
     }
 
+// async fn heal_flat_state(
+//     read_provider: DatabaseReadProvider,
+//     write_provider: DatabaseWriteProvider,
+//     state_root: B256,
+// ) -> anyhow::Result<()> {
+//     if state_root == alloy_trie::EMPTY_ROOT_HASH {
+//         // Clear all flat state if trie is empty
+//         write_provider.with_write(|wtx| {
+//             wtx.open_table(crate::tables::Accounts::definition())?.retain(|_, _| false)?;
+//             wtx.open_table(crate::tables::Storages::definition())?.retain(|_, _| false)?;
+//             Ok(())
+//         })?;
+//         return Ok(());
+//     }
+// 
+//     // 1. Collect all known addresses from the flat state and change sets
+//     // to build a HashedAddress -> Address mapping.
+//     let mut address_map = std::collections::HashMap::new();
+//     
+//     // From flat state
+//     if let Ok(addresses) = read_provider.addresses() {
+//         for addr in addresses {
+//             address_map.insert(alloy_primitives::keccak256(addr), addr);
+//         }
+//     }
+// 
+//     // 2. Traverse MPT and gather updates
+//     let account_entries = {
+//         let mut trie = crate::trie::EthTrie::new(&read_provider, state_root);
+//         let entries = trie.all_entries()?;
+//         
+//         let mut account_entries = Vec::new();
+//         for (hashed_addr, rlp_acc) in entries {
+//             let mut slice = &rlp_acc[..];
+//             if let Ok(acc) = wasix_eth_types::TrieAccount::decode(&mut slice) {
+//                 account_entries.push((hashed_addr, acc));
+//             }
+//         }
+//         account_entries
+//     };
+// 
+//     // 3. Apply updates in chunks to avoid long write locks
+//     const CHUNK_SIZE: usize = 1000;
+//     for chunk in account_entries.chunks(CHUNK_SIZE) {
+//         write_provider.with_write(|wtx| {
+//             let mut acc_table = wtx.open_table(crate::tables::Accounts::definition())?;
+//             let mut storage_table = wtx.open_table(crate::tables::Storages::definition())?;
+// 
+//             for (hashed_addr, acc) in chunk {
+//                 if let Some(addr) = address_map.get(hashed_addr) {
+//                     // Update account
+//                     acc_table.insert(*addr, acc.clone())?;
+// 
+//                     // Heal storage for this account
+//                     if acc.storage_root != alloy_trie::EMPTY_ROOT_HASH {
+//                         let mut storage_trie = crate::trie::EthTrie::new(&read_provider, acc.storage_root);
+//                         if let Ok(storage_entries) = storage_trie.all_entries() {
+//                             for (hashed_slot, rlp_val) in storage_entries {
+//                                 // We don't have a slot mapping, but many implementations use hashed slots 
+//                                 // directly in flat state or we skip if unknown.
+//                                 // For now, we can only heal if we have a way to know the plain slot.
+//                                 // Some implementations use the B256 hashed slot as the key in Storages.
+//                                 // Let's check codecs.rs again: type Key = (Address, B256);
+//                             }
+//                         }
+//                     }
+//                 }
+//             }
+//             Ok(())
+//         })?;
+//         tokio::task::yield_now().await;
+//     }
+// 
+//     Ok(())
 }

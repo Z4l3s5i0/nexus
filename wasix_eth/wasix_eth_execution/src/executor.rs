@@ -66,9 +66,10 @@ impl EvmExecutor {
         _base_fee: Option<u64>,
         cumulative_gas_used: &mut u64,
         state_root: Option<B256>,
+        interruption_token: Option<wasix_eth_types::CancellationToken>,
     ) -> Result<TransactionExecutionResult> {
         let executor = TransactionExecutor::new(batch, env, config, invoker, fork);
-        executor.execute_transaction(tx, beneficiary, cumulative_gas_used, state_root)
+        executor.execute_transaction(tx, beneficiary, cumulative_gas_used, state_root, interruption_token)
     }
 
     pub fn execute_system_call(
@@ -123,6 +124,7 @@ impl EvmExecutor {
             hot_accounts,
             hot_storage,
             origin: H160::from_slice(caller.as_slice()),
+            interruption_token: None, // System calls usually shouldn't be interrupted or don't have a token
         };
 
         // EIP-7002/2935: System calls should be gasless and exempt from balance checks.

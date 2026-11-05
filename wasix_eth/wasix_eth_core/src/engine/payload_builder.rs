@@ -23,9 +23,9 @@ use wasix_eth_types::ConsensusTransaction;
 use wasix_eth_utils::{debug, info, error, warn};
 use wasix_eth_types::Result;
 
-use std::collections::HashMap;
-use std::sync::RwLock;
-use dashmap::DashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::{RwLock, Mutex};
+use dashmap::{DashSet, DashMap};
 pub use wasix_eth_types::CancellationToken;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +44,8 @@ pub struct PayloadBuilder {
     pub execution: Arc<dyn ExecutionProvider>,
     pub mempool: Arc<dyn MempoolProvider>,
     pub event_tx: broadcast::Sender<EngineEvent>,
-    pub build_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Per-PayloadID locks to avoid serializing initialization of different payloads.
+    pub build_locks: Arc<DashMap<PayloadId, Arc<tokio::sync::Mutex<()>>>>,
     pub cancel_tokens: Arc<RwLock<HashMap<PayloadId, CancellationToken>>>,
     pub rebuild_interruption_tokens: Arc<RwLock<HashMap<PayloadId, CancellationToken>>>,
     pub in_flight_interruptions: Arc<DashSet<PayloadId>>,
@@ -90,11 +91,14 @@ impl PayloadBuilder {
             return Ok(Some(id));
         }
 
-        // 2. Synchronize building initialization
-        let _guard = self.build_lock.lock().await;
+        // 2. Synchronize building initialization for this specific payload ID
+        let lock = self.build_locks.entry(id.clone()).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))).value().clone();
+        let _guard = lock.lock().await;
 
         // 3. Re-check after acquiring lock
         if self.read_storage.get_payload(&id).is_some() {
+            // Clean up the lock if we are done with it (optional, but good for memory if many IDs)
+            // Actually, we should probably keep it until the payload is fully built/expired
             return Ok(Some(id));
         }
 
@@ -126,13 +130,16 @@ impl PayloadBuilder {
         self.build_statuses.write().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?.insert(id.clone(), BuildStatus::InitialBuildInProgress);
         self.build_notify.write().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?.insert(id.clone(), Arc::new(Notify::new()));
 
-        // 5. Perform immediate synchronous rebuild
-        let _ = self.maybe_rebuild_payload(id.clone()).await;
-
-        // 6. Start continuous building background task
+        // 5. Start continuous building background task
         let builder = self.clone();
+        let id_for_task = id.clone();
         let mut event_rx = self.event_tx.subscribe();
         tokio::spawn(async move {
+            // Perform initial build in background
+            if let Err(e) = builder.maybe_rebuild_payload(id_for_task.clone()).await {
+                error!("[PayloadBuilder] Error during initial background build for {:?}: {:?}", id_for_task, e);
+            }
+
             let start_time = std::time::Instant::now();
             let mut last_rebuild_time = std::time::Instant::now();
             let slot_duration = std::time::Duration::from_millis(10500); // SLOT_DURATION_MS
@@ -140,7 +147,7 @@ impl PayloadBuilder {
             while !token.is_cancelled() {
                 tokio::task::yield_now().await;
                 if start_time.elapsed() >= slot_duration {
-                    info!("[PayloadBuilder] Stopping continuous building for {:?}: time limit reached", id);
+                    info!("[PayloadBuilder] Stopping continuous building for {:?}: time limit reached", id_for_task);
                     break;
                 }
 
@@ -155,7 +162,7 @@ impl PayloadBuilder {
                         while let Ok(_) = event_rx.try_recv() {
                             count += 1;
                         }
-                        debug!("[PayloadBuilder] Triggering reactive rebuild for {:?} due to {} new transaction(s)", id, count);
+                        debug!("[PayloadBuilder] Triggering reactive rebuild for {:?} due to {} new transaction(s)", id_for_task, count);
                     },
                     _ = token.cancelled() => break,
                 }
@@ -167,15 +174,15 @@ impl PayloadBuilder {
                 }
 
                 last_rebuild_time = std::time::Instant::now();
-                if let Err(e) = builder.maybe_rebuild_payload(id.clone()).await {
-                    error!("[PayloadBuilder] Error during continuous building for {:?}: {:?}", id, e);
+                if let Err(e) = builder.maybe_rebuild_payload(id_for_task.clone()).await {
+                    error!("[PayloadBuilder] Error during continuous building for {:?}: {:?}", id_for_task, e);
                 }
             }
             
             let mut tokens = builder.cancel_tokens.write().unwrap();
-            if let Some(t) = tokens.get(&id) {
+            if let Some(t) = tokens.get(&id_for_task) {
                 if t.is_cancelled() == token.is_cancelled() {
-                    tokens.remove(&id);
+                    tokens.remove(&id_for_task);
                 }
             }
         });
@@ -439,8 +446,9 @@ impl PayloadBuilder {
     pub async fn get_payload(&self, payload_id: &PayloadId) -> RpcResult<(Block<Transaction>, Vec<Receipt>, Vec<wasix_eth_types::ReceiptMeta>, BlobsBundleV1)> {
         let wait_start = std::time::Instant::now();
         
-        let mut initial_wait_done = false;
-        while wait_start.elapsed() < std::time::Duration::from_secs(2) {
+        // 1. Wait for initial build to complete, but cap it at 1s for fast BN response.
+        // If it's already completed, this returns immediately.
+        while wait_start.elapsed() < std::time::Duration::from_millis(1000) {
             let status = {
                 let statuses = self.build_statuses.read().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?;
                 statuses.get(payload_id).cloned()
@@ -448,7 +456,6 @@ impl PayloadBuilder {
 
             if let Some(status) = status {
                 if status == BuildStatus::InitialBuildCompleted {
-                    initial_wait_done = true;
                     break;
                 }
                 
@@ -459,49 +466,50 @@ impl PayloadBuilder {
                 };
                 
                 if let Some(n) = notify {
-                    let remaining = std::time::Duration::from_secs(2).saturating_sub(wait_start.elapsed());
+                    let remaining = std::time::Duration::from_millis(1000).saturating_sub(wait_start.elapsed());
                     if remaining.is_zero() { break; }
                     let _ = tokio::time::timeout(remaining, n.notified()).await;
                 } else {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
             } else {
-                // Not found yet
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                // Not found yet (wait a bit for it to be registered)
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
         }
 
-        if !initial_wait_done {
-            // 2s mark reached, check if we need to interrupt an active rebuild
-            let build_active = {
-                let statuses = self.build_statuses.read().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?;
-                statuses.get(payload_id) == Some(&BuildStatus::InitialBuildInProgress) || 
-                self.rebuild_interruption_tokens.read().unwrap().contains_key(payload_id)
-            };
+        // 2. Check if we have a build active (either initial or rebuild)
+        let (initial_token, rebuild_token) = {
+            let initial = self.cancel_tokens.read().unwrap().get(payload_id).cloned();
+            let rebuild = self.rebuild_interruption_tokens.read().unwrap().get(payload_id).cloned();
+            (initial, rebuild)
+        };
 
-            if build_active {
-                if !self.in_flight_interruptions.contains(payload_id) {
-                    self.in_flight_interruptions.insert(*payload_id);
-                    let token = {
-                        let tokens = self.rebuild_interruption_tokens.read().unwrap();
-                        tokens.get(payload_id).cloned()
-                    };
-                    if let Some(t) = token {
-                        debug!("[PayloadBuilder] Signaling interruption for payload {:?}", payload_id);
-                        t.cancel();
-                    }
-                } else {
-                    debug!("[PayloadBuilder] Interruption already in flight for payload {:?}", payload_id);
+        // 3. If a build is active and we've waited enough, signal interruption.
+        // We use a shorter threshold (e.g., 500ms) to trigger interruption if we want to be really fast,
+        // but 1s is a good balance.
+        if initial_token.is_some() || rebuild_token.is_some() {
+            if !self.in_flight_interruptions.contains(payload_id) {
+                self.in_flight_interruptions.insert(*payload_id);
+                
+                if let Some(t) = initial_token {
+                    debug!("[PayloadBuilder] Signaling interruption for INITIAL build of payload {:?}", payload_id);
+                    t.cancel();
                 }
-
-                // Wait for finalization (another 2s)
-                let remaining = std::time::Duration::from_secs(4).saturating_sub(wait_start.elapsed());
-                if !remaining.is_zero() {
-                    tokio::time::sleep(remaining).await;
+                if let Some(t) = rebuild_token {
+                    debug!("[PayloadBuilder] Signaling interruption for REBUILD of payload {:?}", payload_id);
+                    t.cancel();
                 }
             }
+
+            // 4. Wait a very short time for the builder to yield and persist whatever it has.
+            // 200ms should be enough for a 1-2ms transaction to finish and check the token.
+            let grace_period = std::time::Duration::from_millis(200);
+            tokio::time::sleep(grace_period).await;
         }
 
+        // 5. Return whatever we have in storage. If the builder was interrupted, 
+        // it should have persisted the last successful state.
         let payload = self.read_storage.get_payload(payload_id)
             .ok_or_else(|| RpcError::BlockNotFound(wasix_eth_types::BlockId::Hash(B256::from_slice(&payload_id.0[..]).into())))?;
 

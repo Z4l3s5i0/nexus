@@ -293,6 +293,7 @@ EOF
       --port 9000
       --quic-port 9001
       --enable-private-discovery
+      --execution-timeout-multiplier 2
       $BOOT_NODES_FLAG
 
 EOF

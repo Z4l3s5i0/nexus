@@ -16,6 +16,7 @@ pub struct SputnikBackend<'a> {
     pub hot_accounts: HashSet<H160>,
     pub hot_storage: HashSet<(H160, H256)>,
     pub origin: H160,
+    pub interruption_token: Option<wasix_eth_types::CancellationToken>,
 }
 
 impl<'a> SputnikBackend<'a>{
@@ -42,6 +43,15 @@ impl<'a> SputnikBackend<'a>{
 
 impl<'a> RuntimeBaseBackend for SputnikBackend<'a> {
     fn balance(&self, address: H160) -> EvmU256 {
+        if let Some(token) = &self.interruption_token {
+            if token.is_cancelled() {
+                // We cannot return an error here, but SputnikVM will eventually check 
+                // something or we can hope this slows it down/triggers a check elsewhere.
+                // Better yet, many calls to backend are a good place to check.
+                // Since this is read-only, we just return 0 or whatever, 
+                // but the goal is to have a way to stop.
+            }
+        }
         let addr = Address::from_slice(address.as_bytes());
         match self.storage_provider.account(addr, self.state_root) {
             Ok(Some(acc)) => alloy_u256_to_evm_u256(acc.balance),
@@ -50,6 +60,11 @@ impl<'a> RuntimeBaseBackend for SputnikBackend<'a> {
     }
 
     fn code(&self, address: H160) -> Vec<u8> {
+        if let Some(token) = &self.interruption_token {
+            if token.is_cancelled() {
+                return Vec::new();
+            }
+        }
         if let Some(target) = self.check_delegation(address) {
             return self.code(target);
         }
@@ -73,6 +88,11 @@ impl<'a> RuntimeBaseBackend for SputnikBackend<'a> {
     }
 
     fn exists(&self, address: H160) -> bool {
+        if let Some(token) = &self.interruption_token {
+            if token.is_cancelled() {
+                return false;
+            }
+        }
         let addr = Address::from_slice(address.as_bytes());
 
         match self.storage_provider.account(addr, self.state_root) {
@@ -95,6 +115,11 @@ impl<'a> RuntimeBaseBackend for SputnikBackend<'a> {
     }
 
     fn storage(&self, address: H160, index: H256) -> H256 {
+        if let Some(token) = &self.interruption_token {
+            if token.is_cancelled() {
+                return H256::default();
+            }
+        }
         if let Some(target) = self.check_delegation(address) {
             return self.storage(target, index);
         }

@@ -40,12 +40,13 @@ impl<'a> TransactionExecutor<'a> {
         beneficiary: Address,
         cumulative_gas_used: &mut u64,
         state_root: Option<B256>,
+        interruption_token: Option<wasix_eth_types::CancellationToken>,
     ) -> Result<TransactionExecutionResult> {
         let recovered = tx.clone().try_into_recovered().map_err(|e| anyhow::anyhow!("Failed to recover signer: {}", e))?;
         let sender = recovered.signer();
         
         self.validate_transaction_with_state(tx, sender, state_root)?;
-
+        
         let start_time = std::time::Instant::now();
 
         let recovered = tx.clone().try_into_recovered().map_err(|e| anyhow::anyhow!("Failed to recover signer: {}", e))?;
@@ -54,7 +55,7 @@ impl<'a> TransactionExecutor<'a> {
 
         exp!("[EXP] TX_EXEC_START hash={:?} sender={:?} nonce={}", tx_hash_final, sender, recovered.nonce());
 
-        let mut backend = self.prepare_backend(tx, sender, state_root)?;
+        let mut backend = self.prepare_backend(tx, sender, state_root, interruption_token)?;
         let sender_h160 = H160::from_slice(sender.as_slice());
         let balance_before = backend.balance(sender_h160);
 
@@ -238,7 +239,7 @@ impl<'a> TransactionExecutor<'a> {
     }
 
 
-    fn prepare_backend(&self, tx: &Transaction, sender: Address, state_root: Option<B256>) -> Result<SputnikBackend<'a>> {
+    fn prepare_backend(&self, tx: &Transaction, sender: Address, state_root: Option<B256>, interruption_token: Option<wasix_eth_types::CancellationToken>) -> Result<SputnikBackend<'a>> {
         let mut hot_accounts = HashSet::new();
         let mut hot_storage = HashSet::new();
         let mut access_list = Vec::new();
@@ -279,6 +280,7 @@ impl<'a> TransactionExecutor<'a> {
             hot_accounts,
             hot_storage,
             origin: H160::from_slice(sender.as_slice()),
+            interruption_token,
         })
     }
 

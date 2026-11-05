@@ -53,8 +53,12 @@ impl MempoolProvider for Mempool {
         };
 
         if increased {
-            info!("[Mempool] Base fee increased from {} to {}. Revalidating mempool...", old_fee, new_base_fee);
-            self.revalidate(state, None).await;
+            info!("[Mempool] Base fee increased from {} to {}. Revalidating mempool asynchronously...", old_fee, new_base_fee);
+            let mempool = self.clone();
+            let state = state.clone();
+            tokio::spawn(async move {
+                mempool.revalidate(&state, None).await;
+            });
         }
     }
 

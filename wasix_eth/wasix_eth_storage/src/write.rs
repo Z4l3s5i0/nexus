@@ -1,7 +1,7 @@
 use wasix_eth_types::{Address, Block, BlockBody, Bytes, Header, PayloadId, PeerEntry, Receipt, Result, Transaction, TrieAccount, B256, U256, BlockId, BlockNumberOrTag, BlobsBundleV1};
 use wasix_eth_utils::debug;
 use redb::{Database, WriteTransaction, ReadableTable, ReadableDatabase};
-use crate::codecs::Table;
+use crate::codecs::{Table as TableTrait};
 use crate::tables::*;
 use std::collections::{HashSet, HashMap};
 use std::sync::Mutex;
@@ -67,6 +67,7 @@ pub struct BatchWriter {
     original_accounts: Arc<Mutex<HashMap<Address, Option<TrieAccount>>>>,
     original_storages: Arc<Mutex<HashMap<(Address, B256), U256>>>,
     side_commit: bool,
+    interruption_token: Option<wasix_eth_types::CancellationToken>,
 }
 
 impl BatchWriter {
@@ -81,7 +82,21 @@ impl BatchWriter {
             original_accounts: Arc::new(Mutex::new(HashMap::new())),
             original_storages: Arc::new(Mutex::new(HashMap::new())),
             side_commit: false,
+            interruption_token: None,
         }
+    }
+
+    pub fn set_interruption_token(&mut self, token: wasix_eth_types::CancellationToken) {
+        self.interruption_token = Some(token);
+    }
+
+    pub fn check_interruption(&self) -> Result<()> {
+        if let Some(token) = &self.interruption_token {
+            if token.is_cancelled() {
+                return Err(anyhow::anyhow!("BatchWriter operation interrupted by cancellation token"));
+            }
+        }
+        Ok(())
     }
 
     pub fn set_side_commit(&mut self, side_commit: bool) {
@@ -127,7 +142,7 @@ impl BatchWriter {
         };
         
         debug!("[Trie] calculate_state_root_internal: initial_root={:?}", initial_root);
-        let mut trie = EthTrie::new(self, initial_root);
+        let mut trie = EthTrie::with_interruption(self, initial_root, self.interruption_token.clone());
 
         // 1. Load addresses that were modified in this batch
         let batch_addresses = {
@@ -136,6 +151,7 @@ impl BatchWriter {
         };
 
         for addr in batch_addresses {
+            self.check_interruption()?;
             let hashed_addr = alloy_primitives::keccak256(addr);
 
             if let Some(acc) = self.account(addr, state_root)? {
@@ -207,7 +223,7 @@ impl BatchWriter {
         } else {
             self.account(address, state_root)?.map(|acc| acc.storage_root).unwrap_or(alloy_trie::EMPTY_ROOT_HASH)
         };
-        let mut trie = EthTrie::new(self, initial_storage_root);
+        let mut trie = EthTrie::with_interruption(self, initial_storage_root, self.interruption_token.clone());
 
         // 1. Load storage slots modified in this batch for this address
         let batch_slots = {
@@ -219,6 +235,7 @@ impl BatchWriter {
         };
 
         for slot in batch_slots {
+            self.check_interruption()?;
             let hashed_slot = alloy_primitives::keccak256(slot);
             if let Ok(value) = self.storage(address, slot, state_root) {
                 if value == U256::ZERO {
@@ -667,6 +684,23 @@ impl StateWriter for BatchWriter {
         }
         Ok(())
     }
+
+    fn update_trie_nodes(&self, nodes: Vec<(B256, Bytes)>) -> Result<()> {
+        debug!("[BatchWriter] update_trie_nodes: count={}", nodes.len());
+        let mut nodes_table = self.wtx.open_table(TrieNodes::definition())?;
+        let mut refs_table = self.wtx.open_table(TrieNodeRefs::definition())?;
+        
+        for (hash, node) in nodes {
+            if nodes_table.get(hash)?.is_none() {
+                nodes_table.insert(hash, node)?;
+                refs_table.insert(hash, 1)?;
+            } else {
+                let current_refs = refs_table.get(hash)?.map(|v| v.value()).unwrap_or(0);
+                refs_table.insert(hash, current_refs + 1)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl ChangeSetWriter for BatchWriter {
@@ -1088,6 +1122,24 @@ impl StateWriter for DatabaseWriteProvider {
             } else {
                 let current_refs = refs_table.get(hash)?.map(|v| v.value()).unwrap_or(0);
                 refs_table.insert(hash, current_refs + 1)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn update_trie_nodes(&self, nodes: Vec<(B256, Bytes)>) -> Result<()> {
+        self.with_write(|wtx| {
+            let mut nodes_table = wtx.open_table(TrieNodes::definition())?;
+            let mut refs_table = wtx.open_table(TrieNodeRefs::definition())?;
+            
+            for (hash, node) in nodes {
+                if nodes_table.get(hash)?.is_none() {
+                    nodes_table.insert(hash, node)?;
+                    refs_table.insert(hash, 1)?;
+                } else {
+                    let current_refs = refs_table.get(hash)?.map(|v| v.value()).unwrap_or(0);
+                    refs_table.insert(hash, current_refs + 1)?;
+                }
             }
             Ok(())
         })

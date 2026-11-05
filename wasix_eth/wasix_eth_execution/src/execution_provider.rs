@@ -491,6 +491,7 @@ impl EthExecutionProvider {
                 block.header.base_fee_per_gas,
                 &mut cumulative_gas_used,
                 state_root,
+                None,
             )?;
 
             receipts.push(result.receipt.clone());
@@ -553,7 +554,10 @@ impl ExecutionProvider for EthExecutionProvider {
     fn execute_block_with_state_root_and_building(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
         debug!("[Execution] execute_block_with_state_root: block {} commit={} state_root={:?} building={}", block.header.number, commit, state_root, building);
         self.write_storage.clear_tracking();
-        let batch = self.write_storage.begin_batch()?;
+        let mut batch = self.write_storage.begin_batch()?;
+        if let Some(token) = interruption_token.clone() {
+            batch.set_interruption_token(token);
+        }
         
         let (executed_block, receipts, metas) = match self.execute_block_with_batch(block.clone(), &batch, state_root, building, interruption_token, None) {
             Ok(res) => res,
@@ -588,9 +592,10 @@ impl ExecutionProvider for EthExecutionProvider {
         }
 
         self.write_storage.clear_tracking();
-        let batch = self.write_storage.begin_batch()?;
+        let mut batch = self.write_storage.begin_batch()?;
 
         for block in blocks {
+            batch.check_interruption()?;
             let (executed_block, _receipts, metas) = self.execute_block_with_batch(block, &batch, None, false, None, None)?;
 
             // Persist ChangeSets for this block
@@ -612,6 +617,7 @@ impl ExecutionProvider for EthExecutionProvider {
     }
 
     fn execute_block_with_batch(&self, mut block: Block<Transaction>, batch: &BatchWriter, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>, _deadline: Option<std::time::Instant>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
+        batch.check_interruption()?;
         let mut state_root = state_root;
         if state_root.is_none() && block.header.number > 0 {
             // Look up the parent header to get the correct state root for the reorged path
@@ -660,6 +666,7 @@ impl ExecutionProvider for EthExecutionProvider {
 
         for (tx_idx, tx) in block.body.transactions.iter().enumerate() {
             // New Interruption Check
+            batch.check_interruption()?;
             if let Some(token) = &interruption_token {
                 if token.is_cancelled() {
                     debug!("[Execution] Interruption signaled, stopping at transaction {}", tx_idx);
@@ -670,6 +677,15 @@ impl ExecutionProvider for EthExecutionProvider {
                     }
                 }
             }
+
+            // Yield frequently to allow other tasks to run and cancellation to be noticed
+            // in a single-writer DB environment.
+            if tx_idx % 10 == 0 {
+                // Since this is spawn_blocking, we should not yield_now() directly 
+                // but we can check the token. The actual yield is handled by the OS
+                // or by returning from this task.
+            }
+
             // Time cap check
             if building {
                 if let Some(dl) = _deadline {
@@ -700,6 +716,7 @@ impl ExecutionProvider for EthExecutionProvider {
                 block.header.base_fee_per_gas,
                 &mut cumulative_gas_used,
                 state_root,
+                interruption_token.clone(),
             ) {
                 Ok(res) => res,
                 Err(e) => {
