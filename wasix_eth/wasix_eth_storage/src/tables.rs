@@ -36,11 +36,9 @@ pub struct StorageChangeSets;
 
 // --- State indexes
 #[derive(Debug)]
-pub struct PlainState; 
-#[derive(Debug)]
-pub struct HashedState;
-#[derive(Debug)]
 pub struct TrieNodes;
+#[derive(Debug)]
+pub struct TrieNodeRefs;
 
 // --- Metadata
 #[derive(Debug)]
@@ -51,6 +49,8 @@ pub struct Metadata;
 pub struct Payloads;
 #[derive(Debug)]
 pub struct Forkchoice;
+#[derive(Debug)]
+pub struct StateBranches;
 
 // --- P2P Discovery
 #[derive(Debug)]

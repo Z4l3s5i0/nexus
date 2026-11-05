@@ -1,5 +1,5 @@
 use alloy_primitives::B256;
-use wasix_eth_storage::{AccountWriter, BlockProvider, BlockWriter, ChangeSetProvider, ChangeSetWriter, HeaderProvider, HeaderWriter, StateWriter, StorageWriter, TransactionProvider, TransactionWriter};
+use wasix_eth_storage::{AccountWriter, BlockProvider, BlockWriter, ChangeSetProvider, ChangeSetWriter, HeaderProvider, HeaderWriter, StorageWriter, TransactionWriter, StateBranchProvider};
 use wasix_eth_storage::codecs::RedbRlp;
 use wasix_eth_storage::read::DatabaseReadProvider;
 use wasix_eth_storage::write::DatabaseWriteProvider;
@@ -182,12 +182,9 @@ impl ReorgHandler {
                             .map_err(|e| anyhow::anyhow!("Failed to decode TrieAccount for {}: {}", address, e))?;
 
                         batch.update_account(address, trie_acc)?;
-                        // Also update the plain state for consistency if your storage layer uses it
-                        batch.update_plain_state(address, state.clone())?;
                     } else {
                         // If the account didn't exist before this block, delete it
                         batch.remove_account(address)?;
-                        batch.remove_plain_state(address)?;
                     }
                 }
             }
@@ -224,6 +221,29 @@ impl ReorgHandler {
 
         batch.commit()?;
 
+        Ok(())
+    }
+
+    pub async fn fast_switch(&self, new_head_hash: B256, state_root: B256) -> wasix_eth_types::Result<()> {
+        info!("[ChainManager] Performing Fast Switch to state root {:?}", state_root);
+
+        let batch = self.write_storage.begin_batch()?;
+
+        // NOTE: During a fast switch, we do NOT update the flat state tables (Accounts, Storages).
+        // The node will continue to function correctly because it uses the MPT (TrieNodes)
+        // for any historical or state-root-specific lookups. For "latest" state lookups,
+        // it may temporarily fallback to the MPT until these tables are naturally updated 
+        // by subsequent block executions or a standard reorganization.
+
+        batch.update_forkchoice(new_head_hash, None, None)?;
+
+        // Update the in-memory head
+        let number = self.read_storage.block_number(new_head_hash)?
+            .ok_or_else(|| anyhow::anyhow!("Block number not found for hash {:?}", new_head_hash))?;
+        
+        self.canonical.update_head(new_head_hash, number).await?;
+
+        batch.commit()?;
         Ok(())
     }
 

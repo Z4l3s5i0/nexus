@@ -45,12 +45,12 @@ impl EthDatabase {
         wtx.open_table(Bytecodes::definition())?;
         wtx.open_table(AccountChangeSets::definition())?;
         wtx.open_table(StorageChangeSets::definition())?;
-        wtx.open_table(PlainState::definition())?;
-        wtx.open_table(HashedState::definition())?;
         wtx.open_table(TrieNodes::definition())?;
+        wtx.open_table(TrieNodeRefs::definition())?;
         wtx.open_table(Metadata::definition())?;
         wtx.open_table(Payloads::definition())?;
         wtx.open_table(Forkchoice::definition())?;
+        wtx.open_table(StateBranches::definition())?;
         wtx.open_table(ActivePeers::definition())?;
 
         wtx.commit()?;

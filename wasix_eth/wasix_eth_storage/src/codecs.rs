@@ -346,11 +346,11 @@ impl Table for Storages { const NAME: &'static str = "storages"; type Key = (Add
 impl Table for Bytecodes { const NAME: &'static str = "bytecodes"; type Key = B256; type Value = Bytes; }
 impl Table for AccountChangeSets { const NAME: &'static str = "account_change_sets"; type Key = u64; type Value = Vec<(Address, Option<Bytes>)>; }
 impl Table for StorageChangeSets { const NAME: &'static str = "storage_change_sets"; type Key = u64; type Value = Vec<(Address, B256, U256)>; }
-impl Table for PlainState { const NAME: &'static str = "plain_state"; type Key = Address; type Value = Bytes; }
-impl Table for HashedState { const NAME: &'static str = "hashed_state"; type Key = B256; type Value = Bytes; }
 impl Table for TrieNodes { const NAME: &'static str = "trie_nodes"; type Key = B256; type Value = Bytes; }
+impl Table for TrieNodeRefs { const NAME: &'static str = "trie_node_refs"; type Key = B256; type Value = u64; }
 impl Table for Metadata { const NAME: &'static str = "metadata"; type Key = String; type Value = Bytes; }
 impl Table for Payloads { const NAME: &'static str = "payloads"; type Key = PayloadId; type Value = (Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, BlobsBundleV1); }
 
 impl Table for Forkchoice { const NAME: &'static str = "forkchoice"; type Key = String; type Value = B256; }
+impl Table for StateBranches { const NAME: &'static str = "state_branches"; type Key = B256; type Value = B256; }
 impl Table for ActivePeers { const NAME: &'static str = "active_peers"; type Key = String; type Value = PeerEntry; }

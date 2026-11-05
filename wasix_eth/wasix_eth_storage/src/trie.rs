@@ -2,7 +2,7 @@ use alloy_trie::nodes::RlpNode as ChildNode;
 use alloy_trie::{Nibbles, EMPTY_ROOT_HASH};
 use alloy_rlp::{Encodable, Decodable, Header, EMPTY_STRING_CODE};
 use std::collections::HashMap;
-use alloy_primitives::{B256, keccak256, Bytes, Address};
+use alloy_primitives::{B256, keccak256, Bytes};
 use crate::read_traits::StateProvider;
 use crate::write_traits::StateWriter;
 
@@ -254,9 +254,6 @@ impl StateProvider for MemoryState {
     fn trie_node(&self, hash: B256) -> anyhow::Result<Option<Bytes>> {
         Ok(self.nodes.get(&hash).cloned())
     }
-    // Implement other methods as needed, or just panic if not used
-    fn plain_state(&self, _address: Address) -> anyhow::Result<Option<Bytes>> { unreachable!() }
-    fn hashed_state(&self, _hash: B256) -> anyhow::Result<Option<Bytes>> { unreachable!() }
 }
 
 impl StateWriter for MemoryState {
@@ -265,9 +262,6 @@ impl StateWriter for MemoryState {
         // We can use RefCell if needed, but EthTrie already has dirty map.
         Ok(())
     }
-    fn update_plain_state(&self, _address: Address, _state: Bytes) -> anyhow::Result<()> { unreachable!() }
-    fn remove_plain_state(&self, _address: Address) -> anyhow::Result<()> { unreachable!() }
-    fn update_hashed_state(&self, _hash: B256, _state: Bytes) -> anyhow::Result<()> { unreachable!() }
 }
 
 pub fn calculate_trie_root(leaves: Vec<(B256, Vec<u8>)>) -> anyhow::Result<B256> {

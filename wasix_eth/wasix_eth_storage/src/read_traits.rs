@@ -108,10 +108,6 @@ pub trait BytecodeProvider {
 
 /// Trait for reading state-related information from the database.
 pub trait StateProvider: Send + Sync {
-    /// Retrieves the plain state value for a given address.
-    fn plain_state(&self, address: Address) -> anyhow::Result<Option<Bytes>>;
-    /// Retrieves the hashed state value for a given hash.
-    fn hashed_state(&self, hash: B256) -> anyhow::Result<Option<Bytes>>;
     /// Retrieves a trie node by its hash.
     fn trie_node(&self, hash: B256) -> anyhow::Result<Option<Bytes>>;
 
@@ -200,4 +196,9 @@ pub trait ChangeSetProvider {
 
 pub trait MetadataProvider {
     fn get_metadata(&self, key: String) -> anyhow::Result<Option<Bytes>>;
+}
+
+pub trait StateBranchProvider {
+    /// Retrieves the state root for a given block hash.
+    fn state_root(&self, block_hash: B256) -> anyhow::Result<Option<B256>>;
 }

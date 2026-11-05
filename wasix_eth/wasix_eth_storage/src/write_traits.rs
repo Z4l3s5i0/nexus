@@ -88,12 +88,6 @@ pub trait BytecodeWriter {
 
 /// Trait for writing state-related information to the database.
 pub trait StateWriter {
-    /// Updates the plain state value for a given address.
-    fn update_plain_state(&self, address: Address, state: Bytes) -> anyhow::Result<()>;
-    /// Removes the plain state value for a given address.
-    fn remove_plain_state(&self, address: Address) -> anyhow::Result<()>;
-    /// Updates the hashed state value for a given hash.
-    fn update_hashed_state(&self, hash: B256, state: Bytes) -> anyhow::Result<()>;
     /// Updates a trie node at the given path.
     fn update_trie_node(&self, hash: B256, node: Bytes) -> anyhow::Result<()>;
 }
@@ -110,4 +104,8 @@ pub trait ChangeSetWriter {
 
 pub trait MetadataWriter {
     fn set_metadata(&self, key: String, value: Bytes) -> anyhow::Result<()>;
+}
+
+pub trait StateBranchWriter {
+    fn insert_state_root(&self, block_hash: B256, root: B256) -> anyhow::Result<()>;
 }

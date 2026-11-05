@@ -14,9 +14,7 @@ use alloy_rpc_types::RpcBlockHash;
 use tokio::sync::broadcast;
 use wasix_eth_execution::execution_provider::ExecutionProvider;
 use wasix_eth_storage::read::DatabaseReadProvider;
-use wasix_eth_storage::read_traits::BlockProvider;
-use wasix_eth_storage::read_traits::ChainProvider;
-use wasix_eth_storage::read_traits::HeaderProvider;
+use wasix_eth_storage::read_traits::{BlockProvider, ChainProvider, HeaderProvider, StateBranchProvider};
 use wasix_eth_storage::write::DatabaseWriteProvider;
 use wasix_eth_types::eip6110_utils::encode_deposit_request;
 use wasix_eth_types::error::{RpcError, RpcResult};
@@ -561,27 +559,43 @@ impl Engine {
                         Ok(context) => {
                             // 2. Handle reorgs FIRST: revert to common ancestor
                             if context.is_reorg {
-                                // Find common ancestor height
-                                let common_ancestor_height = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(context.common_ancestor_hash)))
-                                    .ok()
-                                    .flatten()
-                                    .map(|h| h.number)
-                                    .unwrap_or(0);
-                                
-                                info!("[Engine] Reorg detected! Reverting chain to height {} (common ancestor: {:?})", common_ancestor_height, context.common_ancestor_hash);
+                                info!("[Engine] Reorg detected! Attempting Fast Switch to hash {:?}", forkchoice_state.head_block_hash);
                                 
                                 // Cancel ALL ongoing executions to prevent node freeze during reorg
                                 self.payload_processor.abort_all_executions();
 
-                                // Physically roll back state to common ancestor
-                                if let Err(e) = self.revert_to_height(common_ancestor_height).await {
-                                    error!("[Engine] Failed to revert to height {}: {}", common_ancestor_height, e);
-                                    // Rollback forkchoice if reorg fails
-                                    let _ = self.canonical.update_state(old_state, old_head_number).await;
-                                    return Err(RpcError::Internal(format!("Revert failed: {}", e)));
+                                let mut fast_switch_success = false;
+                                if let Ok(Some(state_root)) = self.read_storage.state_root(forkchoice_state.head_block_hash) {
+                                    info!("[Engine] Found persisted StateRoot {:?} for new head. Performing Fast Switch.", state_root);
+                                    if let Err(e) = self.reorg_handler.fast_switch(forkchoice_state.head_block_hash, state_root).await {
+                                        warn!("[Engine] Fast Switch failed: {}. Falling back to standard revert.", e);
+                                    } else {
+                                        fast_switch_success = true;
+                                    }
+                                }
+
+                                if !fast_switch_success {
+                                    // Find common ancestor height
+                                    let common_ancestor_height = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(context.common_ancestor_hash)))
+                                        .ok()
+                                        .flatten()
+                                        .map(|h| h.number)
+                                        .unwrap_or(0);
+                                    
+                                    info!("[Engine] Standard Reorg: Reverting chain to height {} (common ancestor: {:?})", common_ancestor_height, context.common_ancestor_hash);
+                                    
+                                    // Physically roll back state to common ancestor
+                                    if let Err(e) = self.revert_to_height(common_ancestor_height).await {
+                                        error!("[Engine] Failed to revert to height {}: {}", common_ancestor_height, e);
+                                        // Rollback forkchoice if reorg fails
+                                        let _ = self.canonical.update_state(old_state, old_head_number).await;
+                                        return Err(RpcError::Internal(format!("Revert failed: {}", e)));
+                                    }
                                 }
 
                                 self.handle_reorgs_for_mempool(forkchoice_state, old_state.head_block_hash, context.common_ancestor_hash).await;
+                                // Revalidate mempool after reorg
+                                self.mempool.revalidate(&self.read_storage, None).await;
                             }
 
                             // 3. Mark the new branch as canonical SECOND
@@ -631,6 +645,11 @@ impl Engine {
                 }
                 debug!("[Engine] Updating head to #{} hash {:?}", header.number, forkchoice_state.head_block_hash);
                 self.update_head_block(forkchoice_state, &header).await;
+
+                // Phase 3: Prune historical data (StateBranches, ChangeSets, TrieNodes)
+                if let Err(e) = self.write_storage.prune_historical_data(header.number) {
+                    warn!("[Engine] Failed to prune historical data at height {}: {}", header.number, e);
+                }
             }
         }
 

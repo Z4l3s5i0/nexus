@@ -6,7 +6,7 @@ use evm_precompile::StandardPrecompileSet;
 use sha2::{Digest, Sha256};
 use wasix_eth_storage::read_traits::{AccountProvider, ChainProvider, HeaderProvider};
 use wasix_eth_storage::write::BatchWriter;
-use wasix_eth_storage::write_traits::{AccountWriter, ChangeSetWriter, TransactionWriter};
+use wasix_eth_storage::write_traits::{AccountWriter, ChangeSetWriter, TransactionWriter, StateBranchWriter};
 use wasix_eth_types::*;
 use wasix_eth_utils::{debug, info};
 use wasix_eth_types::PayloadAttributes;
@@ -19,7 +19,8 @@ pub trait ExecutionProvider: Send + Sync {
     fn execute_block_with_commit(&self, block: Block<Transaction>, commit: bool) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_block_with_state_root(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_block_with_state_root_and_building(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
-    fn execute_block_with_batch(&self, block: Block<Transaction>, batch: &BatchWriter, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>, deadline: Option<std::time::Instant>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
+    fn execute_block_with_batch(&self, block: Block<Transaction>, batch: &BatchWriter, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>, _deadline: Option<std::time::Instant>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
+    fn execute_block_side_commit(&self, block: Block<Transaction>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_blocks_with_batch(&self, blocks: Vec<Block<Transaction>>) -> Result<()>;
     fn execute_block_for_payload(
         &self,
@@ -536,6 +537,19 @@ impl ExecutionProvider for EthExecutionProvider {
         self.execute_block_with_state_root_and_building(block, commit, state_root, false, None)
     }
 
+    fn execute_block_side_commit(&self, block: Block<Transaction>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
+        let mut batch = self.write_storage.begin_batch()?;
+        batch.set_side_commit(true);
+        let block_hash = block.header.hash_slow();
+        let (executed_block, receipts, metas) = self.execute_block_with_batch(block, &batch, None, false, None, None)?;
+        
+        // Persist the state root in the StateBranches table
+        batch.insert_state_root(block_hash, executed_block.header.state_root)?;
+        
+        batch.commit()?;
+        Ok((executed_block, receipts, metas))
+    }
+
     fn execute_block_with_state_root_and_building(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
         debug!("[Execution] execute_block_with_state_root: block {} commit={} state_root={:?} building={}", block.header.number, commit, state_root, building);
         self.write_storage.clear_tracking();
@@ -597,7 +611,7 @@ impl ExecutionProvider for EthExecutionProvider {
         Ok(())
     }
 
-    fn execute_block_with_batch(&self, mut block: Block<Transaction>, batch: &BatchWriter, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>, deadline: Option<std::time::Instant>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
+    fn execute_block_with_batch(&self, mut block: Block<Transaction>, batch: &BatchWriter, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>, _deadline: Option<std::time::Instant>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
         let mut state_root = state_root;
         if state_root.is_none() && block.header.number > 0 {
             // Look up the parent header to get the correct state root for the reorged path
@@ -658,7 +672,7 @@ impl ExecutionProvider for EthExecutionProvider {
             }
             // Time cap check
             if building {
-                if let Some(dl) = deadline {
+                if let Some(dl) = _deadline {
                     if std::time::Instant::now() >= dl {
                         info!("[Execution] Time cap reached during block building at transaction {}, stopping", tx_idx);
                         break;
@@ -750,7 +764,7 @@ impl ExecutionProvider for EthExecutionProvider {
         attributes: &PayloadAttributes,
         base_fee: Option<u64>,
         interruption_token: Option<CancellationToken>,
-        deadline: Option<std::time::Instant>,
+        _deadline: Option<std::time::Instant>,
     ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
         let chain_id = self.read_storage.chain_id().unwrap_or(1);
         let chain_config = self.read_storage.chain_config()?.unwrap_or_else(|| ChainConfig {

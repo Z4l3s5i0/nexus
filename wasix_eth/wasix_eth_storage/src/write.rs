@@ -6,7 +6,7 @@ use crate::tables::*;
 use std::collections::{HashSet, HashMap};
 use std::sync::Mutex;
 use std::sync::Arc;
-use crate::write_traits::{AccountWriter, BlockWriter, BytecodeWriter, ChangeSetWriter, HeaderWriter, MetadataWriter, PeerDiscoveryWriter, StateWriter, StorageWriter, TransactionWriter};
+use crate::write_traits::{AccountWriter, BlockWriter, BytecodeWriter, ChangeSetWriter, HeaderWriter, MetadataWriter, PeerDiscoveryWriter, StateWriter, StorageWriter, TransactionWriter, StateBranchWriter};
 use crate::read_traits::{AccountProvider, BytecodeProvider, StateProvider, StorageProvider, HeaderProvider};
 use crate::read::DatabaseReadProvider;
 use wasix_eth_types::ReceiptMeta;
@@ -66,6 +66,7 @@ pub struct BatchWriter {
     resetted_storages: Arc<Mutex<HashSet<Address>>>,
     original_accounts: Arc<Mutex<HashMap<Address, Option<TrieAccount>>>>,
     original_storages: Arc<Mutex<HashMap<(Address, B256), U256>>>,
+    side_commit: bool,
 }
 
 impl BatchWriter {
@@ -79,7 +80,12 @@ impl BatchWriter {
             resetted_storages: Arc::new(Mutex::new(HashSet::new())),
             original_accounts: Arc::new(Mutex::new(HashMap::new())),
             original_storages: Arc::new(Mutex::new(HashMap::new())),
+            side_commit: false,
         }
+    }
+
+    pub fn set_side_commit(&mut self, side_commit: bool) {
+        self.side_commit = side_commit;
     }
 
     pub fn set_base_state_root(&self, root: B256) {
@@ -141,14 +147,10 @@ impl BatchWriter {
                         debug!("[Trie] Deleting empty account from trie: addr={:?}", addr);
                         trie.delete(hashed_addr)?;
                         // Also remove from Accounts table
-                        let mut table = self.wtx.open_table(Accounts::definition())?;
-                        table.remove(addr)?;
-                        
-                        // Sync PlainState and HashedState removal
-                        let mut plain_table = self.wtx.open_table(PlainState::definition())?;
-                        plain_table.remove(addr)?;
-                        let mut hashed_table = self.wtx.open_table(HashedState::definition())?;
-                        hashed_table.remove(hashed_addr)?;
+                        if !self.side_commit {
+                            let mut table = self.wtx.open_table(Accounts::definition())?;
+                            table.remove(addr)?;
+                        }
                         continue;
                     }
                 }
@@ -162,29 +164,28 @@ impl BatchWriter {
 
                 debug!("[Trie] Updating account in trie: addr={:?}, balance={}, nonce={}, storage={:?}, code={:?}", addr, trie_acc.balance, trie_acc.nonce, trie_acc.storage_root, trie_acc.code_hash);
 
-                // Update Accounts table with new storage root
-                let mut table = self.wtx.open_table(Accounts::definition())?;
-                table.insert(addr, trie_acc)?;
+                if !self.side_commit {
+                    // Update Accounts table with new storage root
+                    let mut table = self.wtx.open_table(Accounts::definition())?;
+                    table.insert(addr, trie_acc)?;
 
-                // Sync PlainState and HashedState
-                let mut acc_rlp = Vec::new();
-                alloy_rlp::Encodable::encode(&trie_acc, &mut acc_rlp);
-                let acc_rlp_bytes = Bytes::from(acc_rlp);
-                
-                let mut plain_table = self.wtx.open_table(PlainState::definition())?;
-                plain_table.insert(addr, acc_rlp_bytes.clone())?;
-                let mut hashed_table = self.wtx.open_table(HashedState::definition())?;
-                hashed_table.insert(hashed_addr, acc_rlp_bytes.clone())?;
-
-                trie.insert(hashed_addr, acc_rlp_bytes.0.to_vec())?;
+                    let mut acc_rlp = Vec::new();
+                    alloy_rlp::Encodable::encode(&trie_acc, &mut acc_rlp);
+                    trie.insert(hashed_addr, acc_rlp)?;
+                } else {
+                    let mut acc_rlp = Vec::new();
+                    alloy_rlp::Encodable::encode(&trie_acc, &mut acc_rlp);
+                    trie.insert(hashed_addr, acc_rlp)?;
+                }
             } else {
                 debug!("[Trie] Account not found for trie update: addr={:?}", addr);
                 trie.delete(hashed_addr)?;
-                // Remove from PlainState and HashedState as well
-                let mut plain_table = self.wtx.open_table(PlainState::definition())?;
-                plain_table.remove(addr)?;
-                let mut hashed_table = self.wtx.open_table(HashedState::definition())?;
-                hashed_table.remove(hashed_addr)?;
+
+                if !self.side_commit {
+                    // Remove from Accounts table
+                    let mut table = self.wtx.open_table(Accounts::definition())?;
+                    table.remove(addr)?;
+                }
             }
         }
 
@@ -222,22 +223,9 @@ impl BatchWriter {
             if let Ok(value) = self.storage(address, slot, state_root) {
                 if value == U256::ZERO {
                     trie.delete(hashed_slot)?;
-                    
-                    // Sync HashedState
-                    let hashed_addr = alloy_primitives::keccak256(address);
-                    let combined_key = alloy_primitives::keccak256([hashed_addr.0, hashed_slot.0].concat());
-                    let mut table = self.wtx.open_table(HashedState::definition())?;
-                    table.remove(combined_key)?;
                 } else {
                     let mut buf = Vec::new();
                     alloy_rlp::Encodable::encode(&value, &mut buf);
-                    
-                    // Sync HashedState
-                    let val_bytes = value.to_be_bytes::<32>();
-                    let hashed_addr = alloy_primitives::keccak256(address);
-                    let combined_key = alloy_primitives::keccak256([hashed_addr.0, hashed_slot.0].concat());
-                    let mut table = self.wtx.open_table(HashedState::definition())?;
-                    table.insert(combined_key, Bytes::from(val_bytes.to_vec()))?;
 
                     trie.insert(hashed_slot, buf)?;
                 }
@@ -570,6 +558,7 @@ impl AccountWriter for BatchWriter {
                 originals.insert(address, old);
             }
         }
+
         let mut table = self.wtx.open_table(Accounts::definition())?;
         table.insert(address, account)?;
         self.touched_accounts.lock().unwrap().insert(address);
@@ -654,22 +643,6 @@ impl BytecodeWriter for BatchWriter {
 }
 
 impl StateProvider for BatchWriter {
-    fn plain_state(&self, address: Address) -> anyhow::Result<Option<Bytes>> {
-        let table = self.wtx.open_table(PlainState::definition())?;
-        if let Some(value) = table.get(address)? {
-            return Ok(Some(value.value()));
-        }
-        self.read_provider.plain_state(address)
-    }
-
-    fn hashed_state(&self, hash: B256) -> anyhow::Result<Option<Bytes>> {
-        let table = self.wtx.open_table(HashedState::definition())?;
-        if let Some(value) = table.get(hash)? {
-            return Ok(Some(value.value()));
-        }
-        self.read_provider.hashed_state(hash)
-    }
-
     fn trie_node(&self, hash: B256) -> anyhow::Result<Option<Bytes>> {
         let table = self.wtx.open_table(TrieNodes::definition())?;
         if let Some(value) = table.get(hash)? {
@@ -680,30 +653,18 @@ impl StateProvider for BatchWriter {
 }
 
 impl StateWriter for BatchWriter {
-    fn update_plain_state(&self, address: Address, state: Bytes) -> Result<()> {
-        let mut table = self.wtx.open_table(PlainState::definition())?;
-        table.insert(address, state)?;
-        self.touched_accounts.lock().unwrap().insert(address);
-        Ok(())
-    }
-
-    fn remove_plain_state(&self, address: Address) -> Result<()> {
-        let mut table = self.wtx.open_table(PlainState::definition())?;
-        table.remove(address)?;
-        self.touched_accounts.lock().unwrap().insert(address);
-        Ok(())
-    }
-
-    fn update_hashed_state(&self, hash: B256, state: Bytes) -> Result<()> {
-        let mut table = self.wtx.open_table(HashedState::definition())?;
-        table.insert(hash, state)?;
-        Ok(())
-    }
-
     fn update_trie_node(&self, hash: B256, node: Bytes) -> Result<()> {
         debug!("[BatchWriter] update_trie_node: hash={:?}, len={}", hash, node.len());
-        let mut table = self.wtx.open_table(TrieNodes::definition())?;
-        table.insert(hash, node.clone())?;
+        let mut nodes_table = self.wtx.open_table(TrieNodes::definition())?;
+        let mut refs_table = self.wtx.open_table(TrieNodeRefs::definition())?;
+        
+        if nodes_table.get(hash)?.is_none() {
+            nodes_table.insert(hash, node)?;
+            refs_table.insert(hash, 1)?;
+        } else {
+            let current_refs = refs_table.get(hash)?.map(|v| v.value()).unwrap_or(0);
+            refs_table.insert(hash, current_refs + 1)?;
+        }
         Ok(())
     }
 }
@@ -1107,20 +1068,6 @@ impl BytecodeWriter for DatabaseWriteProvider {
 }
 
 impl StateProvider for DatabaseWriteProvider {
-    fn plain_state(&self, address: Address) -> anyhow::Result<Option<Bytes>> {
-        let rtx = self.db.begin_read()?;
-        let table = rtx.open_table(PlainState::definition())?;
-        let value = table.get(address)?;
-        Ok(value.map(|v| v.value()))
-    }
-
-    fn hashed_state(&self, hash: B256) -> anyhow::Result<Option<Bytes>> {
-        let rtx = self.db.begin_read()?;
-        let table = rtx.open_table(HashedState::definition())?;
-        let value = table.get(hash)?;
-        Ok(value.map(|v| v.value()))
-    }
-
     fn trie_node(&self, hash: B256) -> anyhow::Result<Option<Bytes>> {
         let rtx = self.db.begin_read()?;
         let table = rtx.open_table(TrieNodes::definition())?;
@@ -1130,34 +1077,18 @@ impl StateProvider for DatabaseWriteProvider {
 }
 
 impl StateWriter for DatabaseWriteProvider {
-    fn update_plain_state(&self, address: Address, state: Bytes) -> Result<()> {
-        self.with_write(|wtx| {
-            let mut table = wtx.open_table(PlainState::definition())?;
-            table.insert(address, state)?;
-            Ok(())
-        })
-    }
-
-    fn remove_plain_state(&self, address: Address) -> Result<()> {
-        self.with_write(|wtx| {
-            let mut table = wtx.open_table(PlainState::definition())?;
-            table.remove(address)?;
-            Ok(())
-        })
-    }
-
-    fn update_hashed_state(&self, hash: B256, state: Bytes) -> Result<()> {
-        self.with_write(|wtx| {
-            let mut table = wtx.open_table(HashedState::definition())?;
-            table.insert(hash, state)?;
-            Ok(())
-        })
-    }
-
     fn update_trie_node(&self, hash: B256, node: Bytes) -> Result<()> {
         self.with_write(|wtx| {
-            let mut table = wtx.open_table(TrieNodes::definition())?;
-            table.insert(hash, node)?;
+            let mut nodes_table = wtx.open_table(TrieNodes::definition())?;
+            let mut refs_table = wtx.open_table(TrieNodeRefs::definition())?;
+            
+            if nodes_table.get(hash)?.is_none() {
+                nodes_table.insert(hash, node)?;
+                refs_table.insert(hash, 1)?;
+            } else {
+                let current_refs = refs_table.get(hash)?.map(|v| v.value()).unwrap_or(0);
+                refs_table.insert(hash, current_refs + 1)?;
+            }
             Ok(())
         })
     }
@@ -1216,5 +1147,208 @@ impl ChangeSetWriter for DatabaseWriteProvider {
             s_table.remove(number)?;
             Ok(())
         })
+    }
+}
+
+impl StateBranchWriter for DatabaseWriteProvider {
+    fn insert_state_root(&self, block_hash: B256, root: B256) -> anyhow::Result<()> {
+        self.with_write(|wtx| {
+            let mut table = wtx.open_table(StateBranches::definition())?;
+            table.insert(block_hash, root)?;
+            Ok(())
+        })
+    }
+}
+
+impl DatabaseWriteProvider {
+    pub fn prune_historical_data(&self, current_height: u64) -> anyhow::Result<()> {
+        if current_height <= crate::REORG_LIMIT {
+            return Ok(());
+        }
+        let threshold = current_height - crate::REORG_LIMIT;
+        wasix_eth_utils::info!("[Pruner] Pruning data older than height {}", threshold);
+
+        self.with_write(|wtx| {
+            // 1. Prune ChangeSets
+            let mut acs_table = wtx.open_table(AccountChangeSets::definition())?;
+            let mut scs_table = wtx.open_table(StorageChangeSets::definition())?;
+            
+            let mut to_remove_acs = Vec::new();
+            for entry in acs_table.iter()? {
+                let (h, _) = entry?;
+                if h.value() < threshold {
+                    to_remove_acs.push(h.value());
+                } else {
+                    break; // Tables are ordered by key (u64 height)
+                }
+            }
+            for h in to_remove_acs {
+                acs_table.remove(h)?;
+            }
+
+            let mut to_remove_scs = Vec::new();
+            for entry in scs_table.iter()? {
+                let (h, _) = entry?;
+                if h.value() < threshold {
+                    to_remove_scs.push(h.value());
+                } else {
+                    break;
+                }
+            }
+            for h in to_remove_scs {
+                scs_table.remove(h)?;
+            }
+
+            // 2. Prune StateBranches
+            let mut branches_table = wtx.open_table(StateBranches::definition())?;
+            let hn_table = wtx.open_table(HeaderNumbers::definition())?;
+            
+            let mut to_remove_branches = Vec::new();
+            for entry in branches_table.iter()? {
+                let (hash, _) = entry?;
+                if let Some(h) = hn_table.get(hash.value())? {
+                    if h.value() < threshold {
+                        to_remove_branches.push(hash.value());
+                    }
+                } else {
+                    // Orphaned branch entry, remove it
+                    to_remove_branches.push(hash.value());
+                }
+            }
+            for hash in to_remove_branches {
+                branches_table.remove(hash)?;
+            }
+
+            Ok(())
+        })?;
+
+        // 3. Prune TrieNodes (Mark and Sweep)
+        // This is heavy, maybe run it less frequently?
+        if current_height % 50 == 0 {
+            self.prune_trie_nodes()?;
+        }
+
+        Ok(())
+    }
+
+    pub fn prune_trie_nodes(&self) -> anyhow::Result<()> {
+        wasix_eth_utils::info!("[Pruner] Starting TrieNode GC (Mark & Sweep)");
+        
+        let mut active_roots = HashSet::new();
+        
+        {
+            let rtx = self.db.begin_read()?;
+            
+            // Collect Head root
+            let forkchoice = rtx.open_table(Forkchoice::definition())?;
+            if let Some(head_hash) = forkchoice.get("head".to_string())? {
+                let headers = rtx.open_table(Headers::definition())?;
+                if let Some(header) = headers.get(head_hash.value())? {
+                    active_roots.insert(header.value().state_root);
+                }
+            }
+            
+            // Collect StateBranch roots
+            let branches = rtx.open_table(StateBranches::definition())?;
+            for entry in branches.iter()? {
+                let (_, root) = entry?;
+                active_roots.insert(root.value());
+            }
+        }
+        
+        if active_roots.is_empty() {
+            return Ok(());
+        }
+
+        let mut marked = HashSet::new();
+        let read_provider = DatabaseReadProvider::new(self.db.clone());
+        
+        for root in active_roots {
+            self.mark_trie_nodes(&read_provider, root, &mut marked)?;
+        }
+
+        wasix_eth_utils::info!("[Pruner] Marked {} active nodes", marked.len());
+
+        self.with_write(|wtx| {
+            let mut nodes_table = wtx.open_table(TrieNodes::definition())?;
+            let mut refs_table = wtx.open_table(TrieNodeRefs::definition())?;
+            
+            let mut to_remove = Vec::new();
+            for entry in nodes_table.iter()? {
+                let (hash, _) = entry?;
+                if !marked.contains(&hash.value()) {
+                    to_remove.push(hash.value());
+                }
+            }
+            
+            wasix_eth_utils::info!("[Pruner] Deleting {} unreachable nodes", to_remove.len());
+            for hash in to_remove {
+                nodes_table.remove(hash)?;
+                refs_table.remove(hash)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn mark_trie_nodes(&self, read: &DatabaseReadProvider, root: B256, marked: &mut HashSet<B256>) -> anyhow::Result<()> {
+        if root == alloy_trie::EMPTY_ROOT_HASH || marked.contains(&root) {
+            return Ok(());
+        }
+
+        let mut stack = vec![root];
+        while let Some(hash) = stack.pop() {
+            if marked.contains(&hash) { continue; }
+            marked.insert(hash);
+
+            if let Some(node_bytes) = read.trie_node(hash)? {
+                let mut data = &node_bytes[..];
+                use crate::trie::MyTrieNode;
+                if let Ok(node) = MyTrieNode::decode(&mut data) {
+                    match node {
+                        MyTrieNode::Branch(b) => {
+                            for child in b.stack {
+                                if let Some(h) = child.as_hash() {
+                                    stack.push(h);
+                                }
+                            }
+                            if let Some(v) = b.value {
+                                // If value is a state root (storage trie), we need to recurse
+                                // Actually, in our MPT, Branch value is usually account RLP.
+                                // We need to check if it's an account and recurse into storage_root.
+                                let mut v_slice = &v[..];
+                                if let Ok(acc) = <wasix_eth_types::TrieAccount as alloy_rlp::Decodable>::decode(&mut v_slice) {
+                                    if acc.storage_root != alloy_trie::EMPTY_ROOT_HASH {
+                                        stack.push(acc.storage_root);
+                                    }
+                                }
+                            }
+                        }
+                        MyTrieNode::Extension(e) => {
+                            if let Some(h) = e.child.as_hash() {
+                                stack.push(h);
+                            }
+                        }
+                        MyTrieNode::Leaf(l) => {
+                             let mut v_slice = &l.value[..];
+                             if let Ok(acc) = <wasix_eth_types::TrieAccount as alloy_rlp::Decodable>::decode(&mut v_slice) {
+                                 if acc.storage_root != alloy_trie::EMPTY_ROOT_HASH {
+                                     stack.push(acc.storage_root);
+                                 }
+                             }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl StateBranchWriter for BatchWriter {
+    fn insert_state_root(&self, block_hash: B256, root: B256) -> anyhow::Result<()> {
+        let mut table = self.wtx.open_table(StateBranches::definition())?;
+        table.insert(block_hash, root)?;
+        Ok(())
     }
 }

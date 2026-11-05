@@ -26,7 +26,7 @@ use crate::trie::MyTrieNode;
 use anyhow::Error;
 use wasix_eth_types::error::RpcError;
 use wasix_eth_utils::info;
-use crate::read_traits::{AccountProvider, BlockProvider, BytecodeProvider, ChainProvider, ChangeSetProvider, HeaderProvider, LogProvider, MetadataProvider, PeerDiscoveryProvider, StateProvider, StorageProvider, TransactionProvider};
+use crate::read_traits::{AccountProvider, BlockProvider, BytecodeProvider, ChainProvider, ChangeSetProvider, HeaderProvider, LogProvider, MetadataProvider, PeerDiscoveryProvider, StateProvider, StorageProvider, TransactionProvider, StateBranchProvider};
 use crate::write_traits::StateWriter;
 use crate::trie::EthTrie;
 
@@ -724,15 +724,6 @@ impl ChainProvider for DatabaseReadProvider {
 }
 
 impl StateWriter for DatabaseReadProvider {
-    fn update_plain_state(&self, _address: Address, _state: Bytes) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!("DatabaseReadProvider is read-only"))
-    }
-    fn remove_plain_state(&self, _address: Address) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!("DatabaseReadProvider is read-only"))
-    }
-    fn update_hashed_state(&self, _hash: B256, _state: Bytes) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!("DatabaseReadProvider is read-only"))
-    }
     fn update_trie_node(&self, _hash: B256, _node: Bytes) -> anyhow::Result<()> {
         Err(anyhow::anyhow!("DatabaseReadProvider is read-only"))
     }
@@ -825,20 +816,6 @@ impl BytecodeProvider for DatabaseReadProvider {
 }
 
 impl StateProvider for DatabaseReadProvider {
-    fn plain_state(&self, address: Address) -> Result<Option<Bytes>> {
-        let tx = self.db.begin_read()?;
-        let table = tx.open_table(PlainState::definition())?;
-        let value = table.get(address)?;
-        Ok(value.map(|v| v.value()))
-    }
-
-    fn hashed_state(&self, hash: B256) -> Result<Option<Bytes>> {
-        let tx = self.db.begin_read()?;
-        let table = tx.open_table(HashedState::definition())?;
-        let value = table.get(hash)?;
-        Ok(value.map(|v| v.value()))
-    }
-
     fn trie_node(&self, hash: B256) -> Result<Option<Bytes>> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(TrieNodes::definition())?;
@@ -862,6 +839,15 @@ impl MetadataProvider for DatabaseReadProvider {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(Metadata::definition())?;
         let value = table.get(key)?;
+        Ok(value.map(|v| v.value()))
+    }
+}
+
+impl StateBranchProvider for DatabaseReadProvider {
+    fn state_root(&self, block_hash: B256) -> anyhow::Result<Option<B256>> {
+        let tx = self.db.begin_read()?;
+        let table = tx.open_table(StateBranches::definition())?;
+        let value = table.get(block_hash)?;
         Ok(value.map(|v| v.value()))
     }
 }
