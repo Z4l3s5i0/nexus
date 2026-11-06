@@ -36,6 +36,21 @@ pub enum BuildStatus {
     InitialBuildCompleted,
 }
 
+#[derive(Clone, Debug)]
+pub struct PayloadBuilderConfig {
+    pub initial_wait_ms: u64,
+    pub grace_period_ms: u64,
+}
+
+impl Default for PayloadBuilderConfig {
+    fn default() -> Self {
+        Self {
+            initial_wait_ms: 2500,
+            grace_period_ms: 200,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct PayloadBuilder {
     pub consensus: Arc<dyn Consensus>,
@@ -53,6 +68,7 @@ pub struct PayloadBuilder {
     pub build_statuses: Arc<RwLock<HashMap<PayloadId, BuildStatus>>>,
     /// Notifies waiters when a payload's build status changes.
     pub build_notify: Arc<RwLock<HashMap<PayloadId, Arc<Notify>>>>,
+    pub config: PayloadBuilderConfig,
 }
 
 impl PayloadBuilder {
@@ -445,10 +461,11 @@ impl PayloadBuilder {
 
     pub async fn get_payload(&self, payload_id: &PayloadId) -> RpcResult<(Block<Transaction>, Vec<Receipt>, Vec<wasix_eth_types::ReceiptMeta>, BlobsBundleV1)> {
         let wait_start = std::time::Instant::now();
+        let initial_wait = std::time::Duration::from_millis(self.config.initial_wait_ms);
         
-        // 1. Wait for initial build to complete, but cap it at 1s for fast BN response.
+        // 1. Wait for initial build to complete, but cap it at configured timeout for BN response.
         // If it's already completed, this returns immediately.
-        while wait_start.elapsed() < std::time::Duration::from_millis(1000) {
+        while wait_start.elapsed() < initial_wait {
             let status = {
                 let statuses = self.build_statuses.read().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?;
                 statuses.get(payload_id).cloned()
@@ -466,7 +483,7 @@ impl PayloadBuilder {
                 };
                 
                 if let Some(n) = notify {
-                    let remaining = std::time::Duration::from_millis(1000).saturating_sub(wait_start.elapsed());
+                    let remaining = initial_wait.saturating_sub(wait_start.elapsed());
                     if remaining.is_zero() { break; }
                     let _ = tokio::time::timeout(remaining, n.notified()).await;
                 } else {
@@ -486,8 +503,6 @@ impl PayloadBuilder {
         };
 
         // 3. If a build is active and we've waited enough, signal interruption.
-        // We use a shorter threshold (e.g., 500ms) to trigger interruption if we want to be really fast,
-        // but 1s is a good balance.
         if initial_token.is_some() || rebuild_token.is_some() {
             if !self.in_flight_interruptions.contains(payload_id) {
                 self.in_flight_interruptions.insert(*payload_id);
@@ -503,8 +518,7 @@ impl PayloadBuilder {
             }
 
             // 4. Wait a very short time for the builder to yield and persist whatever it has.
-            // 200ms should be enough for a 1-2ms transaction to finish and check the token.
-            let grace_period = std::time::Duration::from_millis(200);
+            let grace_period = std::time::Duration::from_millis(self.config.grace_period_ms);
             tokio::time::sleep(grace_period).await;
         }
 

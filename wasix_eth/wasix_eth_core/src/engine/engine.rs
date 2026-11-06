@@ -179,6 +179,7 @@ impl Engine {
                 in_flight_interruptions: Arc::new(DashSet::new()),
                 build_statuses: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
                 build_notify: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+                config: crate::engine::payload_builder::PayloadBuilderConfig::default(),
             },
             payload_processor: PayloadProcessor {
                 execution_cancellation_tokens: Arc::new(DashMap::new()),

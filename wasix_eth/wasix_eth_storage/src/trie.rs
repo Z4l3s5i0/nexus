@@ -282,7 +282,6 @@ pub struct EthTrie<'a, S: StateProvider + StateWriter> {
     root_hash: B256,
     cache: HashMap<B256, MyTrieNode>,
     dirty: HashMap<B256, Vec<u8>>,
-    interruption_token: Option<wasix_eth_types::CancellationToken>,
 }
 
 impl<'a, S: StateProvider + StateWriter> EthTrie<'a, S> {
@@ -292,27 +291,7 @@ impl<'a, S: StateProvider + StateWriter> EthTrie<'a, S> {
             root_hash,
             cache: HashMap::new(),
             dirty: HashMap::new(),
-            interruption_token: None,
         }
-    }
-
-    pub fn with_interruption(state: &'a S, root_hash: B256, token: Option<wasix_eth_types::CancellationToken>) -> Self {
-        Self {
-            state,
-            root_hash,
-            cache: HashMap::new(),
-            dirty: HashMap::new(),
-            interruption_token: token,
-        }
-    }
-
-    fn check_interruption(&self) -> anyhow::Result<()> {
-        if let Some(token) = &self.interruption_token {
-            if token.is_cancelled() {
-                return Err(anyhow::anyhow!("Trie operation interrupted by cancellation token"));
-            }
-        }
-        Ok(())
     }
 
     pub fn root_hash(&self) -> B256 {
@@ -397,7 +376,6 @@ impl<'a, S: StateProvider + StateWriter> EthTrie<'a, S> {
     }
 
     fn insert_recursive(&mut self, node_hash: B256, nibbles: Nibbles, value: Vec<u8>) -> anyhow::Result<B256> {
-        self.check_interruption()?;
         if node_hash == EMPTY_ROOT_HASH {
             let leaf = MyLeafNode::new(nibbles, value);
             return Ok(self.store_node(MyTrieNode::Leaf(leaf))?);
@@ -603,7 +581,6 @@ impl<'a, S: StateProvider + StateWriter> EthTrie<'a, S> {
     }
 
     fn delete_recursive(&mut self, node_hash: B256, nibbles: Nibbles) -> anyhow::Result<B256> {
-        self.check_interruption()?;
         // debug!("[Trie] delete_recursive: hash={:?}, nibbles={:?}", node_hash, nibbles);
         if node_hash == EMPTY_ROOT_HASH {
             return Ok(EMPTY_ROOT_HASH);
@@ -788,7 +765,6 @@ impl<'a, S: StateProvider + StateWriter> EthTrie<'a, S> {
     }
 
     pub fn commit(&mut self) -> anyhow::Result<()> {
-        self.check_interruption()?;
         let nodes: Vec<(B256, Bytes)> = self.dirty.drain().map(|(h, d)| (h, d.into())).collect();
         if !nodes.is_empty() {
             self.state.update_trie_nodes(nodes)?;
