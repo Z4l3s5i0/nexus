@@ -157,6 +157,10 @@ impl PrometheusScraper {
                 let delta = get_delta("mempool_rejected_transactions_total", sample.value);
                 self.telemetry.node_mempool_rejected_transactions_total.with_label_values(&labels).inc_by(delta);
             },
+            "evicted_transactions_total" => {
+                let delta = get_delta("evicted_transactions_total", sample.value);
+                self.telemetry.node_evicted_transactions_total.with_label_values(&labels).inc_by(delta);
+            },
             "gossip_messages_received_total" => {
                 let delta = get_delta("gossip_messages_received_total", sample.value);
                 self.telemetry.node_gossip_messages_received_total.with_label_values(&labels).inc_by(delta);

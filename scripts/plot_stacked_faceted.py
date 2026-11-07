@@ -140,7 +140,7 @@ def main():
     # Determine marker time based on experiment type in path
     marker_time = None
     if first_tx_happens is not None:
-        duration = 120 # Default
+        duration = 180 # Default
         path_lower = analysis_dir.lower()
         if 'fifa' in path_lower:
             duration = 180
@@ -178,9 +178,9 @@ def main():
     
     # We still use last_commit_time + 120 for the view window, 
     # or the marker_time + 60, whichever is larger to ensure we see the line.
-    if last_commit_time is not None:
-        x_max = min(df['time_sec'].max(), marker_time + 120)
-    
+#     if last_commit_time is not None:
+#         x_max = min(df['time_sec'].max(), marker_time + 120)
+#
     if marker_time is not None:
         x_max = max(x_max, min(df['time_sec'].max(), marker_time + 60))
 
@@ -199,9 +199,10 @@ def main():
     metric_y_limits = {}
     for j, (metric_name, title) in enumerate(metrics_config):
         if metric_name == 'transactions_committed_total':
-            # For integrated graph, consider both committed and rejected
+            # For integrated graph, consider both committed, rejected and evicted
             committed_data = df_filtered[df_filtered['name'] == 'transactions_committed_total']
             rejected_data = df_filtered[df_filtered['name'] == 'mempool_rejected_transactions_total']
+            evicted_data = df_filtered[df_filtered['name'] == 'evicted_transactions_total']
             
             m_min = 0
             m_max = 0
@@ -211,6 +212,9 @@ def main():
             if not rejected_data.empty:
                 m_min = min(m_min, rejected_data['value'].min())
                 m_max = max(m_max, rejected_data['value'].max())
+            if not evicted_data.empty:
+                m_min = min(m_min, evicted_data['value'].min())
+                m_max = max(m_max, evicted_data['value'].max())
             
             padding = (m_max - m_min) * 0.05 if m_max > m_min else 0.05
             metric_y_limits[metric_name] = (m_min - padding, m_max + padding)
@@ -299,6 +303,11 @@ def main():
                 rejected_data = df[(df['node_id'] == node) & (df['name'] == 'mempool_rejected_transactions_total')].sort_values('time_sec')
                 if not rejected_data.empty:
                     ax.plot(rejected_data['time_sec'], rejected_data['value'], color='red', linestyle='--', alpha=0.7, label='Rejected')
+                
+                # Plot Evicted Transactions (in orange)
+                evicted_data = df[(df['node_id'] == node) & (df['name'] == 'evicted_transactions_total')].sort_values('time_sec')
+                if not evicted_data.empty:
+                    ax.plot(evicted_data['time_sec'], evicted_data['value'], color='orange', linestyle=':', alpha=0.7, label='Evicted')
                 
                 # Add legend to top left
                 ax.legend(loc='upper left', fontsize=LEGEND_FONT_SIZE)

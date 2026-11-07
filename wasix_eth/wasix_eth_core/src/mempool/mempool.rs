@@ -5,7 +5,7 @@ use dashmap::DashMap;
 use im::{Vector, HashMap as ImmutableMap};
 use arc_swap::ArcSwap;
 use wasix_eth_types::{Address, SignerRecoverable, ConsensusTransaction, B256, U256, Transaction, Blob, Bytes48, TxPooledEnvelope, Bytes, MAX_MEMPOOL_SIZE};
-use wasix_eth_utils::{debug, info, metrics::{MEMPOOL_SIZE, MEMPOOL_REJECTED_TRANSACTIONS}};
+use wasix_eth_utils::{debug, info, metrics::{MEMPOOL_SIZE, MEMPOOL_REJECTED_TRANSACTIONS, EVICTED_TRANSACTIONS}};
 
 /// A read-optimized, immutable snapshot of the mempool for block building.
 #[derive(Clone, Debug)]
@@ -581,6 +581,7 @@ impl MempoolInner {
         }
         
         let base_fee = *self.base_fee.read().await;
+        let mut evicted_count = 0;
         
         self.update_state(|state| {
             while state.pending_transactions.iter().map(|(_, q)| q.len()).sum::<usize>() +
@@ -624,6 +625,7 @@ impl MempoolInner {
                         if let Some(tx) = q.pop_back() {
                             info!("[Mempool] Evicting transaction {:?} (nonce: {}) from {} pool due to capacity (tip: {})", 
                                 tx.hash(), tx.nonce(), if is_pending { "pending" } else { "queued" }, worst_tip);
+                            evicted_count += 1;
                         }
                         if q.is_empty() {
                             if is_pending {
@@ -639,6 +641,7 @@ impl MempoolInner {
             }
         });
 
+        EVICTED_TRANSACTIONS.inc_by(evicted_count as f64);
         MEMPOOL_SIZE.set(self.len() as f64);
     }
 

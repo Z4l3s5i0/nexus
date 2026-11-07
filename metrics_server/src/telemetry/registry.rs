@@ -22,6 +22,7 @@ pub struct TelemetryRegistry {
     pub node_transactions_committed_total: IntCounterVec,
     pub node_mempool_size: GaugeVec,
     pub node_mempool_rejected_transactions_total: IntCounterVec,
+    pub node_evicted_transactions_total: IntCounterVec,
     pub node_gossip_messages_received_total: IntCounterVec,
     pub node_p2p_messages_sent_bytes_total: IntCounterVec,
     pub node_rpc_requests_total: IntCounterVec,
@@ -107,6 +108,10 @@ impl TelemetryRegistry {
             prometheus::opts!("mempool_rejected_transactions_total", "Total number of transactions rejected by the mempool"),
             &["node_id", "network", "client"]
         )?;
+        let node_evicted_transactions_total = IntCounterVec::new(
+            prometheus::opts!("evicted_transactions_total", "Total number of transactions evicted from the mempool"),
+            &["node_id", "network", "client"]
+        )?;
         let node_gossip_messages_received_total = IntCounterVec::new(
             prometheus::opts!("gossip_messages_received_total", "Total gossip messages received"),
             &["node_id", "network", "client"]
@@ -154,6 +159,7 @@ impl TelemetryRegistry {
         registry.register(Box::new(node_transactions_committed_total.clone()))?;
         registry.register(Box::new(node_mempool_size.clone()))?;
         registry.register(Box::new(node_mempool_rejected_transactions_total.clone()))?;
+        registry.register(Box::new(node_evicted_transactions_total.clone()))?;
         registry.register(Box::new(node_gossip_messages_received_total.clone()))?;
         registry.register(Box::new(node_p2p_messages_sent_bytes_total.clone()))?;
         registry.register(Box::new(node_rpc_requests_total.clone()))?;
@@ -182,6 +188,7 @@ impl TelemetryRegistry {
             node_transactions_committed_total,
             node_mempool_size,
             node_mempool_rejected_transactions_total,
+            node_evicted_transactions_total,
             node_gossip_messages_received_total,
             node_p2p_messages_sent_bytes_total,
             node_rpc_requests_total,

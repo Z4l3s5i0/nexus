@@ -13,6 +13,7 @@ lazy_static! {
     // Mempool Metrics
     pub static ref MEMPOOL_SIZE: Gauge = register_gauge!("mempool_size", "Current number of transactions in the mempool").unwrap();
     pub static ref MEMPOOL_REJECTED_TRANSACTIONS: Counter = register_counter!("mempool_rejected_transactions_total", "Total number of transactions rejected by the mempool").unwrap();
+    pub static ref EVICTED_TRANSACTIONS: Counter = register_counter!("evicted_transactions_total", "Total number of transactions evicted from the mempool").unwrap();
 
     // Network Metrics
     pub static ref GOSSIP_MESSAGES_RECEIVED: Counter = register_counter!("gossip_messages_received_total", "Total gossip messages received").unwrap();
@@ -34,6 +35,7 @@ pub fn init_metrics() {
 
     let _ = *MEMPOOL_SIZE;
     let _ = *MEMPOOL_REJECTED_TRANSACTIONS;
+    let _ = *EVICTED_TRANSACTIONS;
     let _ = *GOSSIP_MESSAGES_RECEIVED;
     let _ = *P2P_MESSAGES_SENT_BYTES;
 
