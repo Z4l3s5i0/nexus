@@ -55,9 +55,8 @@ pub async fn do_handshake<S: AsyncReadExt + AsyncWriteExt + Unpin>(
         let auth_rlp = alloy_rlp::encode(&auth_msg);
         let mut auth_body = auth_rlp.to_vec();
         {
-            use rand::Rng;
-            let mut rng = rand::thread_rng();
-            auth_body.resize(auth_body.len() + rng.gen_range(100..300), 0);
+            let mut rng = rand::rng();
+            auth_body.resize(auth_body.len() + rng.random_range(100..300), 0);
         }
         let full_auth = ecies_encrypt(remote_pk, &auth_body, &initiator_session_eph_sk)?;
         debug!("[ECIES] Initiator: writing auth packet, len={}", full_auth.len());
@@ -155,9 +154,8 @@ pub async fn do_handshake<S: AsyncReadExt + AsyncWriteExt + Unpin>(
         let ack_rlp = alloy_rlp::encode(&ack_msg);
         let mut ack_body = ack_rlp.to_vec();
         {
-            use rand::Rng;
-            let mut rng = rand::thread_rng();
-            ack_body.resize(ack_body.len() + rng.gen_range(100..300), 0);
+            let mut rng = rand::rng();
+            ack_body.resize(ack_body.len() + rng.random_range(100..300), 0);
         }
         let full_ack = ecies_encrypt(&initiator_static_pk, &ack_body, &recipient_session_eph_sk)?;
         debug!("[ECIES] Recipient: writing ack packet, len={}", full_ack.len());

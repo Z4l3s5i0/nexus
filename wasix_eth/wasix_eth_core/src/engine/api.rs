@@ -36,7 +36,7 @@ use wasix_eth_types::TxLegacy;
 use wasix_eth_types::TxPooledEnvelope;
 use wasix_eth_types::B256;
 use wasix_eth_types::U256;
-use wasix_eth_types::{hex, BlobTransactionSidecarVariant, MAX_INIT_CODE_SIZE, SignerRecoverable};
+use wasix_eth_types::{hex, MAX_INIT_CODE_SIZE, SignerRecoverable};
 use wasix_eth_types::{ConsensusTransaction, Hardfork};
 use wasix_eth_utils::warn;
 use wasix_eth_utils::debug;
@@ -345,7 +345,7 @@ impl RPCEngine {
             }
         }
 
-        let mut signed_tx: Transaction = match pooled_tx.clone() {
+        let signed_tx: Transaction = match pooled_tx.clone() {
             TxPooledEnvelope::Legacy(tx) => Transaction::Legacy(tx),
             TxPooledEnvelope::Eip2930(tx) => Transaction::Eip2930(tx),
             TxPooledEnvelope::Eip1559(tx) => Transaction::Eip1559(tx),

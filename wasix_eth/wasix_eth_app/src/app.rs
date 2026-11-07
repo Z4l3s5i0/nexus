@@ -68,7 +68,6 @@ pub struct App {
     auth_rpc_server: Option<Server<tower::layer::util::Stack<HeaderInjectorLayer, tower::layer::util::Identity>, tower::layer::util::Stack<JwtAuthLayer, tower::layer::util::Identity>>>,
     eth_module: Option<jsonrpsee::RpcModule<()>>,
     auth_module: Option<jsonrpsee::RpcModule<()>>,
-    metrics_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl App {
@@ -405,7 +404,7 @@ impl AppBuilder {
                 let mut secret_bytes = [0u8; 32];
                 {
                     use rand::RngCore;
-                    rand::thread_rng().fill_bytes(&mut secret_bytes);
+                    rand::rng().fill_bytes(&mut secret_bytes);
                 }
                 // getrandom::getrandom(&mut secret_bytes)
                 //    .map_err(|e| format!("Failed to generate JWT secret: {}", e))?;
@@ -513,7 +512,6 @@ impl AppBuilder {
             auth_rpc_server: None,
             eth_module: None,
             auth_module: None,
-            metrics_handle: None,
         })
     }
 
@@ -543,7 +541,6 @@ impl AppBuilder {
             auth_rpc_server: None,
             eth_module: None,
             auth_module: None,
-            metrics_handle: None,
         })
     }
 
@@ -583,7 +580,6 @@ impl AppBuilder {
             auth_rpc_server: Some(auth_rpc_server),
             eth_module: Some(eth_module),
             auth_module: Some(auth_module),
-            metrics_handle: None,
         })
     }
 }

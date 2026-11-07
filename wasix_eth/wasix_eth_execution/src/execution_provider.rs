@@ -554,7 +554,7 @@ impl ExecutionProvider for EthExecutionProvider {
     fn execute_block_with_state_root_and_building(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
         debug!("[Execution] execute_block_with_state_root: block {} commit={} state_root={:?} building={}", block.header.number, commit, state_root, building);
         self.write_storage.clear_tracking();
-        let mut batch = self.write_storage.begin_batch()?;
+        let batch = self.write_storage.begin_batch()?;
         
         let (executed_block, receipts, metas) = match self.execute_block_with_batch(block.clone(), &batch, state_root, building, interruption_token, None) {
             Ok(res) => res,
@@ -589,7 +589,7 @@ impl ExecutionProvider for EthExecutionProvider {
         }
 
         self.write_storage.clear_tracking();
-        let mut batch = self.write_storage.begin_batch()?;
+        let batch = self.write_storage.begin_batch()?;
 
         for block in blocks {
             let (executed_block, _receipts, metas) = self.execute_block_with_batch(block, &batch, None, false, None, None)?;

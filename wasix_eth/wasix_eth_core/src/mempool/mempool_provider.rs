@@ -1,10 +1,9 @@
 use alloy_primitives::Address;
-use std::collections::HashMap;
 use std::sync::Arc;
 use wasix_eth_types::{async_trait, ConsensusTransaction, Transaction, B256, U256, Blob, Bytes48, TxPooledEnvelope, Bytes};
 use wasix_eth_storage::read::DatabaseReadProvider;
 use wasix_eth_storage::read_traits::AccountProvider;
-use crate::mempool::mempool::{Mempool, MempoolSnapshot, MempoolInternalState};
+use crate::mempool::mempool::{Mempool, MempoolSnapshot};
 use im::HashMap as ImmutableMap;
 use wasix_eth_storage::{ChainProvider, HeaderProvider};
 use wasix_eth_utils::info;

@@ -1,7 +1,6 @@
 use std::collections::{HashMap, BinaryHeap};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use dashmap::DashMap;
 use im::{Vector, HashMap as ImmutableMap};
 use arc_swap::ArcSwap;
 use wasix_eth_types::{Address, SignerRecoverable, ConsensusTransaction, B256, U256, Transaction, Blob, Bytes48, TxPooledEnvelope, Bytes, MAX_MEMPOOL_SIZE};

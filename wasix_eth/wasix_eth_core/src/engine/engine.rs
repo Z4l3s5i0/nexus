@@ -19,7 +19,7 @@ use wasix_eth_storage::write::DatabaseWriteProvider;
 use wasix_eth_types::eip6110_utils::encode_deposit_request;
 use wasix_eth_types::error::{RpcError, RpcResult};
 use wasix_eth_types::sync::SyncProvider;
-use wasix_eth_types::{Block, Header, Hardfork, ChainManager, InvalidationReason};
+use wasix_eth_types::{Block, Header, Hardfork, ChainManager, InvalidationReason, SyncStatus};
 use wasix_eth_types::BlockId;
 use wasix_eth_types::BlockNumberOrTag;
 use wasix_eth_types::Bytes;
@@ -41,13 +41,11 @@ use wasix_eth_types::Receipt;
 use wasix_eth_types::Transaction;
 use wasix_eth_types::ConsensusTransaction;
 use wasix_eth_types::B256;
-use wasix_eth_types::U256;
 use wasix_eth_types::{async_trait};
 use wasix_eth_types::{BlobAndProofV1, BlobAndProofV2, BlobsBundleV1, Decodable2718};
 use wasix_eth_types::eip4895::Withdrawal;
-use wasix_eth_types::p2p::BlockHashAndNumber;
 use wasix_eth_utils::engine_mapper::EngineMapper;
-use wasix_eth_utils::metrics::{CURRENT_HEAD_BLOCK, TRANSACTIONS_COMMITTED_TOTAL, BLOCKS_IMPORTED_TOTAL};
+use wasix_eth_utils::metrics::{CURRENT_HEAD_BLOCK, TRANSACTIONS_COMMITTED_TOTAL};
 use wasix_eth_utils::warn;
 use wasix_eth_utils::{debug, error, info};
 use crate::engine::api::RPCEngine;
@@ -607,7 +605,7 @@ impl Engine {
                             if !context.new_canonical_blocks.is_empty() {
                                 let engine = Arc::new(self.clone());
                                 let context_cloned = context.clone();
-                                let forkchoice_state_cloned = forkchoice_state.clone();
+                                let _forkchoice_state_cloned = forkchoice_state.clone();
 
                                 tokio::spawn(async move {
                                     // 3.1. Ensure all blocks in context are in main storage and their state is committed
@@ -829,9 +827,7 @@ impl Engine {
         info!("[Engine] import_block (sync path) for block {} hash {}", block.header.number, block_hash);
 
         // Proactively update sync status to None if not actively syncing, so ChainManagerImpl can return dynamic height.
-        if let wasix_eth_types::SyncStatus::None | wasix_eth_types::SyncStatus::Info(_) = self.chain.sync_status().await {
-            self.chain.set_sync_status(wasix_eth_types::SyncStatus::None).await;
-        }
+        self.chain.set_sync_status(SyncStatus::None).await;
         
         // Delegate to new_payload_internal to ensure same validation and buffering logic
         let status = self.new_payload_internal(block, block_hash, None, None, false).await

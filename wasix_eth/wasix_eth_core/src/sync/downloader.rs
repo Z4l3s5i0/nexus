@@ -5,7 +5,7 @@ use wasix_eth_types::p2p::{GetBlockHeaders, BlockHashOrNumber, GetBlockBodies, R
 use alloy_consensus::Block as ConsensusBlock;
 use alloy_consensus::TxEnvelope as Transaction;
 use alloy_primitives::{B256, U256};
-use rand::seq::{IndexedRandom, SliceRandom};
+use rand::seq::IndexedRandom;
 use wasix_eth_utils::{debug, exp};
 
 pub struct Downloader {
@@ -58,7 +58,7 @@ impl Downloader {
             return None;
         }
         
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         peers.choose(&mut rng).map(|p| p.peer_id.clone())
         //peers.first().map(|p| p.peer_id.clone())
     }

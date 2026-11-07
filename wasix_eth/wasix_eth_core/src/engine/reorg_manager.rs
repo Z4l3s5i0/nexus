@@ -1,5 +1,5 @@
 use alloy_primitives::B256;
-use wasix_eth_storage::{AccountWriter, BlockProvider, BlockWriter, ChangeSetProvider, ChangeSetWriter, HeaderProvider, HeaderWriter, StorageWriter, TransactionWriter, StateBranchProvider};
+use wasix_eth_storage::{AccountWriter, BlockProvider, BlockWriter, ChangeSetProvider, ChangeSetWriter, HeaderProvider, HeaderWriter, StorageWriter, TransactionWriter};
 use wasix_eth_storage::codecs::RedbRlp;
 use wasix_eth_storage::read::DatabaseReadProvider;
 use wasix_eth_storage::write::DatabaseWriteProvider;
@@ -248,8 +248,8 @@ impl ReorgHandler {
 
         // Trigger background reconciliation for the flat state tables (Accounts, Storages)
         // to eventually match the MPT root.
-        let read_provider = self.read_storage.clone();
-        let write_provider = self.write_storage.clone();
+        let _read_provider = self.read_storage.clone();
+        let _write_provider = self.write_storage.clone();
         // tokio::spawn(async move {
         //     if let Err(e) = heal_flat_state(read_provider, write_provider, state_root).await {
         //         wasix_eth_utils::error!("[ChainManager] Flat-state reconciliation failed: {:?}", e);

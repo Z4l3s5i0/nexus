@@ -14,7 +14,7 @@ use wasix_eth_types::p2p::{
     GossipMessage, RequestPair, GetBlockHeaders, BlockHeaders, GetBlockBodies, BlockBodies,
     GetPooledTransactions, PooledTransactions, GetReceipts, Receipts, GetNodeData, NodeData
 };
-use wasix_eth_types::{async_trait, Block, BlockId, GossipProvider, Transaction, B256, TxPooledEnvelope, BlobTransactionSidecar, Signed, TxEip4844Variant, BlobTransactionSidecarVariant, BlobTransactionSidecarEip7594};
+use wasix_eth_types::{async_trait, Block, BlockId, GossipProvider, Transaction, B256, TxPooledEnvelope, Signed, TxEip4844Variant, BlobTransactionSidecarEip7594};
 use wasix_eth_utils::metrics::GOSSIP_MESSAGES_RECEIVED;
 use wasix_eth_utils::{debug, error};
 

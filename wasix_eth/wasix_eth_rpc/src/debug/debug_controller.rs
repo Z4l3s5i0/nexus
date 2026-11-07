@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::tracing::info;
 use wasix_eth_types::{BlockId, B256, Bytes, RpcTransaction};
-use wasix_eth_types::error::{parse_loose_hash, parse_strict_hex, RpcError, RpcResult};
+use wasix_eth_types::error::{parse_loose_hash, RpcError, RpcResult};
 use wasix_eth_utils::{transaction_mapper::TransactionMapper, metrics::RPC_REQUESTS_TOTAL};
 use crate::DebugService;
 

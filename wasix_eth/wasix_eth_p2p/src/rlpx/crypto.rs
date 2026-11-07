@@ -181,11 +181,8 @@ pub fn ecies_encrypt(remote_pub: &PublicKey, data: &[u8], ephemeral_sk: &SecretK
     let mac_key = Sha256::digest(&derived[16..32]);
     
     let mut iv = [0u8; 16];
-    {
-        use rand::RngCore;
-        rand::thread_rng().fill_bytes(&mut iv);
-    }
-
+    rand::rng().fill_bytes(&mut iv);
+    
     let mut cipher_text = data.to_vec();
 
     let total_size = (65 + 16 + cipher_text.len() + 32) as u16;

@@ -23,8 +23,8 @@ use wasix_eth_types::ConsensusTransaction;
 use wasix_eth_utils::{debug, info, error, warn};
 use wasix_eth_types::Result;
 
-use std::collections::{HashMap, HashSet};
-use std::sync::{RwLock, Mutex};
+use std::collections::HashMap;
+use std::sync::RwLock;
 use dashmap::{DashSet, DashMap};
 pub use wasix_eth_types::CancellationToken;
 

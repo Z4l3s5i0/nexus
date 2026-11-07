@@ -4,7 +4,6 @@ use alloy_rpc_types::engine::{
     ExecutionPayloadV3 as AlloyExecutionPayloadV3,
     ExecutionPayloadV4 as AlloyExecutionPayloadV4,
 };
-use alloy_primitives::{Address, U256};
 use serde::{Deserialize, Serialize};
 use crate::eip4895::Withdrawal;
 

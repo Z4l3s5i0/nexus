@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use wasix_eth_storage::read::DatabaseReadProvider;
 use wasix_eth_storage::read_traits::{BlockProvider, ChainProvider, TransactionProvider};
-use wasix_eth_storage::HeaderProvider;
 use wasix_eth_types::sync::{PeerProvider, SyncProvider};
 use wasix_eth_types::{async_trait, Block, ChainConfig, ChainManager, Hardfork, InvalidationReason, SyncStatus, Transaction, B256, U256};
 use wasix_eth_utils::metrics::{CURRENT_HEAD_BLOCK, SYNC_STATUS, SYNC_TARGET_HEIGHT};
@@ -23,7 +22,6 @@ pub struct SyncController {
     chain_manager: Arc<dyn ChainManager>,
     sync_registry: Arc<SyncRegistry>,
     sync_lock: tokio::sync::Mutex<()>,
-    seen_blocks: tokio::sync::Mutex<HashSet<B256>>,
     seen_txs: tokio::sync::Mutex<HashSet<B256>>,
 }
 
@@ -44,7 +42,6 @@ impl SyncController {
             chain_manager,
             sync_registry,
             sync_lock: tokio::sync::Mutex::new(()),
-            seen_blocks: tokio::sync::Mutex::new(HashSet::new()),
             seen_txs: tokio::sync::Mutex::new(HashSet::new()),
         }
     }
