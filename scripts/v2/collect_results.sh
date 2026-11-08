@@ -20,10 +20,13 @@ fi
 # 2. Logs Dump
 if [ -d "logs_dump" ]; then
     echo "Copying logs_dump..."
-    cp -r "logs_dump" "$EXP_DIR/logs_dump"
+    # Ensure logs are flushed to disk
+    sync || true
+    cp -a "logs_dump" "$EXP_DIR/logs_dump"
 elif [ -d "dump_logs" ]; then
     echo "Copying dump_logs..."
-    cp -r "dump_logs" "$EXP_DIR/logs_dump"
+    sync || true
+    cp -a "dump_logs" "$EXP_DIR/logs_dump"
 else
     echo "Warning: logs_dump/dump_logs not found."
 fi
@@ -136,8 +139,9 @@ Then access http://localhost:9091 to query metrics.
 EOF
 
 echo ""
-echo "Experiment results collected in: $EXP_DIR"
-echo "RESULT_DIR=$EXP_DIR"
-echo "Analysis guide created: $EXP_DIR/README_ANALYSIS.md"
+EXP_DIR_ABS=$(cd "$EXP_DIR" && pwd)
+echo "Experiment results collected in: $EXP_DIR_ABS"
+echo "RESULT_DIR=$EXP_DIR_ABS"
+echo "Analysis guide created: $EXP_DIR_ABS/README_ANALYSIS.md"
 echo "Structure:"
-ls -F "$EXP_DIR"
+ls -F "$EXP_DIR_ABS"

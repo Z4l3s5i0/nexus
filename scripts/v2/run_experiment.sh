@@ -190,6 +190,8 @@ sleep 300
 # 8. Stop manage_logs
 echo "Step 8: Stopping log processor..."
 bash "$SCRIPT_DIR/manage_logs.sh" stop
+sync || true
+sleep 5
 
 # 9. Collect results with sudo
 echo "Step 9: Collecting experiment results..."

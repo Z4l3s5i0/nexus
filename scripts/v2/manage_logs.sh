@@ -46,8 +46,6 @@ stop() {
     echo "Stopping log processor (PID: $PID)..."
     
     # Kill the main processor script and its children
-    # We use pkill -P to kill children of the main process
-    # If pkill is not available, we use a fallback
     if command -v pkill &> /dev/null; then
         pkill -P "$PID" 2>/dev/null || true
     else
@@ -58,6 +56,18 @@ stop() {
         fi
     fi
     kill "$PID" 2>/dev/null || true
+    
+    # Wait for the process to actually terminate
+    local timeout=30
+    while kill -0 "$PID" 2>/dev/null && [ $timeout -gt 0 ]; do
+        sleep 1
+        timeout=$((timeout - 1))
+    done
+
+    if kill -0 "$PID" 2>/dev/null; then
+        echo "Warning: Log processor (PID: $PID) did not stop in time. Force killing..."
+        kill -9 "$PID" 2>/dev/null || true
+    fi
     
     rm "$PID_FILE"
     echo "Stopped."
