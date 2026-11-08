@@ -67,7 +67,7 @@ pub struct BatchWriter {
     original_accounts: Arc<Mutex<HashMap<Address, Option<TrieAccount>>>>,
     original_storages: Arc<Mutex<HashMap<(Address, B256), U256>>>,
     side_commit: bool,
-    checkpoint: Option<BatchCheckpoint>,
+    checkpoint: Arc<Mutex<Option<BatchCheckpoint>>>,
 }
 
 struct BatchCheckpoint {
@@ -76,6 +76,8 @@ struct BatchCheckpoint {
     resetted_storages: HashSet<Address>,
     original_accounts: HashMap<Address, Option<TrieAccount>>,
     original_storages: HashMap<(Address, B256), U256>,
+    db_accounts: HashMap<Address, Option<TrieAccount>>,
+    db_storages: HashMap<(Address, B256), Option<U256>>,
 }
 
 impl BatchWriter {
@@ -90,32 +92,54 @@ impl BatchWriter {
             original_accounts: Arc::new(Mutex::new(HashMap::new())),
             original_storages: Arc::new(Mutex::new(HashMap::new())),
             side_commit: false,
-            checkpoint: None,
+            checkpoint: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn create_checkpoint(&mut self) {
-        self.checkpoint = Some(BatchCheckpoint {
+        *self.checkpoint.lock().unwrap() = Some(BatchCheckpoint {
             touched_accounts: self.touched_accounts.lock().unwrap().clone(),
             touched_storages: self.touched_storages.lock().unwrap().clone(),
             resetted_storages: self.resetted_storages.lock().unwrap().clone(),
             original_accounts: self.original_accounts.lock().unwrap().clone(),
             original_storages: self.original_storages.lock().unwrap().clone(),
+            db_accounts: HashMap::new(),
+            db_storages: HashMap::new(),
         });
     }
 
-    pub fn revert_to_checkpoint(&mut self) {
-        if let Some(checkpoint) = self.checkpoint.take() {
+    pub fn revert_to_checkpoint(&mut self) -> Result<()> {
+        if let Some(checkpoint) = self.checkpoint.lock().unwrap().take() {
             *self.touched_accounts.lock().unwrap() = checkpoint.touched_accounts;
             *self.touched_storages.lock().unwrap() = checkpoint.touched_storages;
             *self.resetted_storages.lock().unwrap() = checkpoint.resetted_storages;
             *self.original_accounts.lock().unwrap() = checkpoint.original_accounts;
             *self.original_storages.lock().unwrap() = checkpoint.original_storages;
+
+            // Revert database changes
+            let mut accounts_table = self.wtx.open_table(Accounts::definition())?;
+            for (addr, original) in checkpoint.db_accounts {
+                if let Some(acc) = original {
+                    accounts_table.insert(addr, acc)?;
+                } else {
+                    accounts_table.remove(addr)?;
+                }
+            }
+
+            let mut storages_table = self.wtx.open_table(Storages::definition())?;
+            for ((addr, slot), original) in checkpoint.db_storages {
+                if let Some(val) = original {
+                    storages_table.insert((addr, slot), val)?;
+                } else {
+                    storages_table.remove((addr, slot))?;
+                }
+            }
         }
+        Ok(())
     }
 
     pub fn clear_checkpoint(&mut self) {
-        self.checkpoint = None;
+        *self.checkpoint.lock().unwrap() = None;
     }
 
     pub fn set_side_commit(&mut self, side_commit: bool) {
@@ -593,6 +617,18 @@ impl AccountWriter for BatchWriter {
             }
         }
 
+        // Track for checkpoint if active
+        {
+            let mut checkpoint_lock = self.checkpoint.lock().unwrap();
+            if let Some(checkpoint) = checkpoint_lock.as_mut() {
+                if !checkpoint.db_accounts.contains_key(&address) {
+                    let table = self.wtx.open_table(Accounts::definition())?;
+                    let old = table.get(address)?.map(|v| v.value());
+                    checkpoint.db_accounts.insert(address, old);
+                }
+            }
+        }
+
         let mut table = self.wtx.open_table(Accounts::definition())?;
         table.insert(address, account)?;
         self.touched_accounts.lock().unwrap().insert(address);
@@ -607,6 +643,19 @@ impl AccountWriter for BatchWriter {
                 originals.insert(address, old);
             }
         }
+
+        // Track for checkpoint if active
+        {
+            let mut checkpoint_lock = self.checkpoint.lock().unwrap();
+            if let Some(checkpoint) = checkpoint_lock.as_mut() {
+                if !checkpoint.db_accounts.contains_key(&address) {
+                    let table = self.wtx.open_table(Accounts::definition())?;
+                    let old = table.get(address)?.map(|v| v.value());
+                    checkpoint.db_accounts.insert(address, old);
+                }
+            }
+        }
+
         let mut table = self.wtx.open_table(Accounts::definition())?;
         table.remove(address)?;
         self.touched_accounts.lock().unwrap().insert(address);
@@ -639,6 +688,19 @@ impl StorageWriter for BatchWriter {
                 originals.insert((address, slot), old);
             }
         }
+
+        // Track for checkpoint if active
+        {
+            let mut checkpoint_lock = self.checkpoint.lock().unwrap();
+            if let Some(checkpoint) = checkpoint_lock.as_mut() {
+                if !checkpoint.db_storages.contains_key(&(address, slot)) {
+                    let table = self.wtx.open_table(Storages::definition())?;
+                    let old = table.get((address, slot))?.map(|v| v.value());
+                    checkpoint.db_storages.insert((address, slot), old);
+                }
+            }
+        }
+
         let mut table = self.wtx.open_table(Storages::definition())?;
         if value == U256::ZERO {
             let _ = table.remove((address, slot))?;

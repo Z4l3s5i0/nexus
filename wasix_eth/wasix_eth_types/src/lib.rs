@@ -334,6 +334,7 @@ pub const BLOB_GASPRICE_UPDATE_FRACTION: u64 = 3338477;
 pub const MAX_INIT_CODE_SIZE: u64 = 49152;
 
 pub const MAX_MEMPOOL_SIZE: usize = 50000;
+pub const OPTIMISTIC_TX_LIMIT: usize = 512;
 
 pub type BlockTransactions<T = RpcTransaction> = AlloyBlockTransactions<T>;
 

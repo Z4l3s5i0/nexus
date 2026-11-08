@@ -793,7 +793,7 @@ impl ExecutionProvider for EthExecutionProvider {
                     Ok(result) => {
                         if cumulative_gas_used > target_gas_limit {
                             debug!("[Execution] Optimistic transaction {:?} exceeded gas limit (actual: {}, limit: {}). Reverting.", tx.hash(), cumulative_gas_used, target_gas_limit);
-                            batch.revert_to_checkpoint();
+                            batch.revert_to_checkpoint()?;
                             cumulative_gas_used = prev_cumulative_gas;
                             break;
                         }
@@ -805,7 +805,7 @@ impl ExecutionProvider for EthExecutionProvider {
                         batch.clear_checkpoint();
                     }
                     Err(_) => {
-                        batch.revert_to_checkpoint();
+                        batch.revert_to_checkpoint()?;
                         cumulative_gas_used = prev_cumulative_gas;
                         continue;
                     }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use im::{Vector, HashMap as ImmutableMap};
 use arc_swap::ArcSwap;
-use wasix_eth_types::{Address, SignerRecoverable, ConsensusTransaction, B256, U256, Transaction, Blob, Bytes48, TxPooledEnvelope, Bytes, MAX_MEMPOOL_SIZE};
+use wasix_eth_types::{Address, SignerRecoverable, ConsensusTransaction, B256, U256, Transaction, Blob, Bytes48, TxPooledEnvelope, Bytes, MAX_MEMPOOL_SIZE, OPTIMISTIC_TX_LIMIT};
 use wasix_eth_utils::{debug, info, metrics::{MEMPOOL_SIZE, MEMPOOL_REJECTED_TRANSACTIONS, EVICTED_TRANSACTIONS}};
 
 /// A read-optimized, immutable snapshot of the mempool for block building.
@@ -102,7 +102,7 @@ impl MempoolSnapshot {
 
         // Optimistic candidates - transactions that were skipped or come after
         // We just pick a few more from the PQ that would be next
-        while result_optimistic.len() < 16 {
+        while result_optimistic.len() < OPTIMISTIC_TX_LIMIT {
             let (_tip, addr) = match pq_optimistic.pop() {
                 Some(entry) => entry,
                 None => break,
