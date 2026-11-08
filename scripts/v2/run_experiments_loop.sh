@@ -8,7 +8,7 @@ VARIANTS=(
     "exp/counter 180 17 17"
     "exp/dota 280 66 66"
 )
-WAIT_DURATION=480
+WAIT_DURATION=900
 RATIO_VARIANTS=(
     "10 0"
     "5 5"

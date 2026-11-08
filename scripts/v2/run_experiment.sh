@@ -98,9 +98,9 @@ bash "$SCRIPT_DIR/start_local.sh" --chain-id "$CHAIN_ID" --linux-nodes "$c_linux
 echo "Step 2: Starting background log processor..."
 bash "$SCRIPT_DIR/manage_logs.sh" start --chain-id "$CHAIN_ID"
 
-# 3. Wait for 300 seconds
-echo "Step 3: Waiting 300 seconds for network stabilization..."
-sleep 300
+# 3. Wait for 60 seconds
+echo "Step 3: Waiting 60 seconds for network stabilization..."
+sleep 60
 
 # 4. Start run_workload for each node in background
 echo "Step 4: Starting workload for $WORKLOAD_NODES node(s) in background ($w_linux Linux, $w_wasix WASM)..."
@@ -183,9 +183,9 @@ if [ -n "$CONTENDER_CONTAINERS" ]; then
 fi
 echo "Workloads stopped."
 
-# 7. Wait another 300 seconds
-echo "Step 7: Waiting additional 300 seconds for the workload to be processed..."
-sleep 300
+# 7. Wait another 60 seconds
+echo "Step 7: Waiting additional 60 seconds for the workload to be processed..."
+sleep 60
 
 # 8. Stop manage_logs
 echo "Step 8: Stopping log processor..."

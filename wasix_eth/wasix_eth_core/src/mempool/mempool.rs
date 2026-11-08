@@ -607,6 +607,7 @@ impl MempoolInner {
         let mut evicted_count = 0;
         
         self.update_state(|state| {
+            let mut current_evicted = 0;
             while state.pending_transactions.iter().map(|(_, q)| q.len()).sum::<usize>() +
                   state.queued_transactions.iter().map(|(_, q)| q.len()).sum::<usize>() > max_size 
             {
@@ -648,7 +649,7 @@ impl MempoolInner {
                         if let Some(tx) = q.pop_back() {
                             info!("[Mempool] Evicting transaction {:?} (nonce: {}) from {} pool due to capacity (tip: {})", 
                                 tx.hash(), tx.nonce(), if is_pending { "pending" } else { "queued" }, worst_tip);
-                            evicted_count += 1;
+                            current_evicted += 1;
                         }
                         if q.is_empty() {
                             if is_pending {
@@ -662,6 +663,7 @@ impl MempoolInner {
                     break;
                 }
             }
+            evicted_count = current_evicted;
         });
 
         EVICTED_TRANSACTIONS.inc_by(evicted_count as f64);
