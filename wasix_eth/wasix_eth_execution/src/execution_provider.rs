@@ -19,15 +19,16 @@ pub trait ExecutionProvider: Send + Sync {
     fn execute_block_with_commit(&self, block: Block<Transaction>, commit: bool) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_block_with_state_root(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_block_with_state_root_and_building(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
-    fn execute_block_with_batch(&self, block: Block<Transaction>, batch: &BatchWriter, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>, _deadline: Option<std::time::Instant>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
+    fn execute_block_with_batch(&self, block: Block<Transaction>, batch: &mut BatchWriter, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>, _deadline: Option<std::time::Instant>, optimistic_transactions: Vec<Transaction>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_block_side_commit(&self, block: Block<Transaction>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_blocks_with_batch(&self, blocks: Vec<Block<Transaction>>) -> Result<()>;
     fn execute_block_for_payload(
         &self,
         transactions: Vec<Transaction>,
-        _header: &Header,
-        _attributes: &PayloadAttributes,
-        _base_fee: Option<u64>,
+        optimistic_transactions: Vec<Transaction>,
+        parent_header: &Header,
+        attributes: &PayloadAttributes,
+        base_fee: Option<u64>,
         interruption_token: Option<CancellationToken>,
         deadline: Option<std::time::Instant>,
     ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
@@ -542,7 +543,7 @@ impl ExecutionProvider for EthExecutionProvider {
         let mut batch = self.write_storage.begin_batch()?;
         batch.set_side_commit(true);
         let block_hash = block.header.hash_slow();
-        let (executed_block, receipts, metas) = self.execute_block_with_batch(block, &batch, None, false, None, None)?;
+        let (executed_block, receipts, metas) = self.execute_block_with_batch(block, &mut batch, None, false, None, None, vec![])?;
         
         // Persist the state root in the StateBranches table
         batch.insert_state_root(block_hash, executed_block.header.state_root)?;
@@ -554,9 +555,9 @@ impl ExecutionProvider for EthExecutionProvider {
     fn execute_block_with_state_root_and_building(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
         debug!("[Execution] execute_block_with_state_root: block {} commit={} state_root={:?} building={}", block.header.number, commit, state_root, building);
         self.write_storage.clear_tracking();
-        let batch = self.write_storage.begin_batch()?;
+        let mut batch = self.write_storage.begin_batch()?;
         
-        let (executed_block, receipts, metas) = match self.execute_block_with_batch(block.clone(), &batch, state_root, building, interruption_token, None) {
+        let (executed_block, receipts, metas) = match self.execute_block_with_batch(block.clone(), &mut batch, state_root, building, interruption_token, None, vec![]) {
             Ok(res) => res,
             Err(e) => {
                 // Batch will be dropped here, and redb::WriteTransaction will be aborted
@@ -589,10 +590,10 @@ impl ExecutionProvider for EthExecutionProvider {
         }
 
         self.write_storage.clear_tracking();
-        let batch = self.write_storage.begin_batch()?;
+        let mut batch = self.write_storage.begin_batch()?;
 
         for block in blocks {
-            let (executed_block, _receipts, metas) = self.execute_block_with_batch(block, &batch, None, false, None, None)?;
+            let (executed_block, _receipts, metas) = self.execute_block_with_batch(block, &mut batch, None, false, None, None, vec![])?;
 
             // Persist ChangeSets for this block
             let account_changes = batch.collect_account_changes();
@@ -612,7 +613,7 @@ impl ExecutionProvider for EthExecutionProvider {
         Ok(())
     }
 
-    fn execute_block_with_batch(&self, mut block: Block<Transaction>, batch: &BatchWriter, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>, _deadline: Option<std::time::Instant>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
+    fn execute_block_with_batch(&self, mut block: Block<Transaction>, batch: &mut BatchWriter, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>, _deadline: Option<std::time::Instant>, optimistic_transactions: Vec<Transaction>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
         let mut state_root = state_root;
         if state_root.is_none() && block.header.number > 0 {
             // Look up the parent header to get the correct state root for the reorged path
@@ -635,11 +636,10 @@ impl ExecutionProvider for EthExecutionProvider {
         
         // let is_eip161 = fork >= Hardfork::SpuriousDragon;
 
-        let block_processor = BlockProcessor::new(batch);
-
         // EIP-4788: Beacon block root in the Ethereum state
         if fork >= Hardfork::Cancun {
             if let Some(beacon_root) = block.header.parent_beacon_block_root {
+                let block_processor = BlockProcessor::new(batch);
                 block_processor.apply_beacon_root(fork, beacon_root, block.header.timestamp, state_root)?;
                 debug!("[Execution] EIP-4788 system call finished");
             }
@@ -729,6 +729,90 @@ impl ExecutionProvider for EthExecutionProvider {
             final_transactions.push(tx.clone());
         }
 
+        let target_gas_limit = block.header.gas_limit;
+        if !optimistic_transactions.is_empty() && cumulative_gas_used < target_gas_limit {
+            let mut normal_hashes: std::collections::HashSet<B256> =
+                final_transactions.iter().map(|tx| *tx.hash()).collect();
+
+            for tx in optimistic_transactions {
+                if normal_hashes.contains(tx.hash()) {
+                    continue;
+                }
+
+                if let Some(token) = &interruption_token {
+                    if token.is_cancelled() {
+                        break;
+                    }
+                }
+
+                if let Some(dl) = _deadline {
+                    if std::time::Instant::now() >= dl {
+                        break;
+                    }
+                }
+
+                let tx_blob_gas = if fork >= Hardfork::Cancun {
+                    if let Transaction::Eip4844(s) = &tx {
+                        s.tx().blob_versioned_hashes().unwrap_or_default().len() as u64 * DATA_GAS_PER_BLOB
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                };
+
+                // Check blob gas limit
+                if fork >= Hardfork::Cancun {
+                    let current_blob_gas = blob_gas_used;
+                    let max = if let Some(params) = fork.blob_params(&chain_config) {
+                        params.max_blob_count * DATA_GAS_PER_BLOB
+                    } else {
+                        MAX_BLOB_GAS_PER_BLOCK
+                    };
+                    if current_blob_gas + tx_blob_gas > max {
+                        continue;
+                    }
+                }
+
+                batch.create_checkpoint();
+                let prev_cumulative_gas = cumulative_gas_used;
+
+                match self.executor.execute_transaction(
+                    &tx,
+                    &batch,
+                    &env,
+                    &config,
+                    &invoker,
+                    fork,
+                    block.header.beneficiary,
+                    block.header.base_fee_per_gas,
+                    &mut cumulative_gas_used,
+                    state_root,
+                    interruption_token.clone(),
+                ) {
+                    Ok(result) => {
+                        if cumulative_gas_used > target_gas_limit {
+                            debug!("[Execution] Optimistic transaction {:?} exceeded gas limit (actual: {}, limit: {}). Reverting.", tx.hash(), cumulative_gas_used, target_gas_limit);
+                            batch.revert_to_checkpoint();
+                            cumulative_gas_used = prev_cumulative_gas;
+                            break;
+                        }
+                        receipts.push(result.receipt);
+                        metas.push(result.receipt_meta);
+                        blob_gas_used += tx_blob_gas;
+                        final_transactions.push(tx.clone());
+                        normal_hashes.insert(*tx.hash());
+                        batch.clear_checkpoint();
+                    }
+                    Err(_) => {
+                        batch.revert_to_checkpoint();
+                        cumulative_gas_used = prev_cumulative_gas;
+                        continue;
+                    }
+                }
+            }
+        }
+
         block.body.transactions = final_transactions;
 
         if fork >= Hardfork::Cancun {
@@ -749,7 +833,7 @@ impl ExecutionProvider for EthExecutionProvider {
 
         // Note: do not log gas_used_total yet; post-block system calls may contribute
 
-
+        let block_processor = BlockProcessor::new(batch);
         if let Some(withdrawals) = &block.body.withdrawals {
             if !withdrawals.is_empty() {
                 block_processor.process_withdrawals(withdrawals, state_root)?;
@@ -770,11 +854,12 @@ impl ExecutionProvider for EthExecutionProvider {
     fn execute_block_for_payload(
         &self,
         transactions: Vec<Transaction>,
+        optimistic_transactions: Vec<Transaction>,
         parent_header: &Header,
         attributes: &PayloadAttributes,
         base_fee: Option<u64>,
         interruption_token: Option<CancellationToken>,
-        _deadline: Option<std::time::Instant>,
+        deadline: Option<std::time::Instant>,
     ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
         let chain_id = self.read_storage.chain_id().unwrap_or(1);
         let chain_config = self.read_storage.chain_config()?.unwrap_or_else(|| ChainConfig {
@@ -785,42 +870,19 @@ impl ExecutionProvider for EthExecutionProvider {
         let number = parent_header.number + 1;
         let timestamp = attributes.timestamp;
         let fork = Hardfork::get_active_fork(&chain_config, number, timestamp);
-        let _is_eip161 = fork >= Hardfork::SpuriousDragon;
 
         let difficulty = if fork >= Hardfork::Paris {
             U256::ZERO
         } else {
-            // Simplified difficulty calculation for pre-Paris
-            // In a real network this would use the parent's difficulty and timestamp
             parent_header.difficulty
-        };
-
-        let blob_gas_used = if fork >= Hardfork::Cancun {
-            let mut total_blob_gas = 0u64;
-            for tx in &transactions {
-                if let Transaction::Eip4844(tx_4844) = tx {
-                    total_blob_gas += tx_4844.tx().blob_versioned_hashes().map(|h| h.len()).unwrap_or(0) as u64 * DATA_GAS_PER_BLOB;
-                }
-            }
-            Some(total_blob_gas)
-        } else {
-            None
-        };
-
-        let excess_blob_gas = if fork >= Hardfork::Cancun {
-            let params = fork.blob_params(&chain_config);
-            let target = params.map(|p| p.target_blob_count * DATA_GAS_PER_BLOB).unwrap_or(TARGET_BLOB_GAS_PER_BLOCK);
-            Some(calc_excess_blob_gas(parent_header.excess_blob_gas, parent_header.blob_gas_used, target))
-        } else {
-            None
         };
 
         let mut header = Header {
             parent_hash: parent_header.hash_slow(),
             beneficiary: attributes.suggested_fee_recipient,
-            state_root: B256::ZERO, // Will be set after execution
-            transactions_root: B256::ZERO, // Will be set after execution
-            receipts_root: B256::ZERO, // Will be set after execution
+            state_root: B256::ZERO,
+            transactions_root: B256::ZERO,
+            receipts_root: B256::ZERO,
             logs_bloom: Bloom::default(),
             difficulty,
             number,
@@ -832,8 +894,14 @@ impl ExecutionProvider for EthExecutionProvider {
             nonce: if fork >= Hardfork::Paris { B64::ZERO } else { B64::from(0x42u64) },
             base_fee_per_gas: base_fee,
             withdrawals_root: if fork >= Hardfork::Shanghai { Some(B256::ZERO) } else { None },
-            blob_gas_used,
-            excess_blob_gas,
+            blob_gas_used: None, // Will be set in execute_block_with_batch
+            excess_blob_gas: if fork >= Hardfork::Cancun {
+                let params = fork.blob_params(&chain_config);
+                let target = params.map(|p| p.target_blob_count * DATA_GAS_PER_BLOB).unwrap_or(TARGET_BLOB_GAS_PER_BLOCK);
+                Some(calc_excess_blob_gas(parent_header.excess_blob_gas, parent_header.blob_gas_used, target))
+            } else {
+                None
+            },
             parent_beacon_block_root: if fork >= Hardfork::Cancun { attributes.parent_beacon_block_root } else { None },
             ommers_hash: EMPTY_OMMER_ROOT_HASH,
             ..Default::default()
@@ -865,8 +933,10 @@ impl ExecutionProvider for EthExecutionProvider {
             body,
         };
 
-        // Reuse execute_block logic but don't commit
-        self.execute_block_with_state_root_and_building(block, false, Some(parent_header.state_root), true, interruption_token)
+        self.write_storage.clear_tracking();
+        let mut batch = self.write_storage.begin_batch()?;
+        
+        self.execute_block_with_batch(block, &mut batch, Some(parent_header.state_root), true, interruption_token, deadline, optimistic_transactions)
     }
 
     fn run_execution(

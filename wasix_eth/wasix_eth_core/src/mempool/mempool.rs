@@ -22,8 +22,9 @@ impl MempoolSnapshot {
         base_fee: U256,
         _blob_base_fee: Option<U256>,
         max_blobs_per_block: Option<u32>,
-    ) -> Vec<Transaction> {
+    ) -> (Vec<Transaction>, Vec<Transaction>) {
         let mut result = Vec::new();
+        let mut result_optimistic = Vec::new();
         let mut current_gas: u64 = 0;
         let mut current_blobs: u32 = 0;
         let max_blobs = max_blobs_per_block.unwrap_or(6);
@@ -31,20 +32,25 @@ impl MempoolSnapshot {
 
         // Sender-indexed pointers into their pending queues
         let mut sender_cursors: HashMap<Address, usize> = HashMap::new();
+        let mut sender_cursors_optimistic: HashMap<Address, usize> = HashMap::new();
 
         // Max-heap to store the best next transaction from each sender.
         // Stores (effective_tip, address).
         let mut pq = BinaryHeap::new();
+        let mut pq_optimistic = BinaryHeap::new();
 
         for (addr, queue) in &self.pending {
             if let Some(tx) = queue.get(0) {
                 if let Some(tip) = tx.effective_tip_per_gas(base_fee_u64) {
                     pq.push((tip, *addr));
+                    pq_optimistic.push((tip, *addr));
                     sender_cursors.insert(*addr, 0);
+                    sender_cursors_optimistic.insert(*addr, 0);
                 }
             }
         }
 
+        // Standard selection
         while current_gas < target_gas_limit {
             let (_tip, addr) = match pq.pop() {
                 Some(entry) => entry,
@@ -58,8 +64,6 @@ impl MempoolSnapshot {
             // Validate against current block limits
             let gas_limit = tx.gas_limit();
             if current_gas + gas_limit > target_gas_limit {
-                // This sender's next tx is too big. 
-                // We don't re-add to PQ because nonces must be sequential.
                 continue;
             }
 
@@ -69,7 +73,6 @@ impl MempoolSnapshot {
                     continue;
                 }
                 
-                // Check if blobs are actually present
                 let mut all_blobs_present = true;
                 if let Some(hashes) = tx.blob_versioned_hashes() {
                     for hash in hashes {
@@ -86,11 +89,9 @@ impl MempoolSnapshot {
                 current_blobs += blobs_count;
             }
 
-            // Transaction is eligible
             result.push(tx.clone());
             current_gas += gas_limit;
 
-            // Advance cursor for this sender and re-add to PQ if they have more transactions
             *cursor += 1;
             if let Some(next_tx) = queue.get(*cursor) {
                 if let Some(next_tip) = next_tx.effective_tip_per_gas(base_fee_u64) {
@@ -99,7 +100,30 @@ impl MempoolSnapshot {
             }
         }
 
-        result
+        // Optimistic candidates - transactions that were skipped or come after
+        // We just pick a few more from the PQ that would be next
+        while result_optimistic.len() < 16 {
+            let (_tip, addr) = match pq_optimistic.pop() {
+                Some(entry) => entry,
+                None => break,
+            };
+
+            let queue = self.pending.get(&addr).unwrap();
+            let cursor = sender_cursors_optimistic.get_mut(&addr).unwrap();
+            let tx = queue.get(*cursor).unwrap();
+
+            // Just add them as candidates, don't check gas here as execution will check
+            result_optimistic.push(tx.clone());
+
+            *cursor += 1;
+            if let Some(next_tx) = queue.get(*cursor) {
+                if let Some(next_tip) = next_tx.effective_tip_per_gas(base_fee_u64) {
+                    pq_optimistic.push((next_tip, addr));
+                }
+            }
+        }
+
+        (result, result_optimistic)
     }
 }
 
@@ -148,7 +172,7 @@ impl Mempool {
 
     /// Optimized transaction selection using a Priority Queue.
     /// Complexity: O(M log N) where M is target tx count and N is active senders.
-    pub async fn peek_best_transactions(&self, target_gas_limit: u64, base_fee: U256, blob_base_fee: Option<U256>, max_blobs_per_block: Option<u32>) -> Vec<Transaction> {
+    pub async fn peek_best_transactions(&self, target_gas_limit: u64, base_fee: U256, blob_base_fee: Option<U256>, max_blobs_per_block: Option<u32>) -> (Vec<Transaction>, Vec<Transaction>) {
         self.snapshot().peek_best_transactions(target_gas_limit, base_fee, blob_base_fee, max_blobs_per_block)
     }
 
@@ -167,7 +191,7 @@ impl Mempool {
     #[cfg(test)]
     fn insert_pooled_bytes(&self, hash: B256, bytes: Bytes) {
         self.inner.update_state(|state| {
-            state.pooled_bytes.insert(hash, bytes);
+            state.pooled_bytes.insert(hash, bytes.clone());
         });
     }
 }
@@ -706,7 +730,7 @@ mod tests {
         mempool.inner.add_transaction(tx2.clone(), 0).await;
 
         // Peek with gas limit enough for both
-        let best = mempool.peek_best_transactions(50000, U256::from(100), None, None).await;
+        let (best, _) = mempool.peek_best_transactions(50000, U256::from(100), None, None).await;
         assert_eq!(best.len(), 2);
         // Note: Legacy transactions with same gas price might have non-deterministic order if sender hashes are similar,
         // but here they have different gas prices.
@@ -716,7 +740,7 @@ mod tests {
         assert_eq!(best[1].hash(), tx1.hash(), "tx1 should be second");
 
         // Peek with gas limit enough for only one
-        let best_one = mempool.peek_best_transactions(30000, U256::from(100), None, None).await;
+        let (best_one, _) = mempool.peek_best_transactions(30000, U256::from(100), None, None).await;
         assert_eq!(best_one.len(), 1);
         assert_eq!(best_one[0].hash(), tx2.hash(), "tx2 should be the only one (higher tip)");
     }
@@ -765,7 +789,7 @@ mod tests {
             });
         }
 
-        let best = mempool.peek_best_transactions(100000, U256::from(100), None, None).await;
+        let (best, _) = mempool.peek_best_transactions(100000, U256::from(100), None, None).await;
         assert_eq!(best.len(), 2);
         assert_eq!(best[0].hash(), tx1.hash()); // Nonce 0 must come first even if Tx2 has higher tip
         assert_eq!(best[1].hash(), tx2.hash());
@@ -832,7 +856,7 @@ mod tests {
             let inner = &mempool.inner;
             inner.update_state(|state| {
                 let entry = state.queued_transactions.entry(addr).or_insert_with(Vector::new);
-                entry.push_back(tx);
+                entry.push_back(tx.clone());
             });
             assert_eq!(inner.state.load().queued_transactions.len(), 1);
             

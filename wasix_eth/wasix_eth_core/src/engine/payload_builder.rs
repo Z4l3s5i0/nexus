@@ -234,6 +234,7 @@ impl PayloadBuilder {
         let (finalized_block, receipts, metas) = match tokio::task::spawn_blocking(move || {
             execution.execute_block_for_payload(
                 vec![], // Empty transaction set
+                vec![], // No optimistic transactions
                 &parent_header_clone,
                 &attr_clone,
                 base_fee_per_gas,
@@ -344,14 +345,14 @@ impl PayloadBuilder {
 
         // 3. Take a mempool snapshot and peek best transactions
         let snapshot = self.mempool.snapshot();
-        let transactions = snapshot.peek_best_transactions(
+        let (transactions, optimistic_transactions) = snapshot.peek_best_transactions(
             parent_block.header.gas_limit, 
             U256::from(base_fee_per_gas.unwrap_or_default()),
             blob_base_fee.map(U256::from),
             max_blobs_per_block
         );
 
-        // Optimization: if transaction set is identical, skip rebuilding
+        // Optimization: if transaction sets are identical, skip rebuilding
         if transactions.len() == payload_block.body.transactions.len() {
             let mut identical = true;
             for (new_tx, old_tx) in transactions.iter().zip(payload_block.body.transactions.iter()) {
@@ -360,12 +361,12 @@ impl PayloadBuilder {
                     break;
                 }
             }
-            if identical {
+            if identical && optimistic_transactions.is_empty() {
                 return Ok(());
             }
         }
 
-        if transactions.is_empty() && !payload_block.body.transactions.is_empty() {
+        if transactions.is_empty() && optimistic_transactions.is_empty() && !payload_block.body.transactions.is_empty() {
              // Should not happen if we already have a payload with transactions, but good to be safe.
              return Ok(());
         }
@@ -396,9 +397,10 @@ impl PayloadBuilder {
         let attr_clone = attr.clone();
         let token_clone = token.clone();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
-        let (finalized_block, receipts, metas) = tokio::task::spawn_blocking(move || {
+        let result = tokio::task::spawn_blocking(move || {
             execution.execute_block_for_payload(
                 transactions,
+                optimistic_transactions,
                 &parent_header_clone,
                 &attr_clone,
                 base_fee_per_gas,
@@ -407,6 +409,8 @@ impl PayloadBuilder {
             )
         }).await.map_err(|e| RpcError::Internal(format!("Payload rebuilding task panicked: {}", e)))?
         .map_err(|e| RpcError::Internal(e.to_string()))?;
+
+        let (finalized_block, receipts, metas) = result;
 
         // 5. Check if new block is better
         let new_value = self.calculate_block_value(&finalized_block, &receipts);

@@ -24,7 +24,7 @@ pub trait MempoolProvider: Send + Sync {
     async fn is_empty(&self) -> bool;
     async fn clear(&self);
     async fn base_fee(&self) -> U256;
-    async fn peek_best_transactions(&self, target_gas_limit: u64, base_fee: U256, blob_base_fee: Option<U256>, max_blobs_per_block: Option<u32>) -> Vec<Transaction>;
+    async fn peek_best_transactions(&self, target_gas_limit: u64, base_fee: U256, blob_base_fee: Option<U256>, max_blobs_per_block: Option<u32>) -> (Vec<Transaction>, Vec<Transaction>);
     fn snapshot(&self) -> MempoolSnapshot;
     async fn add_blob(&self, versioned_hash: B256, blob: Blob, commitment: Bytes48, proof: Bytes48);
     async fn get_blob(&self, versioned_hash: B256) -> Option<(Blob, Bytes48, Bytes48)>;
@@ -264,7 +264,7 @@ impl MempoolProvider for Mempool {
         *self.inner.base_fee.read().await
     }
 
-    async fn peek_best_transactions(&self, target_gas_limit: u64, base_fee: U256, blob_base_fee: Option<U256>, max_blobs_per_block: Option<u32>) -> Vec<Transaction> {
+    async fn peek_best_transactions(&self, target_gas_limit: u64, base_fee: U256, blob_base_fee: Option<U256>, max_blobs_per_block: Option<u32>) -> (Vec<Transaction>, Vec<Transaction>) {
         self.peek_best_transactions(target_gas_limit, base_fee, blob_base_fee, max_blobs_per_block).await
     }
 
@@ -362,7 +362,9 @@ impl MempoolProvider for NoopMempoolProvider {
     async fn is_empty(&self) -> bool { true }
     async fn clear(&self) {}
     async fn base_fee(&self) -> U256 { U256::ZERO }
-    async fn peek_best_transactions(&self, _target_gas_limit: u64, _base_fee: U256, _blob_base_fee: Option<U256>, _max_blobs_per_block: Option<u32>) -> Vec<Transaction> { Vec::new() }
+    async fn peek_best_transactions(&self, _target_gas_limit: u64, _base_fee: U256, _blob_base_fee: Option<U256>, _max_blobs_per_block: Option<u32>) -> (Vec<Transaction>, Vec<Transaction>) {
+        (Vec::new(), Vec::new())
+    }
     fn snapshot(&self) -> MempoolSnapshot { MempoolSnapshot { pending: ImmutableMap::new(), blobs: Self::empty_blobs() } }
     async fn add_blob(&self, _versioned_hash: B256, _blob: Blob, _commitment: Bytes48, _proof: Bytes48) {}
     async fn get_blob(&self, _versioned_hash: B256) -> Option<(Blob, Bytes48, Bytes48)> { None }

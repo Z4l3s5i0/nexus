@@ -67,6 +67,15 @@ pub struct BatchWriter {
     original_accounts: Arc<Mutex<HashMap<Address, Option<TrieAccount>>>>,
     original_storages: Arc<Mutex<HashMap<(Address, B256), U256>>>,
     side_commit: bool,
+    checkpoint: Option<BatchCheckpoint>,
+}
+
+struct BatchCheckpoint {
+    touched_accounts: HashSet<Address>,
+    touched_storages: HashMap<(Address, B256), U256>,
+    resetted_storages: HashSet<Address>,
+    original_accounts: HashMap<Address, Option<TrieAccount>>,
+    original_storages: HashMap<(Address, B256), U256>,
 }
 
 impl BatchWriter {
@@ -81,7 +90,32 @@ impl BatchWriter {
             original_accounts: Arc::new(Mutex::new(HashMap::new())),
             original_storages: Arc::new(Mutex::new(HashMap::new())),
             side_commit: false,
+            checkpoint: None,
         }
+    }
+
+    pub fn create_checkpoint(&mut self) {
+        self.checkpoint = Some(BatchCheckpoint {
+            touched_accounts: self.touched_accounts.lock().unwrap().clone(),
+            touched_storages: self.touched_storages.lock().unwrap().clone(),
+            resetted_storages: self.resetted_storages.lock().unwrap().clone(),
+            original_accounts: self.original_accounts.lock().unwrap().clone(),
+            original_storages: self.original_storages.lock().unwrap().clone(),
+        });
+    }
+
+    pub fn revert_to_checkpoint(&mut self) {
+        if let Some(checkpoint) = self.checkpoint.take() {
+            *self.touched_accounts.lock().unwrap() = checkpoint.touched_accounts;
+            *self.touched_storages.lock().unwrap() = checkpoint.touched_storages;
+            *self.resetted_storages.lock().unwrap() = checkpoint.resetted_storages;
+            *self.original_accounts.lock().unwrap() = checkpoint.original_accounts;
+            *self.original_storages.lock().unwrap() = checkpoint.original_storages;
+        }
+    }
+
+    pub fn clear_checkpoint(&mut self) {
+        self.checkpoint = None;
     }
 
     pub fn set_side_commit(&mut self, side_commit: bool) {
