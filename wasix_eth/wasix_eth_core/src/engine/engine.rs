@@ -523,7 +523,7 @@ impl Engine {
                 }
             } else {
                 if head_status.status == PayloadStatusEnum::Valid {
-                    if let Some(value) = self.forkchoice_validator.check_header_without_headheader(forkchoice_state) {
+                    if let Some(value) = self.forkchoice_validator.check_header_without_headheader(forkchoice_state).await {
                         return value;
                     }
                 }
@@ -1098,9 +1098,11 @@ impl Engine {
 
         // Also check if it's in the block tree (validated but not yet canonical)
         if self.payload_processor.block_tree.contains_block(head_block_hash).await {
+            // A block in the block tree but NOT in storage is either a side-chain OR an orphan.
+            // To be safe and spec-compliant, we return SYNCING if it's not in main storage yet.
             return PayloadStatus {
-                status: PayloadStatusEnum::Valid,
-                latest_valid_hash: Some(head_block_hash),
+                status: PayloadStatusEnum::Syncing,
+                latest_valid_hash: self.chain.get_latest_valid_ancestor(head_block_hash).await,
             };
         }
 

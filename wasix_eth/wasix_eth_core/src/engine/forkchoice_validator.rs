@@ -97,11 +97,18 @@ impl ForkchoiceValidator {
         }
         None
     }
-    pub(crate) fn check_header_without_headheader(&self, forkchoice_state: ForkchoiceState) -> Option<RpcResult<ForkchoiceUpdated>> {
+    pub(crate) async fn check_header_without_headheader(&self, forkchoice_state: ForkchoiceState) -> Option<RpcResult<ForkchoiceUpdated>> {
         // head_header is None but head_status was Valid. This should only happen if determine_payload_status
         // is more permissive than our header lookup.
         let genesis_hash = self.read_storage.block_hash(0).unwrap_or(None);
         if Some(forkchoice_state.head_block_hash) != genesis_hash {
+            // Check if it's in the block tree (buffered)
+            if self.chain.has_block(forkchoice_state.head_block_hash).await {
+                 debug!("[Engine] Head block known in block tree/payloads but header not in main storage: {:?}", forkchoice_state.head_block_hash);
+                 // We don't return an error here, let determine_payload_status return SYNCING
+                 return None;
+            }
+
             error!("[Engine] Head block known but header not found: {:?}", forkchoice_state.head_block_hash);
             return Some(Err(RpcError::InvalidForkchoiceState("headBlockHash header not found".to_string())));
         }
