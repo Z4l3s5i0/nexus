@@ -578,7 +578,18 @@ impl Engine {
 
                                 // Threshold for synchronous promotion to avoid "Inconsistent Head" in RPC clients
                                 let shallow_reorg_threshold = 3;
-                                let is_shallow = !context.is_reorg && context.new_canonical_blocks.len() <= shallow_reorg_threshold;
+                                
+                                // Check if all blocks are already in storage
+                                let mut all_in_storage = true;
+                                for block in &context.new_canonical_blocks {
+                                    let hash = block.header.hash_slow();
+                                    if self.read_storage.block_body_by_hash(hash).ok().flatten().is_none() {
+                                        all_in_storage = false;
+                                        break;
+                                    }
+                                }
+
+                                let is_shallow = (!context.is_reorg && context.new_canonical_blocks.len() <= shallow_reorg_threshold) || all_in_storage;
 
                                 if is_shallow {
                                     debug!("[Engine] Shallow reorg ({} blocks). Processing synchronously.", context.new_canonical_blocks.len());
@@ -1076,19 +1087,27 @@ impl Engine {
     }
 
     async fn determine_payload_status(&self, head_block_hash: B256) -> PayloadStatus {
-        if self.chain.is_promoting(head_block_hash).await {
-            return PayloadStatus {
-                status: PayloadStatusEnum::Syncing,
-                latest_valid_hash: self.chain.get_latest_valid_ancestor(head_block_hash).await,
-            };
-        }
-
         // If the block is already officially imported in main storage, it's VALID.
         // This takes precedence over any SOFT invalidation (e.g. from a bad newPayload call).
         if self.read_storage.block_body_by_hash(head_block_hash).ok().flatten().is_some() {
             return PayloadStatus {
                 status: PayloadStatusEnum::Valid,
                 latest_valid_hash: Some(head_block_hash),
+            };
+        }
+
+        // Also check if it's in the block tree (validated but not yet canonical)
+        if self.payload_processor.block_tree.contains_block(head_block_hash).await {
+            return PayloadStatus {
+                status: PayloadStatusEnum::Valid,
+                latest_valid_hash: Some(head_block_hash),
+            };
+        }
+
+        if self.chain.is_promoting(head_block_hash).await {
+            return PayloadStatus {
+                status: PayloadStatusEnum::Syncing,
+                latest_valid_hash: self.chain.get_latest_valid_ancestor(head_block_hash).await,
             };
         }
 

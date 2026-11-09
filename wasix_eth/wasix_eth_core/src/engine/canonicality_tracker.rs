@@ -63,18 +63,9 @@ impl CanonicalState {
         drop(lock);
 
         let storage = self.write_storage.clone();
-        tokio::spawn(async move {
-            let res = tokio::task::spawn_blocking(move || {
-                storage.update_forkchoice(state.head_block_hash, Some(state.safe_block_hash), Some(state.finalized_block_hash))
-            }).await;
-            
-            if let Err(e) = res {
-                error!("Storage task panicked during head update: {}", e);
-            } else if let Ok(Err(e)) = res {
-                error!("Storage error during head update: {}", e);
-            }
-        });
-        Ok(())
+        tokio::task::spawn_blocking(move || {
+            storage.update_forkchoice(state.head_block_hash, Some(state.safe_block_hash), Some(state.finalized_block_hash))
+        }).await?
     }
 
     pub async fn update_safe(&self, hash: B256) -> anyhow::Result<()> {
@@ -87,18 +78,9 @@ impl CanonicalState {
         drop(lock);
 
         let storage = self.write_storage.clone();
-        tokio::spawn(async move {
-            let res = tokio::task::spawn_blocking(move || {
-                storage.update_forkchoice(state.head_block_hash, Some(state.safe_block_hash), Some(state.finalized_block_hash))
-            }).await;
-
-            if let Err(e) = res {
-                error!("Storage task panicked during safe update: {}", e);
-            } else if let Ok(Err(e)) = res {
-                error!("Storage error during safe update: {}", e);
-            }
-        });
-        Ok(())
+        tokio::task::spawn_blocking(move || {
+            storage.update_forkchoice(state.head_block_hash, Some(state.safe_block_hash), Some(state.finalized_block_hash))
+        }).await?
     }
 
     pub async fn update_finalized(&self, hash: B256) -> anyhow::Result<()> {
@@ -111,18 +93,9 @@ impl CanonicalState {
         drop(lock);
 
         let storage = self.write_storage.clone();
-        tokio::spawn(async move {
-            let res = tokio::task::spawn_blocking(move || {
-                storage.update_forkchoice(state.head_block_hash, Some(state.safe_block_hash), Some(state.finalized_block_hash))
-            }).await;
-
-            if let Err(e) = res {
-                error!("Storage task panicked during finalized update: {}", e);
-            } else if let Ok(Err(e)) = res {
-                error!("Storage error during finalized update: {}", e);
-            }
-        });
-        Ok(())
+        tokio::task::spawn_blocking(move || {
+            storage.update_forkchoice(state.head_block_hash, Some(state.safe_block_hash), Some(state.finalized_block_hash))
+        }).await?
     }
 
     pub async fn update_state(&self, state: ForkchoiceState, head_number: u64) -> anyhow::Result<()> {
@@ -134,17 +107,8 @@ impl CanonicalState {
         drop(lock);
 
         let storage = self.write_storage.clone();
-        tokio::spawn(async move {
-            let res = tokio::task::spawn_blocking(move || {
-                storage.update_forkchoice(state.head_block_hash, Some(state.safe_block_hash), Some(state.finalized_block_hash))
-            }).await;
-
-            if let Err(e) = res {
-                error!("Storage task panicked during state update: {}", e);
-            } else if let Ok(Err(e)) = res {
-                error!("Storage error during state update: {}", e);
-            }
-        });
-        Ok(())
+        tokio::task::spawn_blocking(move || {
+            storage.update_forkchoice(state.head_block_hash, Some(state.safe_block_hash), Some(state.finalized_block_hash))
+        }).await?
     }
 }

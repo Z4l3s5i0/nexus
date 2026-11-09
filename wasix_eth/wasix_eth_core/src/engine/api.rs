@@ -394,13 +394,32 @@ impl RPCEngine {
         self.account_manager.sign(&address, &message).await
     }
 
+    async fn resolve_block_id(&self, id: BlockId) -> BlockId {
+        match id {
+            BlockId::Number(BlockNumberOrTag::Latest) => {
+                let (hash, _) = self.canonical.get_head().await;
+                BlockId::Hash(hash.into())
+            }
+            BlockId::Number(BlockNumberOrTag::Safe) => {
+                let hash = self.canonical.get_safe().await;
+                BlockId::Hash(hash.into())
+            }
+            BlockId::Number(BlockNumberOrTag::Finalized) => {
+                let hash = self.canonical.get_finalized().await;
+                BlockId::Hash(hash.into())
+            }
+            _ => id,
+        }
+    }
+
     pub async fn get_block_by_id(&self, id: BlockId) -> RpcResult<Option<Block<Transaction>>> {
-        let block = self.read_storage.block(id).map_err(|e| {
+        let resolved_id = self.resolve_block_id(id).await;
+        let block = self.read_storage.block(resolved_id).map_err(|e| {
             e.downcast_ref::<RpcError>().cloned().unwrap_or_else(|| RpcError::Internal(e.to_string()))
         })?;
 
         if block.is_none() {
-            if let BlockId::Hash(rpc_hash) = id {
+            if let BlockId::Hash(rpc_hash) = resolved_id {
                 let hash = rpc_hash.block_hash;
                 if self.chain.is_invalid(hash).await {
                     return Ok(None);
@@ -478,9 +497,10 @@ impl RPCEngine {
     }
 
     pub async fn get_balance(&self, address: Address, block_id: BlockId) -> RpcResult<U256> {
+        let resolved_id = self.resolve_block_id(block_id).await;
         let is_pending = matches!(block_id, BlockId::Number(BlockNumberOrTag::Pending));
 
-        let header = self.read_storage.header(block_id)
+        let header = self.read_storage.header(resolved_id)
             .map_err(|e| {
                 e.downcast_ref::<RpcError>().cloned().unwrap_or_else(|| RpcError::Internal(e.to_string()))
             })?;
@@ -508,15 +528,16 @@ impl RPCEngine {
     }
 
     pub async fn get_transaction_count(&self, address: Address, block_id: BlockId) -> RpcResult<u64> {
+        let resolved_id = self.resolve_block_id(block_id).await;
         let is_pending = matches!(block_id, BlockId::Number(BlockNumberOrTag::Pending));
         
-        let header = self.read_storage.header(block_id)
+        let header = self.read_storage.header(resolved_id)
             .map_err(|e| {
                 e.downcast_ref::<RpcError>().cloned().unwrap_or_else(|| RpcError::Internal(e.to_string()))
             })?;
         let state_root = header.map(|h| h.state_root);
 
-        let count = self.read_storage.transaction_count(address, block_id, state_root).map_err(|e| RpcError::Internal(e.to_string()))?;
+        let count = self.read_storage.transaction_count(address, resolved_id, state_root).map_err(|e| RpcError::Internal(e.to_string()))?;
 
         if is_pending {
             Ok(self.mempool.next_expected_nonce(address, count).await)
@@ -526,7 +547,8 @@ impl RPCEngine {
     }
 
     pub async fn get_code(&self, address: Address, block_id: BlockId) -> RpcResult<Bytes> {
-        let header = self.read_storage.header(block_id)
+        let resolved_id = self.resolve_block_id(block_id).await;
+        let header = self.read_storage.header(resolved_id)
             .map_err(|e| {
                 e.downcast_ref::<RpcError>().cloned().unwrap_or_else(|| RpcError::Internal(e.to_string()))
             })?;
@@ -541,7 +563,8 @@ impl RPCEngine {
     }
 
     pub async fn get_storage_at(&self, address: Address, slot: B256, block_id: BlockId) -> RpcResult<B256> {
-        let header = self.read_storage.header(block_id)
+        let resolved_id = self.resolve_block_id(block_id).await;
+        let header = self.read_storage.header(resolved_id)
             .map_err(|e| {
                 e.downcast_ref::<RpcError>().cloned().unwrap_or_else(|| RpcError::Internal(e.to_string()))
             })?;

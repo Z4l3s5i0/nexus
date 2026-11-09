@@ -276,13 +276,7 @@ impl ChainManager for ChainManagerImpl {
             };
         }
 
-        if self.is_promoting(head_block_hash).await {
-            return wasix_eth_types::PayloadStatus {
-                status: wasix_eth_types::PayloadStatusEnum::Syncing,
-                latest_valid_hash: self.get_latest_valid_ancestor(head_block_hash).await,
-            };
-        }
-
+        // Check if header exists in storage or payloads (validated and available)
         if let Ok(Some(_)) = self.read_storage.header(BlockId::Hash(head_block_hash.into())) {
             return wasix_eth_types::PayloadStatus {
                 status: wasix_eth_types::PayloadStatusEnum::Valid,
@@ -290,11 +284,17 @@ impl ChainManager for ChainManagerImpl {
             };
         }
 
-        // Check if it's in the payloads map (processed but not yet canonical)
         if let Some(_) = self.read_storage.get_payload_by_block_hash(head_block_hash) {
             return wasix_eth_types::PayloadStatus {
                 status: wasix_eth_types::PayloadStatusEnum::Valid,
                 latest_valid_hash: Some(head_block_hash),
+            };
+        }
+
+        if self.is_promoting(head_block_hash).await {
+            return wasix_eth_types::PayloadStatus {
+                status: wasix_eth_types::PayloadStatusEnum::Syncing,
+                latest_valid_hash: self.get_latest_valid_ancestor(head_block_hash).await,
             };
         }
 
