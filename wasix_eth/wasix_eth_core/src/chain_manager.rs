@@ -137,9 +137,12 @@ impl ChainManager for ChainManagerImpl {
 
         // If the starting hash is not in invalid_blocks, check if it's valid itself.
         if self.block_tree.get_invalidation_reason(current).await.is_none() {
-            if self.has_block(current).await {
+            // A block is considered valid if it is in storage or the payloads table (fully executed)
+            if self.read_storage.header(wasix_eth_types::BlockId::Hash(current.into())).ok().flatten().is_some() ||
+               self.read_storage.get_payload_by_block_hash(current).is_some() {
                 return Some(current);
             }
+
             if let Ok(Some(genesis_hash)) = self.read_storage.block_hash(0) {
                 if current == genesis_hash {
                     return Some(current);
@@ -218,7 +221,9 @@ impl ChainManager for ChainManagerImpl {
         }
 
         // Now current is the first non-invalid block we found.
-        if self.has_block(current).await {
+        // A block is considered valid if it is in storage or the payloads table (fully executed)
+        if self.read_storage.header(wasix_eth_types::BlockId::Hash(current.into())).ok().flatten().is_some() ||
+           self.read_storage.get_payload_by_block_hash(current).is_some() {
             debug!("[ChainManager] get_latest_valid_ancestor: found valid ancestor {:?}", current);
             return Some(current);
         }

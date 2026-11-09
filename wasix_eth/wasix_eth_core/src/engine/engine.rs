@@ -1100,6 +1100,8 @@ impl Engine {
         if self.payload_processor.block_tree.contains_block(head_block_hash).await {
             // A block in the block tree but NOT in storage is either a side-chain OR an orphan.
             // To be safe and spec-compliant, we return SYNCING if it's not in main storage yet.
+            // When SYNCING, latestValidHash MUST be the hash of the most recent VALID (validated) block.
+            // Since this block is not in main storage, it's not yet officially VALID in the context of this node's state.
             return PayloadStatus {
                 status: PayloadStatusEnum::Syncing,
                 latest_valid_hash: self.chain.get_latest_valid_ancestor(head_block_hash).await,
