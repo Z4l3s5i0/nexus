@@ -38,6 +38,7 @@ pub enum BuildStatus {
 
 #[derive(Clone, Debug)]
 pub struct PayloadBuilderConfig {
+    pub slot_duration_ms: u64,
     pub initial_wait_ms: u64,
     pub grace_period_ms: u64,
 }
@@ -45,7 +46,8 @@ pub struct PayloadBuilderConfig {
 impl Default for PayloadBuilderConfig {
     fn default() -> Self {
         Self {
-            initial_wait_ms: 2500,
+            slot_duration_ms: 12000,
+            initial_wait_ms: 2400, // 20% of 12s
             grace_period_ms: 200,
         }
     }
@@ -158,7 +160,7 @@ impl PayloadBuilder {
 
             let start_time = std::time::Instant::now();
             let mut last_rebuild_time = std::time::Instant::now();
-            let slot_duration = std::time::Duration::from_millis(11500); // SLOT_DURATION_MS
+            let slot_duration = std::time::Duration::from_millis(builder.config.slot_duration_ms.saturating_sub(500)); // Leave some margin
             
             while !token.is_cancelled() {
                 tokio::task::yield_now().await;
@@ -167,12 +169,15 @@ impl PayloadBuilder {
                     break;
                 }
 
+                // Scaling debounce: 2% of slot duration, min 50ms, max 500ms
+                let debounce_ms = (builder.config.slot_duration_ms * 2 / 100).clamp(50, 500);
+
                 // Wait for a bit or until mempool change
                 tokio::select! {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {},
                     Ok(EngineEvent::NewTransaction { .. }) = event_rx.recv() => {
                         // Debounce: wait a bit for more transactions to arrive
-                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(debounce_ms)).await;
                         // Drain extra events
                         let mut count = 1;
                         while let Ok(_) = event_rx.try_recv() {
@@ -183,10 +188,11 @@ impl PayloadBuilder {
                     _ = token.cancelled() => break,
                 }
 
-                // Minimum 500ms between rebuilds to avoid CPU saturation under high TPS
+                // Minimum rebuild interval: 5% of slot duration, min 100ms, max 1000ms
+                let min_rebuild_ms = (builder.config.slot_duration_ms * 5 / 100).clamp(100, 1000);
                 let elapsed_since_last = last_rebuild_time.elapsed();
-                if elapsed_since_last < std::time::Duration::from_millis(500) {
-                    tokio::time::sleep(std::time::Duration::from_millis(500) - elapsed_since_last).await;
+                if elapsed_since_last < std::time::Duration::from_millis(min_rebuild_ms) {
+                    tokio::time::sleep(std::time::Duration::from_millis(min_rebuild_ms) - elapsed_since_last).await;
                 }
 
                 last_rebuild_time = std::time::Instant::now();
@@ -229,7 +235,10 @@ impl PayloadBuilder {
         let execution = Arc::clone(&self.execution);
         let parent_header_clone = parent_block.header.clone();
         let attr_clone = attr.clone();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        
+        // Execution deadline: 70% of slot duration
+        let deadline_ms = (self.config.slot_duration_ms * 70) / 100;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(deadline_ms);
 
         let (finalized_block, receipts, metas) = match tokio::task::spawn_blocking(move || {
             execution.execute_block_for_payload(
@@ -396,7 +405,10 @@ impl PayloadBuilder {
         let parent_header_clone = parent_block.header.clone();
         let attr_clone = attr.clone();
         let token_clone = token.clone();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        
+        // Execution deadline: 70% of slot duration
+        let deadline_ms = (self.config.slot_duration_ms * 70) / 100;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(deadline_ms);
         let result = tokio::task::spawn_blocking(move || {
             execution.execute_block_for_payload(
                 transactions,

@@ -7,6 +7,7 @@ use wasix_eth_core::mempool::mempool::Mempool;
 use wasix_eth_core::engine::canonicality_tracker::CanonicalState;
 use wasix_eth_core::engine::sidechain_tracker::BlockTree;
 use wasix_eth_core::engine::reorg_manager::ReorgHandler;
+use wasix_eth_core::engine::payload_builder::PayloadBuilderConfig;
 use wasix_eth_core::{ChainManagerImpl, Engine, EthConsensus};
 use wasix_eth_core::sync::registry::SyncRegistry;
 use wasix_eth_execution::execution_provider::EthExecutionProvider;
@@ -26,6 +27,7 @@ impl ExecutionPayload {
     pub fn new(
         read_provider: Arc<DatabaseReadProvider>,
         write_provider: Arc<DatabaseWriteProvider>,
+        payload_builder_config: PayloadBuilderConfig,
     ) -> Self {
         let mempool = Arc::new(Mempool::new(U256::ZERO));
         let (engine_event_tx, _) = tokio::sync::broadcast::channel(2000);
@@ -81,6 +83,7 @@ impl ExecutionPayload {
             forkchoice_validator.clone(),
             mempool_listener,
             sync_registry.clone(),
+            payload_builder_config,
         ));
 
         Self {

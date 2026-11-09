@@ -2,6 +2,7 @@ use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Arc;
 use wasix_eth_core::{Engine};
+use wasix_eth_core::engine::payload_builder::PayloadBuilderConfig;
 use wasix_eth_core::engine::api::RPCEngine;
 use wasix_eth_p2p::{PeerManager, SyncService};
 use wasix_eth_storage::read::DatabaseReadProvider;
@@ -60,6 +61,7 @@ impl Node {
 
     pub async fn new_no_init(
         args: &crate::cli::Args,
+        payload_builder_config: PayloadBuilderConfig,
     ) -> Result<Self, Box<dyn Error>> {
         let data_dir = args.common.data_dir.clone().unwrap_or_else(|| PathBuf::from("data"));
         let storage_name = args.common.peer_name.clone().unwrap_or_else(|| "default".to_string());
@@ -79,6 +81,7 @@ impl Node {
         let execution_payload = ExecutionPayload::new(
             storage_payload.read_provider.clone(),
             storage_payload.write_provider.clone(),
+            payload_builder_config,
         );
 
         Ok(Self {
@@ -101,6 +104,7 @@ impl Node {
     pub async fn new(
         args: &crate::cli::Args,
         genesis_config: Option<GenesisConfiguration>,
+        payload_builder_config: PayloadBuilderConfig,
     ) -> Result<Self, Box<dyn Error>> {
         let data_dir = args.common.data_dir.clone().unwrap_or_else(|| PathBuf::from("data"));
         let storage_name = args.common.peer_name.clone().unwrap_or_else(|| "default".to_string());
@@ -129,6 +133,7 @@ impl Node {
         let execution_payload = ExecutionPayload::new(
             storage_payload.read_provider.clone(),
             storage_payload.write_provider.clone(),
+            payload_builder_config,
         );
 
         // 3. Network

@@ -4,7 +4,7 @@ use crate::engine::sidechain_tracker::{BlockTree};
 use crate::engine::reorg_manager::ReorgHandler;
 use crate::sync::registry::SyncRegistry;
 use crate::account_manager::AccountManager;
-use crate::engine::payload_builder::PayloadBuilder;
+use crate::engine::payload_builder::{PayloadBuilder, PayloadBuilderConfig};
 use crate::engine::payload_processor::PayloadProcessor;
 use crate::mempool::mempool_provider::MempoolProvider;
 use crate::Consensus;
@@ -150,6 +150,7 @@ impl Engine {
         forkchoice_validator: ForkchoiceValidator,
         mempool_listener: Arc<MempoolListener>,
         sync_registry: Arc<SyncRegistry>,
+        payload_builder_config: PayloadBuilderConfig,
     ) -> Self {
         let processing_payloads = Arc::new(DashSet::new());
         let in_flight_results = Arc::new(DashMap::new());
@@ -177,7 +178,7 @@ impl Engine {
                 in_flight_interruptions: Arc::new(DashSet::new()),
                 build_statuses: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
                 build_notify: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-                config: crate::engine::payload_builder::PayloadBuilderConfig::default(),
+                config: payload_builder_config,
             },
             payload_processor: PayloadProcessor {
                 execution_cancellation_tokens: Arc::new(DashMap::new()),

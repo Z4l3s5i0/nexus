@@ -18,6 +18,7 @@ use wasix_eth_rpc::NetService;
 use wasix_eth_rpc::Web3Service;
 use wasix_eth_rpc::RpcServerFacade;
 use wasix_eth_types::genesis::GenesisConfiguration;
+use wasix_eth_core::engine::payload_builder::PayloadBuilderConfig;
 use wasix_eth_utils::logging;
 use wasix_eth_utils::logging::LogLevel;
 use wasix_eth_utils::{debug, error, info};
@@ -527,8 +528,14 @@ impl AppBuilder {
         let _jwt_secret = self.setup_jwt_secret(&args, &data_dir, &storage_name)?
             .unwrap_or([0u8; 32]);
 
+        let payload_builder_config = PayloadBuilderConfig {
+            slot_duration_ms: args.common.slot_duration * 1000,
+            initial_wait_ms: (args.common.slot_duration * 1000 * 20) / 100,
+            grace_period_ms: 200,
+        };
+
         // Initialize Node without genesis - this will fail if genesis hasn't been initialized
-        let node = Node::new_no_init(&args).await
+        let node = Node::new_no_init(&args, payload_builder_config).await
             .map_err(|e| format!("Import failed: Genesis must be initialized before importing blocks. Error: {}", e))?;
 
         // Hive block import
@@ -562,8 +569,14 @@ impl AppBuilder {
         let jwt_secret = self.setup_jwt_secret(&args, &data_dir, &storage_name)?
             .unwrap_or([0u8; 32]);
 
+        let payload_builder_config = PayloadBuilderConfig {
+            slot_duration_ms: args.common.slot_duration * 1000,
+            initial_wait_ms: (args.common.slot_duration * 1000 * 20) / 100,
+            grace_period_ms: 200,
+        };
+
         // Initialize Node (Coordinator)
-        let node = Node::new(&args, genesis_configuration).await?;
+        let node = Node::new(&args, genesis_configuration, payload_builder_config).await?;
 
         // Setup RPC services
         let (eth_rpc_addr, auth_rpc_addr) = self.setup_addresses(&args);

@@ -69,6 +69,10 @@ pub struct CommonArgs {
     #[arg(long, default_missing_value = "12", num_args = 0..=1)]
     pub dev: Option<u64>,
 
+    /// Slot duration in seconds
+    #[arg(long, default_value_t = 12)]
+    pub slot_duration: u64,
+
     /// Descriptive name for the node, used in storage filenames
     #[arg(long, default_value_t = 9050)]
     pub metrics_port: u16,
