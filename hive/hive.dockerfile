@@ -10,7 +10,8 @@ WORKDIR /app
 
 # Clone the repository and switch to the custom branch
 RUN git clone https://github.com/Z4l3s5i0/hive.git . && \
-    git checkout custom
+    git checkout custom && \
+    git pull
 
 # Build the main hive binary
 RUN go build -o hive .

@@ -158,7 +158,7 @@ impl PayloadBuilder {
 
             let start_time = std::time::Instant::now();
             let mut last_rebuild_time = std::time::Instant::now();
-            let slot_duration = std::time::Duration::from_millis(10500); // SLOT_DURATION_MS
+            let slot_duration = std::time::Duration::from_millis(11500); // SLOT_DURATION_MS
             
             while !token.is_cancelled() {
                 tokio::task::yield_now().await;
@@ -229,7 +229,7 @@ impl PayloadBuilder {
         let execution = Arc::clone(&self.execution);
         let parent_header_clone = parent_block.header.clone();
         let attr_clone = attr.clone();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
 
         let (finalized_block, receipts, metas) = match tokio::task::spawn_blocking(move || {
             execution.execute_block_for_payload(
@@ -396,7 +396,7 @@ impl PayloadBuilder {
         let parent_header_clone = parent_block.header.clone();
         let attr_clone = attr.clone();
         let token_clone = token.clone();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
         let result = tokio::task::spawn_blocking(move || {
             execution.execute_block_for_payload(
                 transactions,

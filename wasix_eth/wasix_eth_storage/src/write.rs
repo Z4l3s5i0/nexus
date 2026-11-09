@@ -202,7 +202,7 @@ impl BatchWriter {
                 // EIP-161 check
                 if is_eip161 && acc.nonce == 0 && acc.balance == U256::ZERO && (acc.code_hash == B256::default() || acc.code_hash == alloy_primitives::KECCAK256_EMPTY) {
                     if storage_root == alloy_trie::EMPTY_ROOT_HASH {
-                        debug!("[Trie] Deleting empty account from trie: addr={:?}", addr);
+                        // debug!("[Trie] Deleting empty account from trie: addr={:?}", addr);
                         trie.delete(hashed_addr)?;
                         // Also remove from Accounts table
                         if !self.side_commit {
@@ -220,7 +220,7 @@ impl BatchWriter {
                     code_hash: if acc.code_hash == B256::default() { alloy_primitives::KECCAK256_EMPTY } else { acc.code_hash },
                 };
 
-                debug!("[Trie] Updating account in trie: addr={:?}, balance={}, nonce={}, storage={:?}, code={:?}", addr, trie_acc.balance, trie_acc.nonce, trie_acc.storage_root, trie_acc.code_hash);
+                // debug!("[Trie] Updating account in trie: addr={:?}, balance={}, nonce={}, storage={:?}, code={:?}", addr, trie_acc.balance, trie_acc.nonce, trie_acc.storage_root, trie_acc.code_hash);
 
                 if !self.side_commit {
                     // Update Accounts table with new storage root
