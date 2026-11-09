@@ -15,6 +15,7 @@ pub struct ChainManagerImpl {
     read_storage: DatabaseReadProvider,
     _write_storage: DatabaseWriteProvider,
     sync_status: tokio::sync::RwLock<SyncStatus>,
+    reorg_in_progress: tokio::sync::RwLock<bool>,
     promoting_blocks: DashSet<B256>,
     pub canonical: Arc<CanonicalState>,
     pub block_tree: Arc<BlockTree>,
@@ -33,6 +34,7 @@ impl ChainManagerImpl {
             read_storage,
             _write_storage: write_storage,
             sync_status: tokio::sync::RwLock::new(SyncStatus::None),
+            reorg_in_progress: tokio::sync::RwLock::new(false),
             promoting_blocks: DashSet::new(),
             canonical,
             block_tree,
@@ -234,6 +236,15 @@ impl ChainManager for ChainManagerImpl {
 
         debug!("[ChainManager] get_latest_valid_ancestor: block {:?} is not invalid but not known (missing from storage)", current);
         None
+    }
+
+    async fn is_reorg_in_progress(&self) -> bool {
+        *self.reorg_in_progress.read().await
+    }
+
+    async fn set_reorg_in_progress(&self, in_progress: bool) {
+        let mut current = self.reorg_in_progress.write().await;
+        *current = in_progress;
     }
 
     async fn total_difficulty(&self) -> U256 {

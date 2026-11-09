@@ -30,9 +30,9 @@ impl BlockTree {
 
     pub async fn mark_invalid(&self, hash: B256, parent_hash: B256, reason: InvalidationReason) {
         if hash == parent_hash {
-             wasix_eth_utils::error!("[BlockTree] Attempted to mark block {:?} as invalid with itself as parent!", hash);
-             // We still store it but with ZERO parent to avoid cycles
-             self.invalid_blocks.write().await.insert(hash, (B256::ZERO, reason));
+            wasix_eth_utils::error!("[BlockTree] Attempted to mark block {:?} as invalid with itself as parent!", hash);
+            // We still store it but with ZERO parent to avoid cycles
+            self.invalid_blocks.write().await.insert(hash, (B256::ZERO, reason));
         } else {
              self.invalid_blocks.write().await.insert(hash, (parent_hash, reason));
         }

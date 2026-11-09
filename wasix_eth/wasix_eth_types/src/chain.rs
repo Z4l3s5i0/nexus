@@ -8,8 +8,6 @@ pub enum InvalidationReason {
     Hard,
     /// Transient error (e.g. missing blobs), can be retried.
     Soft,
-    /// A reorg is currently in progress.
-    ReorgInProgress,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +51,11 @@ pub trait ChainManager: Send + Sync {
 
     /// Returns the latest known valid ancestor of an invalid block.
     async fn get_latest_valid_ancestor(&self, hash: B256) -> Option<B256>;
+
+    /// Checks if a reorg is currently in progress.
+    async fn is_reorg_in_progress(&self) -> bool;
+    /// Sets the reorg status.
+    async fn set_reorg_in_progress(&self, in_progress: bool);
 
     /// Retrieves the total difficulty of the head block.
     async fn total_difficulty(&self) -> U256;

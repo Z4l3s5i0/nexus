@@ -415,17 +415,15 @@ impl Engine {
         });
 
         // 0. Check if any reorg is currently in progress
-        if let Some(reason) = self.chain.get_invalidation_reason(B256::ZERO).await {
-            if reason == InvalidationReason::ReorgInProgress {
-                info!("[Engine] A reorg is currently in progress. Returning SYNCING.");
-                return Ok(ForkchoiceUpdated {
-                    payload_status: PayloadStatus {
-                        status: PayloadStatusEnum::Syncing,
-                        latest_valid_hash: self.chain.get_latest_valid_ancestor(forkchoice_state.head_block_hash).await,
-                    },
-                    payload_id: None,
-                });
-            }
+        if self.chain.is_reorg_in_progress().await {
+            info!("[Engine] A reorg is currently in progress. Returning SYNCING.");
+            return Ok(ForkchoiceUpdated {
+                payload_status: PayloadStatus {
+                    status: PayloadStatusEnum::Syncing,
+                    latest_valid_hash: self.chain.get_latest_valid_ancestor(forkchoice_state.head_block_hash).await,
+                },
+                payload_id: None,
+            });
         }
 
         // 1. Check if head block is known before ancestry validation
@@ -578,126 +576,171 @@ impl Engine {
                                 let old_state_cloned = old_state.clone();
                                 let old_head_number_cloned = old_head_number;
 
-                                // Mark reorg in progress globally
-                                self.chain.add_invalid_block(B256::ZERO, B256::ZERO, InvalidationReason::ReorgInProgress).await;
+                                // Threshold for synchronous promotion to avoid "Inconsistent Head" in RPC clients
+                                let shallow_reorg_threshold = 3;
+                                let is_shallow = !context.is_reorg && context.new_canonical_blocks.len() <= shallow_reorg_threshold;
 
-                                // Mark the target head as promoting so that determine_payload_status returns SYNCING
-                                self.chain.set_promoting(forkchoice_state.head_block_hash, true).await;
-
-                                tokio::spawn(async move {
-                                    // 2. Handle reorgs FIRST: revert to common ancestor
-                                    if context_cloned.is_reorg {
-                                        info!("[Engine] Reorg detected! Attempting Fast Switch to hash {:?}", forkchoice_state_cloned.head_block_hash);
-                                        
-                                        // Cancel ALL ongoing executions to prevent node freeze during reorg
-                                        engine.payload_processor.abort_all_executions().await;
-
-                                        let mut fast_switch_success = false;
-                                        if let Ok(Some(state_root)) = engine.read_storage.state_root(forkchoice_state_cloned.head_block_hash) {
-                                            info!("[Engine] Found persisted StateRoot {:?} for new head. Performing Fast Switch.", state_root);
-                                            if let Err(e) = engine.reorg_handler.fast_switch(forkchoice_state_cloned.head_block_hash, state_root).await {
-                                                warn!("[Engine] Fast Switch failed: {}. Falling back to standard revert.", e);
-                                            } else {
-                                                fast_switch_success = true;
-                                            }
+                                if is_shallow {
+                                    debug!("[Engine] Shallow reorg ({} blocks). Processing synchronously.", context.new_canonical_blocks.len());
+                                    
+                                    // 2. Process blocks synchronously
+                                    let mut blocks_to_execute = Vec::new();
+                                    for block in &context.new_canonical_blocks {
+                                        let hash = block.header.hash_slow();
+                                        if self.read_storage.block_body_by_hash(hash).ok().flatten().is_none() {
+                                            blocks_to_execute.push(block.clone());
                                         }
-
-                                        if !fast_switch_success {
-                                            // Find common ancestor height
-                                            let common_ancestor_height = engine.read_storage.header(BlockId::Hash(RpcBlockHash::from(context_cloned.common_ancestor_hash)))
-                                                .ok()
-                                                .flatten()
-                                                .map(|h| h.number)
-                                                .unwrap_or(0);
-                                            
-                                            info!("[Engine] Standard Reorg: Reverting chain to height {} (common ancestor: {:?})", common_ancestor_height, context_cloned.common_ancestor_hash);
-                                            
-                                            // Physically roll back state to common ancestor
-                                            if let Err(e) = engine.revert_to_height(common_ancestor_height).await {
-                                                error!("[Engine] Failed to revert to height {}: {}", common_ancestor_height, e);
-                                                // Rollback forkchoice if reorg fails
-                                                let _ = engine.canonical.update_state(old_state_cloned, old_head_number_cloned).await;
-                                                engine.chain.remove_invalid_block(B256::ZERO).await;
-                                                engine.chain.set_promoting(forkchoice_state_cloned.head_block_hash, false).await;
-                                                return;
-                                            }
-                                        }
-
-                                        engine.handle_reorgs_for_mempool(forkchoice_state_cloned, old_state_cloned.head_block_hash, context_cloned.common_ancestor_hash).await;
                                     }
 
-                                    // 3. Handle canonical updates and re-execution
-                                    if !context_cloned.new_canonical_blocks.is_empty() {
-                                        // 3.1. Ensure all blocks in context are in main storage and their state is committed
-                                        let mut blocks_to_execute = Vec::new();
-                                        for block in &context_cloned.new_canonical_blocks {
-                                            let hash = block.header.hash_slow();
-                                            if engine.read_storage.block_body_by_hash(hash).ok().flatten().is_none() {
-                                                debug!("[Engine] Queuing block {} from Payloads for background re-execution", hash);
-                                                blocks_to_execute.push(block.clone());
+                                    if !blocks_to_execute.is_empty() {
+                                        if let Err(e) = self.execution.execute_blocks_with_batch(blocks_to_execute.clone()) {
+                                            error!("[Engine] Synchronous promotion failed during execution: {}", e);
+                                            if let Some(first_block) = blocks_to_execute.first() {
+                                                let hash = first_block.header.hash_slow();
+                                                self.chain.add_invalid_block(hash, first_block.header.parent_hash, InvalidationReason::Soft).await;
+                                                self.invalidate_descendants(hash).await;
                                             }
+                                            return Err(RpcError::Internal("Synchronous promotion failed".to_string()));
+                                        }
+                                    }
+
+                                    if let Err(e) = self.reorg_handler.mark_branch_canonical(&context.new_canonical_blocks).await {
+                                        error!("[Engine] Failed to mark branch canonical synchronously: {}", e);
+                                        return Err(RpcError::Internal("Synchronous promotion failed to mark canonical".to_string()));
+                                    }
+
+                                    for block in &context.new_canonical_blocks {
+                                        self.mempool_listener.handle_canonical_block(block.clone()).await;
+                                        TRANSACTIONS_COMMITTED_TOTAL.add(block.body.transactions.len() as f64);
+                                    }
+                                    
+                                    // Note: We don't return SYNCING here. We fall through to finish the FCU normally with status VALID.
+                                    info!("[Engine] Synchronous reorg promotion complete for block #{}", header.number);
+                                } else {
+                                    // Deep reorg or too many blocks: process in background and return SYNCING
+                                    info!("[Engine] Deep reorg or many blocks ({}). Processing in background.", context.new_canonical_blocks.len());
+
+                                    // Mark reorg in progress globally
+                                    self.chain.set_reorg_in_progress(true).await;
+
+                                    // Mark the target head as promoting so that determine_payload_status returns SYNCING
+                                    self.chain.set_promoting(forkchoice_state.head_block_hash, true).await;
+
+                                    tokio::spawn(async move {
+                                        // 2. Handle reorgs FIRST: revert to common ancestor
+                                        if context_cloned.is_reorg {
+                                            info!("[Engine] Reorg detected! Attempting Fast Switch to hash {:?}", forkchoice_state_cloned.head_block_hash);
+                                            
+                                            // Cancel ALL ongoing executions to prevent node freeze during reorg
+                                            engine.payload_processor.abort_all_executions().await;
+
+                                            let mut fast_switch_success = false;
+                                            if let Ok(Some(state_root)) = engine.read_storage.state_root(forkchoice_state_cloned.head_block_hash) {
+                                                info!("[Engine] Found persisted StateRoot {:?} for new head. Performing Fast Switch.", state_root);
+                                                if let Err(e) = engine.reorg_handler.fast_switch(forkchoice_state_cloned.head_block_hash, state_root).await {
+                                                    warn!("[Engine] Fast Switch failed: {}. Falling back to standard revert.", e);
+                                                } else {
+                                                    fast_switch_success = true;
+                                                }
+                                            }
+
+                                            if !fast_switch_success {
+                                                // Find common ancestor height
+                                                let common_ancestor_height = engine.read_storage.header(BlockId::Hash(RpcBlockHash::from(context_cloned.common_ancestor_hash)))
+                                                    .ok()
+                                                    .flatten()
+                                                    .map(|h| h.number)
+                                                    .unwrap_or(0);
+                                                
+                                                info!("[Engine] Standard Reorg: Reverting chain to height {} (common ancestor: {:?})", common_ancestor_height, context_cloned.common_ancestor_hash);
+                                                
+                                                // Physically roll back state to common ancestor
+                                                if let Err(e) = engine.revert_to_height(common_ancestor_height).await {
+                                                    error!("[Engine] Failed to revert to height {}: {}", common_ancestor_height, e);
+                                                    // Rollback forkchoice if reorg fails
+                                                    let _ = engine.canonical.update_state(old_state_cloned, old_head_number_cloned).await;
+                                                    engine.chain.set_reorg_in_progress(false).await;
+                                                    engine.chain.set_promoting(forkchoice_state_cloned.head_block_hash, false).await;
+                                                    return;
+                                                }
+                                            }
+
+                                            engine.handle_reorgs_for_mempool(forkchoice_state_cloned, old_state_cloned.head_block_hash, context_cloned.common_ancestor_hash).await;
                                         }
 
-                                        if !blocks_to_execute.is_empty() {
-                                            info!("[Engine] Re-executing and committing {} blocks from Payloads in background", blocks_to_execute.len());
-                                            if let Err(e) = engine.execution.execute_blocks_with_batch(blocks_to_execute.clone()) {
-                                                error!("[Engine] Promotion failed during execution: {}", e);
-                                                if let Some(first_block) = blocks_to_execute.first() {
+                                        // 3. Handle canonical updates and re-execution
+                                        if !context_cloned.new_canonical_blocks.is_empty() {
+                                            // 3.1. Ensure all blocks in context are in main storage and their state is committed
+                                            let mut blocks_to_execute = Vec::new();
+                                            for block in &context_cloned.new_canonical_blocks {
+                                                let hash = block.header.hash_slow();
+                                                if engine.read_storage.block_body_by_hash(hash).ok().flatten().is_none() {
+                                                    debug!("[Engine] Queuing block {} from Payloads for background re-execution", hash);
+                                                    blocks_to_execute.push(block.clone());
+                                                }
+                                            }
+
+                                            if !blocks_to_execute.is_empty() {
+                                                info!("[Engine] Re-executing and committing {} blocks from Payloads in background", blocks_to_execute.len());
+                                                if let Err(e) = engine.execution.execute_blocks_with_batch(blocks_to_execute.clone()) {
+                                                    error!("[Engine] Promotion failed during execution: {}", e);
+                                                    if let Some(first_block) = blocks_to_execute.first() {
+                                                        let hash = first_block.header.hash_slow();
+                                                        engine.chain.add_invalid_block(hash, first_block.header.parent_hash, InvalidationReason::Soft).await;
+                                                        engine.invalidate_descendants(hash).await;
+                                                    }
+                                                    engine.chain.set_reorg_in_progress(false).await;
+                                                    engine.chain.set_promoting(forkchoice_state_cloned.head_block_hash, false).await;
+                                                    return;
+                                                }
+                                            }
+
+                                            if let Err(e) = engine.reorg_handler.mark_branch_canonical(&context_cloned.new_canonical_blocks).await {
+                                                error!("[Engine] Failed to mark branch canonical in background: {}", e);
+                                                if let Some(first_block) = context_cloned.new_canonical_blocks.first() {
                                                     let hash = first_block.header.hash_slow();
-                                                    engine.chain.add_invalid_block(hash, first_block.header.parent_hash, InvalidationReason::Soft).await;
+                                                    engine.chain.add_invalid_block(hash, first_block.header.parent_hash, InvalidationReason::Hard).await;
                                                     engine.invalidate_descendants(hash).await;
                                                 }
-                                                engine.chain.remove_invalid_block(B256::ZERO).await;
+                                                engine.chain.set_reorg_in_progress(false).await;
                                                 engine.chain.set_promoting(forkchoice_state_cloned.head_block_hash, false).await;
                                                 return;
                                             }
-                                        }
 
-                                        if let Err(e) = engine.reorg_handler.mark_branch_canonical(&context_cloned.new_canonical_blocks).await {
-                                            error!("[Engine] Failed to mark branch canonical in background: {}", e);
-                                            if let Some(first_block) = context_cloned.new_canonical_blocks.first() {
-                                                let hash = first_block.header.hash_slow();
-                                                engine.chain.add_invalid_block(hash, first_block.header.parent_hash, InvalidationReason::Hard).await;
-                                                engine.invalidate_descendants(hash).await;
+                                            for block in &context_cloned.new_canonical_blocks {
+                                                engine.mempool_listener.handle_canonical_block(block.clone()).await;
+                                                TRANSACTIONS_COMMITTED_TOTAL.add(block.body.transactions.len() as f64);
                                             }
-                                            engine.chain.remove_invalid_block(B256::ZERO).await;
-                                            engine.chain.set_promoting(forkchoice_state_cloned.head_block_hash, false).await;
-                                            return;
+
+                                            // Trigger mempool revalidation
+                                            let mempool = engine.mempool.clone();
+                                            let read_storage = engine.read_storage.clone();
+                                            tokio::spawn(async move {
+                                                mempool.revalidate(&read_storage, None).await;
+                                            });
+
+                                            // Also trigger revalidation of dependent payloads
+                                            let payload_processor = engine.payload_processor.clone();
+                                            let last_canonical_hash = context_cloned.new_canonical_blocks.last().map(|b| b.header.hash_slow()).unwrap_or(forkchoice_state_cloned.head_block_hash);
+                                            tokio::spawn(async move {
+                                                payload_processor.revalidate_dependent_payloads(last_canonical_hash).await;
+                                            });
                                         }
 
-                                        for block in &context_cloned.new_canonical_blocks {
-                                            engine.mempool_listener.handle_canonical_block(block.clone()).await;
-                                            TRANSACTIONS_COMMITTED_TOTAL.add(block.body.transactions.len() as f64);
-                                        }
+                                        // DONE! Clear the promoting flag and global reorg flag
+                                        engine.chain.set_reorg_in_progress(false).await;
+                                        engine.chain.set_promoting(forkchoice_state_cloned.head_block_hash, false).await;
+                                    });
 
-                                        // Trigger mempool revalidation
-                                        let mempool = engine.mempool.clone();
-                                        let read_storage = engine.read_storage.clone();
-                                        tokio::spawn(async move {
-                                            mempool.revalidate(&read_storage, None).await;
-                                        });
-
-                                        // Also trigger revalidation of dependent payloads
-                                        let payload_processor = engine.payload_processor.clone();
-                                        let last_canonical_hash = context_cloned.new_canonical_blocks.last().map(|b| b.header.hash_slow()).unwrap_or(forkchoice_state_cloned.head_block_hash);
-                                        tokio::spawn(async move {
-                                            payload_processor.revalidate_dependent_payloads(last_canonical_hash).await;
-                                        });
-                                    }
-
-                                    // DONE! Clear the promoting flag and global reorg flag
-                                engine.chain.remove_invalid_block(B256::ZERO).await;
-                                engine.chain.set_promoting(forkchoice_state_cloned.head_block_hash, false).await;
-                            });
-
-                                // Return SYNCING to the CL while the background task is running
-                                return Ok(ForkchoiceUpdated {
-                                    payload_status: PayloadStatus {
-                                        status: PayloadStatusEnum::Syncing,
-                                        latest_valid_hash: self.chain.get_latest_valid_ancestor(forkchoice_state.head_block_hash).await,
-                                    },
-                                    payload_id: None,
-                                });
+                                    // Return SYNCING to the CL while the background task is running
+                                    return Ok(ForkchoiceUpdated {
+                                        payload_status: PayloadStatus {
+                                            status: PayloadStatusEnum::Syncing,
+                                            latest_valid_hash: self.chain.get_latest_valid_ancestor(forkchoice_state.head_block_hash).await,
+                                        },
+                                        payload_id: None,
+                                    });
+                                }
                             }
                         }
                         Err(e) => {
