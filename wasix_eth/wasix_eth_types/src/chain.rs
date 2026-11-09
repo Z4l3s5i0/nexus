@@ -8,6 +8,8 @@ pub enum InvalidationReason {
     Hard,
     /// Transient error (e.g. missing blobs), can be retried.
     Soft,
+    /// A reorg is currently in progress.
+    ReorgInProgress,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +59,11 @@ pub trait ChainManager: Send + Sync {
 
     async fn determine_payload_status(&self, head_block_hash: B256) -> crate::PayloadStatus;
     async fn is_ancestor(&self, head: B256, target: B256) -> bool;
+
+    /// Checks if a block is currently being promoted to the canonical chain.
+    async fn is_promoting(&self, hash: B256) -> bool;
+    /// Sets the promotion status of a block.
+    async fn set_promoting(&self, hash: B256, promoting: bool);
 
     /// Resolves a reorg by comparing the old and new heads.
     async fn resolve_reorg(&self, old_head: B256, new_head: B256) -> Result<ReorgContext>;

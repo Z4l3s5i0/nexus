@@ -4,8 +4,9 @@ use wasix_eth_storage::write::DatabaseWriteProvider;
 use wasix_eth_types::{async_trait, Block, BlockId, SyncStatus, Transaction, B256, U256, ReorgContext, ChainManager, InvalidationReason};
 use wasix_eth_utils::{warn, info, debug};
 use crate::engine::canonicality_tracker::CanonicalState;
-pub(crate) use crate::engine::sidechain_tracker::BlockTree;
+    pub(crate) use crate::engine::sidechain_tracker::BlockTree;
 use crate::engine::reorg_manager::ReorgHandler;
+use dashmap::DashSet;
 use std::sync::Arc;
 use std::collections::HashSet;
 
@@ -14,6 +15,7 @@ pub struct ChainManagerImpl {
     read_storage: DatabaseReadProvider,
     _write_storage: DatabaseWriteProvider,
     sync_status: tokio::sync::RwLock<SyncStatus>,
+    promoting_blocks: DashSet<B256>,
     pub canonical: Arc<CanonicalState>,
     pub block_tree: Arc<BlockTree>,
     pub reorg_handler: Arc<ReorgHandler>,
@@ -31,6 +33,7 @@ impl ChainManagerImpl {
             read_storage,
             _write_storage: write_storage,
             sync_status: tokio::sync::RwLock::new(SyncStatus::None),
+            promoting_blocks: DashSet::new(),
             canonical,
             block_tree,
             reorg_handler,
@@ -238,6 +241,18 @@ impl ChainManager for ChainManagerImpl {
         self.read_storage.header_td(head_hash).ok().flatten().unwrap_or(U256::ZERO)
     }
 
+    async fn is_promoting(&self, hash: B256) -> bool {
+        self.promoting_blocks.contains(&hash)
+    }
+
+    async fn set_promoting(&self, hash: B256, promoting: bool) {
+        if promoting {
+            self.promoting_blocks.insert(hash);
+        } else {
+            self.promoting_blocks.remove(&hash);
+        }
+    }
+
     async fn determine_payload_status(&self, head_block_hash: B256) -> wasix_eth_types::PayloadStatus {
         if self.is_invalid(head_block_hash).await {
             let latest_valid = self.get_latest_valid_ancestor(head_block_hash).await;
@@ -247,6 +262,13 @@ impl ChainManager for ChainManagerImpl {
                     validation_error: "Block is known to be invalid".to_string(),
                 },
                 latest_valid_hash: latest_valid,
+            };
+        }
+
+        if self.is_promoting(head_block_hash).await {
+            return wasix_eth_types::PayloadStatus {
+                status: wasix_eth_types::PayloadStatusEnum::Syncing,
+                latest_valid_hash: self.get_latest_valid_ancestor(head_block_hash).await,
             };
         }
 
