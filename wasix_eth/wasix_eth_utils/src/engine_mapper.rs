@@ -83,14 +83,19 @@ impl EngineMapper {
     }
 
     pub fn to_execution_payload_v2(block: &Block<Transaction>, chain_config: &ChainConfig) -> ExecutionPayloadV2 {
+        let fork = Hardfork::get_active_fork(chain_config, block.header.number, block.header.timestamp);
         ExecutionPayloadV2 {
             payload_inner: Self::to_execution_payload_v1(block, chain_config),
-            withdrawals: block.body.withdrawals.as_ref().map(|w| w.0.iter().map(|wi| eip4895::Withdrawal {
-                index: wi.index,
-                validator_index: wi.validator_index,
-                address: wi.address,
-                amount: wi.amount,
-            }).collect::<Vec<_>>()).unwrap_or_default(),
+            withdrawals: if fork >= Hardfork::Shanghai {
+                block.body.withdrawals.as_ref().map(|w| w.0.iter().map(|wi| eip4895::Withdrawal {
+                    index: wi.index,
+                    validator_index: wi.validator_index,
+                    address: wi.address,
+                    amount: wi.amount,
+                }).collect::<Vec<_>>()).unwrap_or_default()
+            } else {
+                Vec::new()
+            },
         }
     }
     pub fn to_execution_payload_envelope_v2(execution_payload_v2: ExecutionPayloadV2, block_value: U256, fork: Hardfork) -> ExecutionPayloadEnvelopeV2 {
@@ -146,12 +151,12 @@ impl EngineMapper {
             transactions: block.body.transactions.iter().map(|tx| {
                 encode_tx_for_payload(tx).into()
             }).collect(),
-            withdrawals: Option::from(block.body.withdrawals.clone().map(|w| w.0.iter().map(|wi| eip4895::Withdrawal {
+            withdrawals: block.body.withdrawals.as_ref().map(|w| w.0.iter().map(|wi| eip4895::Withdrawal {
                 index: wi.index,
                 validator_index: wi.validator_index,
                 address: wi.address,
                 amount: wi.amount,
-            }).collect::<Vec<_>>()).unwrap_or_default()),
+            }).collect::<Vec<_>>()),
         }
     }
 
