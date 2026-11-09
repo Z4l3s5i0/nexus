@@ -92,9 +92,9 @@ impl EngineMapper {
                     validator_index: wi.validator_index,
                     address: wi.address,
                     amount: wi.amount,
-                }).collect::<Vec<_>>()).unwrap_or_default()
+                }).collect::<Vec<_>>())
             } else {
-                Vec::new()
+                None
             },
         }
     }
@@ -169,7 +169,7 @@ impl EngineMapper {
         Self::payload_v1_to_block(
             &payload.payload_inner.payload_inner,
             transactions,
-            Some(payload.payload_inner.withdrawals.clone()),
+            payload.payload_inner.withdrawals.as_ref().map(|w| w.iter().map(|wi| wi.clone().into()).collect()),
             chain_config,
             Some(payload.blob_gas_used),
             Some(payload.excess_blob_gas),

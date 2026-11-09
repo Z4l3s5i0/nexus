@@ -12,7 +12,7 @@ use crate::eip4895::Withdrawal;
 pub struct ExecutionPayloadV2 {
     #[serde(flatten)]
     pub payload_inner: ExecutionPayloadV1,
-    pub withdrawals: Vec<Withdrawal>,
+    pub withdrawals: Option<Vec<Withdrawal>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,7 +40,7 @@ impl From<ExecutionPayloadV2> for AlloyExecutionPayloadV2 {
     fn from(payload: ExecutionPayloadV2) -> Self {
         Self {
             payload_inner: payload.payload_inner,
-            withdrawals: payload.withdrawals.into_iter().map(|w| w.into()).collect(),
+            withdrawals: payload.withdrawals.map(|w| w.into_iter().map(|wi| wi.into()).collect()).unwrap_or_default(),
         }
     }
 }
