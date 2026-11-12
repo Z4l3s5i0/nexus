@@ -307,6 +307,32 @@ impl RPCEngine {
         let data = hex::decode(data.trim_start_matches("0x"))
             .map_err(|e| RpcError::InvalidParams(format!("Invalid hex: {}", e)))?;
 
+        // Try decoding as a standard Transaction first (without sidecars)
+        if let Ok(tx) = Transaction::decode(&mut &data[..]) {
+            let pooled_tx = match tx {
+                Transaction::Legacy(signed) => TxPooledEnvelope::Legacy(signed),
+                Transaction::Eip2930(signed) => TxPooledEnvelope::Eip2930(signed),
+                Transaction::Eip1559(signed) => TxPooledEnvelope::Eip1559(signed),
+                Transaction::Eip4844(signed) => {
+                    let (tx_variant, signature, hash) = signed.into_parts();
+                    let tx = match tx_variant {
+                        wasix_eth_types::TxEip4844Variant::TxEip4844(tx) => tx,
+                        wasix_eth_types::TxEip4844Variant::TxEip4844WithSidecar(tx_sidecar) => tx_sidecar.tx,
+                    };
+                    TxPooledEnvelope::Eip4844(Signed::new_unchecked(
+                        alloy_consensus::TxEip4844WithSidecar {
+                            tx,
+                            sidecar: Default::default(),
+                        },
+                        signature,
+                        hash,
+                    ))
+                }
+                Transaction::Eip7702(signed) => TxPooledEnvelope::Eip7702(signed),
+            };
+            return self.import_pooled_transaction(pooled_tx, data).await;
+        }
+
         // Try decoding as TxPooledEnvelope to handle 4844 transactions with sidecars (network format)
         let pooled_tx: TxPooledEnvelope = Decodable::decode(&mut &data[..])
             .map_err(|e| RpcError::InvalidParams(format!("Invalid RLP: {}", e)))?;
