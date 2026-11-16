@@ -5,7 +5,6 @@ use tokio::sync::{mpsc, RwLock};
 use tokio::time::{timeout, Duration};
 use wasix_eth_storage::read::DatabaseReadProvider;
 use wasix_eth_types::{ConsensusTransaction, Typed2718};
-use alloy_rlp::Encodable;
 use wasix_eth_storage::read_traits::{BlockProvider, HeaderProvider, TransactionProvider, StateProvider};
 use wasix_eth_storage::write::DatabaseWriteProvider;
 use wasix_eth_types::sync::SyncProvider;
@@ -14,7 +13,7 @@ use wasix_eth_types::p2p::{
     GossipMessage, RequestPair, GetBlockHeaders, BlockHeaders, GetBlockBodies, BlockBodies,
     GetPooledTransactions, PooledTransactions, GetReceipts, Receipts, GetNodeData, NodeData
 };
-use wasix_eth_types::{async_trait, Block, BlockId, GossipProvider, Transaction, B256, TxPooledEnvelope, Signed, TxEip4844Variant, BlobTransactionSidecarEip7594};
+use wasix_eth_types::{async_trait, Block, BlockId, GossipProvider, Transaction, B256, TxPooledEnvelope, Signed, TxEip4844Variant, BlobTransactionSidecar, BlobTransactionSidecarVariant, Encodable2718};
 use wasix_eth_utils::metrics::GOSSIP_MESSAGES_RECEIVED;
 use wasix_eth_utils::{debug, error};
 
@@ -278,11 +277,11 @@ impl SyncService {
                     use alloy_rlp::Encodable;
                     let mut buf = Vec::new();
                     pooled.encode(&mut buf);
-                    debug!("[Sync] Serving stored pooled transaction {} length: {}", hash, buf.len());
+                    debug!("[Sync] Serving stored pooled transaction {} rlp length: {}, eip2718 length: {}", hash, buf.len(), pooled.encode_2718_len());
                     if let TxPooledEnvelope::Eip4844(s) = &pooled {
                          let inner_tx = s.tx();
                          let sidecar = &inner_tx.sidecar;
-                         debug!("[Sync] Blobs: {}, first blob len: {}", sidecar.blobs.len(), sidecar.blobs.get(0).map(|b| b.len()).unwrap_or(0));
+                         debug!("[Sync] Blobs: {}, first blob len: {}, eip7594: {}", sidecar.blobs().len(), sidecar.blobs().get(0).map(|b| b.len()).unwrap_or(0), sidecar.is_eip7594());
                     }
                 }
                 txs.push(pooled);
@@ -316,11 +315,11 @@ impl SyncService {
 
                         if !blobs.is_empty() {
                             let (tx_variant, signature, hash) = t.clone().into_parts();
-                            let sidecar = BlobTransactionSidecarEip7594 {
+                            let sidecar = BlobTransactionSidecarVariant::Eip4844(BlobTransactionSidecar {
                                 blobs,
                                 commitments,
-                                cell_proofs: proofs,
-                            };
+                                proofs,
+                            });
                             let pooled = match tx_variant {
                                 TxEip4844Variant::TxEip4844(inner_tx) => {
                                     TxPooledEnvelope::Eip4844(Signed::new_unchecked(inner_tx.with_sidecar(sidecar.clone()), signature, hash))
@@ -338,7 +337,7 @@ impl SyncService {
                                 if let TxPooledEnvelope::Eip4844(s) = &pooled {
                                      let inner_tx = s.tx();
                                      let sidecar = &inner_tx.sidecar;
-                                     debug!("[Sync] Reconstructed Blobs: {}, first blob len: {}", sidecar.blobs.len(), sidecar.blobs.get(0).map(|b| b.len()).unwrap_or(0));
+                                     debug!("[Sync] Reconstructed Blobs: {}, first blob len: {}", sidecar.blobs().len(), sidecar.blobs().get(0).map(|b| b.len()).unwrap_or(0));
                                 }
                             }
                             
@@ -495,11 +494,11 @@ impl GossipProvider for SyncService {
 
                         if !blobs.is_empty() {
                             let (tx_variant, signature, hash) = t.clone().into_parts();
-                            let sidecar = BlobTransactionSidecarEip7594 {
+                            let sidecar = BlobTransactionSidecarVariant::Eip4844(BlobTransactionSidecar {
                                 blobs,
                                 commitments,
-                                cell_proofs: proofs,
-                            };
+                                proofs,
+                            });
 
                             match tx_variant {
                                 TxEip4844Variant::TxEip4844(inner_tx) => {
@@ -523,7 +522,8 @@ impl GossipProvider for SyncService {
                 debug!("[Sync] Using stored raw pooled bytes for size: {} -> {} bytes", hash, raw.len());
                 sizes.push(raw.len() as u64);
             } else {
-                let advertised_size = pooled.length();
+                // eth/68 announces the EIP-2718 encoded size (without the outer RLP string header)
+                let advertised_size = pooled.encode_2718_len();
                 sizes.push(advertised_size as u64);
             }
             hashes.push(hash);

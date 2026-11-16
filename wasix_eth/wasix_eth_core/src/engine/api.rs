@@ -336,22 +336,10 @@ impl RPCEngine {
                             ))
                         }
                         wasix_eth_types::TxEip4844Variant::TxEip4844WithSidecar(inner) => {
-                            let sidecar = match &inner.sidecar {
-                                wasix_eth_types::BlobTransactionSidecarVariant::Eip4844(s) => {
-                                    wasix_eth_types::BlobTransactionSidecarEip7594::new(
-                                        s.blobs.clone(),
-                                        s.commitments.clone(),
-                                        s.proofs.clone(),
-                                    )
-                                }
-                                wasix_eth_types::BlobTransactionSidecarVariant::Eip7594(s) => {
-                                    s.clone()
-                                }
-                            };
                             TxPooledEnvelope::Eip4844(Signed::new_unchecked(
                                 alloy_consensus::TxEip4844WithSidecar {
                                     tx: inner.tx.clone(),
-                                    sidecar,
+                                    sidecar: inner.sidecar.clone(),
                                 },
                                 signature,
                                 hash,
@@ -386,12 +374,14 @@ impl RPCEngine {
 
             for (i, versioned_hash) in inner_tx.blob_versioned_hashes().unwrap_or_default().iter().enumerate() {
                 if let (Some(blob), Some(commitment)) = (
-                    sidecar.blobs.get(i),
-                    sidecar.commitments.get(i)
+                    sidecar.blobs().get(i),
+                    sidecar.commitments().get(i)
                 ) {
                     debug!("[Engine] Adding blob for versioned hash: {:?}, blob len: {}", versioned_hash, blob.len());
-                    // use cell_proofs as proofs if compatible or handle accordingly
-                    let proof = sidecar.cell_proofs.get(i).cloned().unwrap_or_default();
+                    let proof = match sidecar {
+                        wasix_eth_types::BlobTransactionSidecarVariant::Eip4844(s) => s.proofs.get(i).cloned(),
+                        wasix_eth_types::BlobTransactionSidecarVariant::Eip7594(s) => s.cell_proofs.get(i).cloned(),
+                    }.unwrap_or_default();
                     self.mempool.add_blob(*versioned_hash, (*blob).clone(), *commitment, proof).await;
                 }
             }

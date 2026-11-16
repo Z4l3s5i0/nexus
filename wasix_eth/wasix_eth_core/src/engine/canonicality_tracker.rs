@@ -4,7 +4,6 @@ use wasix_eth_storage::{BlockProvider, BlockWriter};
 use wasix_eth_storage::read::DatabaseReadProvider;
 use wasix_eth_storage::write::DatabaseWriteProvider;
 use wasix_eth_types::ForkchoiceState;
-use wasix_eth_utils::error;
 
 pub struct CanonicalState {
     write_storage: DatabaseWriteProvider,

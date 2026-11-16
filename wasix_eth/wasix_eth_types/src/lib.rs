@@ -71,8 +71,10 @@ pub use alloy_consensus::BlockBody;
 pub use alloy_consensus::TransactionEnvelope;
 pub use alloy_consensus::Transaction as ConsensusTransaction;
 pub use alloy_consensus::TxEnvelope as Transaction;
-pub use alloy_consensus::transaction::PooledTransaction as TxPooledEnvelope;
 pub use alloy_consensus::BlobTransactionSidecar;
+pub type TxPooledEnvelope = alloy_consensus::EthereumTxEnvelope<
+    alloy_consensus::TxEip4844WithSidecar<alloy_eips::eip7594::BlobTransactionSidecarVariant>,
+>;
 pub use alloy_consensus::TxLegacy;
 pub use alloy_consensus::Signed;
 pub use alloy_consensus::SignableTransaction;
