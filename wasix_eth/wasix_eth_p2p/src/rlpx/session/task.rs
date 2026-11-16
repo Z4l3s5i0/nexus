@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::time::MissedTickBehavior;
 use wasix_eth_types::p2p::{BlockBodies, BlockHeaders, BlockRangeUpdate, Disconnect, EthMessageID, GetBlockBodies, GetBlockHeaders, GetNodeData, GetPooledTransactions, GetReceipts, GossipMessage, NewPooledTransactionHashes, NewPooledTransactionHashes66, NodeData, Ping, Pong, PooledTransactions, Receipts, RequestPair, Status, StatusEth69, StatusMessage, Transactions};
 use wasix_eth_utils::{debug, error, info, exp};
 
@@ -70,12 +71,15 @@ where S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static
 
     pub async fn run(mut self) {
         info!("[P2P Session] Started session for peer {}", self.peer_id);
-        let mut ping_interval = tokio::time::interval(Duration::from_secs(10)); // Reduced from 20s
+        let mut repoll_interval = tokio::time::interval(Duration::from_millis(250));
+        repoll_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut cleanup_interval = tokio::time::interval(Duration::from_secs(1));
+        cleanup_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut ping_interval = tokio::time::interval(Duration::from_secs(10));
+        ping_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
         
         loop {
             tokio::select! {
-                biased;
-                
                 Some(req) = self.request_rx.recv() => {
                     if let Err(_) = self.handle_request(req).await {
                         // Request handling failed in a way that should terminate session
@@ -84,6 +88,8 @@ where S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static
                     // Yield to ensure the message is actually sent and the runtime gets a chance to poll other tasks
                     tokio::task::yield_now().await;
                 }
+                _ = repoll_interval.tick() => {}
+                _ = cleanup_interval.tick() => self.prune_closed_requests(),
                 _ = ping_interval.tick() => {
                     let _ = self.stream.send_p2p(&Ping {}, 0x02).await;
                 }
@@ -114,6 +120,14 @@ where S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static
             }
         }
         self.notify_disconnect().await;
+    }
+
+    fn prune_closed_requests(&mut self) {
+        prune_closed_responses(&mut self.pending_headers);
+        prune_closed_responses(&mut self.pending_bodies);
+        prune_closed_responses(&mut self.pending_pooled_txs);
+        prune_closed_responses(&mut self.pending_receipts);
+        prune_closed_responses(&mut self.pending_node_data);
     }
 
     async fn handle_request(&mut self, req: SessionRequest) -> Result<()> {
@@ -685,5 +699,33 @@ where S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static
                 session_id: self.session_id,
             }).await;
         }
+    }
+}
+
+fn prune_closed_responses<K, V>(pending: &mut HashMap<K, oneshot::Sender<V>>)
+where
+    K: Eq + std::hash::Hash,
+{
+    pending.retain(|_, response_tx| !response_tx.is_closed());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pruning_removes_cancelled_responses_and_keeps_active_ones() {
+        let mut pending = HashMap::new();
+        let (cancelled_tx, cancelled_rx) = oneshot::channel::<()>();
+        let (active_tx, active_rx) = oneshot::channel::<()>();
+        drop(cancelled_rx);
+        pending.insert(1, cancelled_tx);
+        pending.insert(2, active_tx);
+
+        prune_closed_responses(&mut pending);
+
+        assert_eq!(pending.len(), 1);
+        assert!(pending.contains_key(&2));
+        drop(active_rx);
     }
 }
