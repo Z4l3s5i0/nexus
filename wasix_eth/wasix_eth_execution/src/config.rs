@@ -11,7 +11,8 @@ pub fn get_evm_config(chain_config: &ChainConfig, block_number: u64, timestamp: 
         Hardfork::Prague => Config::prague(),
         Hardfork::Cancun => Config::cancun(),
         Hardfork::Shanghai => Config::shanghai(),
-        Hardfork::Paris => Config::shanghai(), // Use Shanghai for Paris as it includes Merge changes
+        // Shanghai-only rules (EIP-3651 warm coinbase, EIP-3855 PUSH0, EIP-3860 initcode limit) must stay disabled.
+        Hardfork::Paris => Config::london(),
         Hardfork::GrayGlacier => Config::london(),
         Hardfork::ArrowGlacier => Config::london(),
         Hardfork::London => Config::london(),
