@@ -1,4 +1,6 @@
 use std::collections::{HashMap, BinaryHeap};
+use std::cmp::Ordering;
+use std::ops::Deref;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use im::{Vector, HashMap as ImmutableMap};
@@ -9,7 +11,7 @@ use wasix_eth_utils::{debug, info, metrics::{MEMPOOL_SIZE, MEMPOOL_REJECTED_TRAN
 /// A read-optimized, immutable snapshot of the mempool for block building.
 #[derive(Clone, Debug)]
 pub struct MempoolSnapshot {
-    pub pending: ImmutableMap<Address, Vector<Transaction>>,
+    pub pending: ImmutableMap<Address, Vector<PooledTransaction>>,
     pub blobs: Arc<ImmutableMap<B256, Arc<(Blob, Bytes48, Bytes48)>>>,
 }
 
@@ -20,7 +22,7 @@ impl MempoolSnapshot {
         &self,
         target_gas_limit: u64,
         base_fee: U256,
-        _blob_base_fee: Option<U256>,
+        blob_base_fee: Option<U256>,
         max_blobs_per_block: Option<u32>,
     ) -> (Vec<Transaction>, Vec<Transaction>) {
         let mut result = Vec::new();
@@ -29,21 +31,21 @@ impl MempoolSnapshot {
         let mut current_blobs: u32 = 0;
         let max_blobs = max_blobs_per_block.unwrap_or(6);
         let base_fee_u64 = base_fee.to::<u64>();
+        let blob_base_fee = blob_base_fee.map(|fee| fee.to::<u128>());
 
         // Sender-indexed pointers into their pending queues
         let mut sender_cursors: HashMap<Address, usize> = HashMap::new();
         let mut sender_cursors_optimistic: HashMap<Address, usize> = HashMap::new();
 
         // Max-heap to store the best next transaction from each sender.
-        // Stores (effective_tip, address).
         let mut pq = BinaryHeap::new();
         let mut pq_optimistic = BinaryHeap::new();
 
         for (addr, queue) in &self.pending {
             if let Some(tx) = queue.get(0) {
-                if let Some(tip) = tx.effective_tip_per_gas(base_fee_u64) {
-                    pq.push((tip, *addr));
-                    pq_optimistic.push((tip, *addr));
+                if let Some(key) = key_for(tx, *addr, base_fee_u64, blob_base_fee) {
+                    pq.push(key);
+                    pq_optimistic.push(key);
                     sender_cursors.insert(*addr, 0);
                     sender_cursors_optimistic.insert(*addr, 0);
                 }
@@ -52,10 +54,11 @@ impl MempoolSnapshot {
 
         // Standard selection
         while current_gas < target_gas_limit {
-            let (_tip, addr) = match pq.pop() {
+            let key = match pq.pop() {
                 Some(entry) => entry,
                 None => break, // No more transactions
             };
+            let addr = key.addr;
 
             let queue = self.pending.get(&addr).unwrap();
             let cursor = sender_cursors.get_mut(&addr).unwrap();
@@ -89,13 +92,13 @@ impl MempoolSnapshot {
                 current_blobs += blobs_count;
             }
 
-            result.push(tx.clone());
+            result.push(tx.tx.clone());
             current_gas += gas_limit;
 
             *cursor += 1;
             if let Some(next_tx) = queue.get(*cursor) {
-                if let Some(next_tip) = next_tx.effective_tip_per_gas(base_fee_u64) {
-                    pq.push((next_tip, addr));
+                if let Some(next_key) = key_for(next_tx, addr, base_fee_u64, blob_base_fee) {
+                    pq.push(next_key);
                 }
             }
         }
@@ -103,10 +106,11 @@ impl MempoolSnapshot {
         // Optimistic candidates - transactions that were skipped or come after
         // We just pick a few more from the PQ that would be next
         while result_optimistic.len() < OPTIMISTIC_TX_LIMIT {
-            let (_tip, addr) = match pq_optimistic.pop() {
+            let key = match pq_optimistic.pop() {
                 Some(entry) => entry,
                 None => break,
             };
+            let addr = key.addr;
 
             let queue = self.pending.get(&addr).unwrap();
             let cursor = sender_cursors_optimistic.get_mut(&addr).unwrap();
@@ -127,19 +131,89 @@ impl MempoolSnapshot {
             }
 
             if !skip {
-                result_optimistic.push(tx.clone());
+                result_optimistic.push(tx.tx.clone());
             }
 
             *cursor += 1;
             if let Some(next_tx) = queue.get(*cursor) {
-                if let Some(next_tip) = next_tx.effective_tip_per_gas(base_fee_u64) {
-                    pq_optimistic.push((next_tip, addr));
+                if let Some(next_key) = key_for(next_tx, addr, base_fee_u64, blob_base_fee) {
+                    pq_optimistic.push(next_key);
                 }
             }
         }
 
         (result, result_optimistic)
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct PooledTransaction {
+    pub tx: Transaction,
+    /// Monotonic arrival number assigned on insert; smaller means older.
+    pub arrival_seq: u64,
+}
+
+impl PooledTransaction {
+    pub fn new(tx: Transaction, arrival_seq: u64) -> Self {
+        Self { tx, arrival_seq }
+    }
+}
+
+impl Deref for PooledTransaction {
+    type Target = Transaction;
+
+    fn deref(&self) -> &Self::Target {
+        &self.tx
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PriorityKey {
+    tip: u128,
+    blob_fee_cap: u128,
+    seq: u64,
+    addr: Address,
+}
+
+impl Ord for PriorityKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.tip
+            .cmp(&other.tip)
+            .then(self.blob_fee_cap.cmp(&other.blob_fee_cap))
+            .then_with(|| other.seq.cmp(&self.seq))
+            .then_with(|| other.addr.cmp(&self.addr))
+    }
+}
+
+impl PartialOrd for PriorityKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn key_for(
+    tx: &PooledTransaction,
+    addr: Address,
+    base_fee: u64,
+    blob_base_fee: Option<u128>,
+) -> Option<PriorityKey> {
+    let blob_fee_cap = match &tx.tx {
+        Transaction::Eip4844(signed_tx) => signed_tx.max_fee_per_blob_gas().unwrap_or_default(),
+        _ => 0,
+    };
+
+    if tx.is_eip4844()
+        && blob_base_fee.is_some_and(|blob_base_fee| blob_fee_cap < blob_base_fee)
+    {
+        return None;
+    }
+
+    Some(PriorityKey {
+        tip: tx.effective_tip_per_gas(base_fee)?,
+        blob_fee_cap,
+        seq: tx.arrival_seq,
+        addr,
+    })
 }
 
 #[derive(Debug, Default, Clone)]
@@ -214,9 +288,11 @@ impl Mempool {
 #[derive(Debug, Default, Clone)]
 pub struct MempoolInternalState {
     /// Transactions ready for inclusion (no nonce gaps, sufficient balance).
-    pub pending_transactions: ImmutableMap<Address, Vector<Transaction>>,
+    pub pending_transactions: ImmutableMap<Address, Vector<PooledTransaction>>,
     /// Transactions waiting for a previous nonce to arrive.
-    pub queued_transactions: ImmutableMap<Address, Vector<Transaction>>,
+    pub queued_transactions: ImmutableMap<Address, Vector<PooledTransaction>>,
+    /// Sequence number assigned to the next transaction inserted into the mempool.
+    pub next_arrival_seq: u64,
     /// Original pooled envelopes for re-serving over P2P.
     pub pooled_envelopes: ImmutableMap<B256, TxPooledEnvelope>,
     /// Original pooled bytes as received over RPC (wire-identical replay).
@@ -311,6 +387,7 @@ impl MempoolInner {
         let mut to_promote = None;
 
         self.update_state(|state| {
+            let arrival_seq = state.next_arrival_seq;
             let queue = if is_pending {
                 state.pending_transactions.entry(from).or_insert_with(Vector::new)
             } else {
@@ -345,7 +422,8 @@ impl MempoolInner {
                     state.pooled_envelopes.remove(&old_hash);
                     state.pooled_bytes.remove(&old_hash);
 
-                    queue[pos] = tx.clone();
+                    queue[pos] = PooledTransaction::new(tx.clone(), arrival_seq);
+                    state.next_arrival_seq += 1;
                     success = true;
                     return;
                 }
@@ -356,7 +434,8 @@ impl MempoolInner {
             } else {
                 debug!("[Mempool] Adding transaction {:?} (nonce: {}) to {} pool",
                     hash, nonce, if is_pending { "pending" } else { "queued" });
-                queue.insert(pos, tx.clone());
+                queue.insert(pos, PooledTransaction::new(tx.clone(), arrival_seq));
+                state.next_arrival_seq += 1;
                 
                 // If we added to pending, we might be able to promote queued transactions
                 if is_pending {
@@ -425,10 +504,10 @@ impl MempoolInner {
         let state = self.state.load();
         let mut all = Vec::new();
         for (_, queue) in state.pending_transactions.iter() {
-            all.extend(queue.iter().cloned());
+            all.extend(queue.iter().map(|pooled| pooled.tx.clone()));
         }
         for (_, queue) in state.queued_transactions.iter() {
-            all.extend(queue.iter().cloned());
+            all.extend(queue.iter().map(|pooled| pooled.tx.clone()));
         }
         all
     }
@@ -500,7 +579,7 @@ impl MempoolInner {
         let state = self.state.load();
         
         // Use a copy of pending for popping
-        let mut pending_copy: HashMap<Address, Vector<Transaction>> = state.pending_transactions.iter()
+        let mut pending_copy: HashMap<Address, Vector<PooledTransaction>> = state.pending_transactions.iter()
             .map(|(k, v)| (*k, v.clone())).collect();
         
         while result.len() < n {
@@ -520,7 +599,7 @@ impl MempoolInner {
             if let Some(sender) = best_sender {
                 if let Some(queue) = pending_copy.get_mut(&sender) {
                     if let Some(tx) = queue.pop_front() {
-                        result.push(tx);
+                        result.push(tx.tx.clone());
                     }
                     if queue.is_empty() {
                         pending_copy.remove(&sender);
@@ -582,7 +661,7 @@ impl MempoolInner {
                         state.pooled_bytes.remove(hash);
                     });
                     
-                    result.push(tx);
+                    result.push(tx.tx.clone());
                 } else {
                     break;
                 }
@@ -703,7 +782,59 @@ impl MempoolInner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wasix_eth_types::{SignableTransaction, Signature, TxLegacy, Signed};
+    use wasix_eth_types::{SignableTransaction, Signature, TxEip4844, TxLegacy, Signed};
+
+    fn make_blob_transaction(
+        nonce: u64,
+        blob_count: usize,
+        blob_fee_cap: u128,
+        hash_byte: u8,
+    ) -> Transaction {
+        let blob_versioned_hashes = (0..blob_count)
+            .map(|offset| B256::repeat_byte(hash_byte.wrapping_add(offset as u8)))
+            .collect();
+        let tx = TxEip4844 {
+            chain_id: 1,
+            nonce,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 2_000_000_000,
+            gas_limit: 100_000,
+            to: Address::ZERO,
+            value: U256::ZERO,
+            access_list: Default::default(),
+            max_fee_per_blob_gas: blob_fee_cap,
+            blob_versioned_hashes,
+            input: Bytes::new(),
+        };
+        let signed_tx = Signed::new_unchecked(
+            tx,
+            Signature::test_signature(),
+            B256::repeat_byte(hash_byte),
+        );
+        Transaction::Eip4844(signed_tx.into())
+    }
+
+    fn make_snapshot(entries: Vec<(Address, Vec<PooledTransaction>)>) -> MempoolSnapshot {
+        let mut pending = ImmutableMap::new();
+        let mut blobs = ImmutableMap::new();
+        for (address, transactions) in entries {
+            for pooled in &transactions {
+                if let Some(hashes) = pooled.blob_versioned_hashes() {
+                    for hash in hashes {
+                        blobs.insert(
+                            *hash,
+                            Arc::new((Blob::default(), Bytes48::default(), Bytes48::default())),
+                        );
+                    }
+                }
+            }
+            pending.insert(address, transactions.into_iter().collect());
+        }
+        MempoolSnapshot {
+            pending,
+            blobs: Arc::new(blobs),
+        }
+    }
 
     #[tokio::test]
     async fn test_peek_best_transactions_priority() {
@@ -804,7 +935,7 @@ mod tests {
         {
             inner.update_state(|state| {
                 let entry = state.pending_transactions.entry(from).or_insert_with(Vector::new);
-                entry.push_back(tx2.clone());
+                entry.push_back(PooledTransaction::new(tx2.clone(), 1));
             });
         }
 
@@ -812,6 +943,86 @@ mod tests {
         assert_eq!(best.len(), 2);
         assert_eq!(best[0].hash(), tx1.hash()); // Nonce 0 must come first even if Tx2 has higher tip
         assert_eq!(best[1].hash(), tx2.hash());
+    }
+
+    #[test]
+    fn test_peek_best_transactions_blob_ordering_multiple_accounts() {
+        let address_a = Address::from_slice(&[0x22; 20]);
+        let address_b = Address::from_slice(&[0x11; 20]);
+        let transactions_a: Vec<_> = (0..5)
+            .map(|nonce| {
+                PooledTransaction::new(
+                    make_blob_transaction(nonce, 5, 120, 1 + (nonce as u8 * 10)),
+                    nonce,
+                )
+            })
+            .collect();
+        let transactions_b: Vec<_> = (0..5)
+            .map(|nonce| {
+                PooledTransaction::new(
+                    make_blob_transaction(nonce, 1, 100, 61 + nonce as u8),
+                    nonce + 5,
+                )
+            })
+            .collect();
+
+        for round in 0..5 {
+            let snapshot = make_snapshot(vec![
+                (address_a, transactions_a[round..].to_vec()),
+                (address_b, transactions_b[round..].to_vec()),
+            ]);
+            let (selected, _) = snapshot.peek_best_transactions(
+                1_000_000,
+                U256::from(1_000_000_000u64),
+                Some(U256::from(80)),
+                Some(6),
+            );
+
+            assert_eq!(selected.len(), 2);
+            assert_eq!(selected[0].hash(), transactions_a[round].hash());
+            assert_eq!(selected[1].hash(), transactions_b[round].hash());
+            let blob_count: usize = selected
+                .iter()
+                .map(|tx| tx.blob_versioned_hashes().map_or(0, |hashes| hashes.len()))
+                .sum();
+            assert_eq!(blob_count, 6);
+        }
+    }
+
+    #[test]
+    fn test_peek_best_transactions_blob_fee_tie_uses_arrival_order() {
+        let older = PooledTransaction::new(make_blob_transaction(0, 1, 100, 1), 0);
+        let newer = PooledTransaction::new(make_blob_transaction(0, 1, 100, 2), 1);
+        let snapshot = make_snapshot(vec![
+            (Address::from_slice(&[0x22; 20]), vec![older.clone()]),
+            (Address::from_slice(&[0x11; 20]), vec![newer]),
+        ]);
+
+        let (selected, _) = snapshot.peek_best_transactions(
+            1_000_000,
+            U256::from(1_000_000_000u64),
+            Some(U256::from(80)),
+            Some(6),
+        );
+        assert_eq!(selected.first().unwrap().hash(), older.hash());
+    }
+
+    #[test]
+    fn test_peek_best_transactions_skips_blob_fee_below_base_fee() {
+        let underpriced = PooledTransaction::new(make_blob_transaction(0, 1, 99, 1), 0);
+        let snapshot = make_snapshot(vec![(
+            Address::from_slice(&[0x11; 20]),
+            vec![underpriced],
+        )]);
+
+        let (selected, optimistic) = snapshot.peek_best_transactions(
+            1_000_000,
+            U256::from(1_000_000_000u64),
+            Some(U256::from(100)),
+            Some(6),
+        );
+        assert!(selected.is_empty());
+        assert!(optimistic.is_empty());
     }
 
     #[tokio::test]
@@ -875,7 +1086,7 @@ mod tests {
             let inner = &mempool.inner;
             inner.update_state(|state| {
                 let entry = state.queued_transactions.entry(addr).or_insert_with(Vector::new);
-                entry.push_back(tx.clone());
+                entry.push_back(PooledTransaction::new(tx.clone(), 0));
             });
             assert_eq!(inner.state.load().queued_transactions.len(), 1);
             
@@ -883,6 +1094,37 @@ mod tests {
             assert_eq!(inner.state.load().queued_transactions.len(), 0);
             assert_eq!(inner.state.load().pending_transactions.len(), 1);
         }
+    }
+
+    #[tokio::test]
+    async fn test_arrival_sequence_insertion_and_promotion() {
+        let mempool = Mempool::new(U256::ZERO);
+        let tx2 = Transaction::Legacy(TxLegacy {
+            nonce: 2,
+            ..Default::default()
+        }.into_signed(Signature::test_signature()));
+        let tx0 = Transaction::Legacy(TxLegacy {
+            nonce: 0,
+            ..Default::default()
+        }.into_signed(Signature::test_signature()));
+        let tx1 = Transaction::Legacy(TxLegacy {
+            nonce: 1,
+            ..Default::default()
+        }.into_signed(Signature::test_signature()));
+
+        assert!(mempool.inner.add_transaction(tx2.clone(), 0).await);
+        assert!(mempool.inner.add_transaction(tx0.clone(), 0).await);
+        assert!(mempool.inner.add_transaction(tx1.clone(), 0).await);
+
+        let state = mempool.inner.state.load();
+        let sender = tx0.recover_signer().unwrap_or_default();
+        let pending = state.pending_transactions.get(&sender).unwrap();
+        assert_eq!(pending.len(), 3);
+        assert_eq!(pending.iter().find(|pooled| pooled.hash() == tx2.hash()).unwrap().arrival_seq, 0);
+        assert_eq!(pending.iter().find(|pooled| pooled.hash() == tx0.hash()).unwrap().arrival_seq, 1);
+        assert_eq!(pending.iter().find(|pooled| pooled.hash() == tx1.hash()).unwrap().arrival_seq, 2);
+        assert_eq!(state.next_arrival_seq, 3);
+        assert!(state.queued_transactions.is_empty());
     }
 
     #[tokio::test]
@@ -915,6 +1157,7 @@ mod tests {
         // Add first transaction
         assert!(mempool.inner.add_transaction(tx1.clone(), 10).await);
         assert_eq!(mempool.inner.len(), 1);
+        assert_eq!(mempool.inner.state.load().pending_transactions[&tx1.recover_signer().unwrap()][0].arrival_seq, 0);
         
         // Try to replace it with same nonce but higher fee (10% bump)
         let tx2 = Transaction::Legacy(TxLegacy {
@@ -928,6 +1171,8 @@ mod tests {
         
         // It should have REPLACED tx1, so len is still 1
         assert_eq!(mempool.inner.len(), 1, "Mempool length should be 1 after replacement");
+        assert_eq!(mempool.inner.state.load().pending_transactions[&tx1.recover_signer().unwrap()][0].arrival_seq, 1);
+        assert_eq!(mempool.inner.state.load().next_arrival_seq, 2);
         
         // Try to replace with lower fee (should fail)
         // Same signer as tx1/tx2
@@ -939,6 +1184,7 @@ mod tests {
         
         assert!(!mempool.inner.add_transaction(tx3, 10).await);
         assert_eq!(mempool.inner.len(), 1);
+        assert_eq!(mempool.inner.state.load().next_arrival_seq, 2);
     }
 
     #[tokio::test]

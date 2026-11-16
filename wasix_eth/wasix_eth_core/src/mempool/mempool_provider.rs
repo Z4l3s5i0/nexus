@@ -243,10 +243,10 @@ impl MempoolProvider for Mempool {
         let mut txs = Vec::new();
         let state = self.inner.state.load();
         if let Some(pending) = state.pending_transactions.get(&address) {
-            txs.extend(pending.iter().cloned());
+            txs.extend(pending.iter().map(|pooled| pooled.tx.clone()));
         }
         if let Some(queued) = state.queued_transactions.get(&address) {
-            txs.extend(queued.iter().cloned());
+            txs.extend(queued.iter().map(|pooled| pooled.tx.clone()));
         }
         txs
     }
@@ -289,12 +289,12 @@ impl MempoolProvider for Mempool {
         let state = self.inner.state.load();
         for (_, queue) in state.pending_transactions.iter() {
             if let Some(tx) = queue.iter().find(|tx| *tx.hash() == hash) {
-                return Some(tx.clone());
+                return Some(tx.tx.clone());
             }
         }
         for (_, queue) in state.queued_transactions.iter() {
             if let Some(tx) = queue.iter().find(|tx| *tx.hash() == hash) {
-                return Some(tx.clone());
+                return Some(tx.tx.clone());
             }
         }
         None
