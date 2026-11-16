@@ -50,6 +50,7 @@ use wasix_eth_utils::warn;
 use wasix_eth_utils::{debug, error, info};
 use crate::engine::api::RPCEngine;
 use crate::engine::forkchoice_validator::ForkchoiceValidator;
+use crate::engine::import_gate::ImportGate;
 use crate::mempool::listener::MempoolListener;
 
 #[derive(Clone, Debug)]
@@ -82,6 +83,7 @@ pub struct Engine {
     pub mempool_listener: Arc<MempoolListener>,
     pub sync_registry: Arc<SyncRegistry>,
     pub reorg_handler: Arc<ReorgHandler>,
+    pub import_gate: Arc<ImportGate>,
 }
 
 
@@ -154,6 +156,7 @@ impl Engine {
     ) -> Self {
         let processing_payloads = Arc::new(DashSet::new());
         let in_flight_results = Arc::new(DashMap::new());
+        let import_gate = Arc::new(ImportGate::default());
 
         let engine = Self {
             read_storage: read_storage.clone(),
@@ -177,6 +180,9 @@ impl Engine {
                 rebuild_interruption_tokens: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
                 in_flight_interruptions: Arc::new(DashSet::new()),
                 build_statuses: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+                payload_slots: Arc::new(DashMap::new()),
+                last_built_generation: Arc::new(DashMap::new()),
+                import_gate: import_gate.clone(),
                 build_notify: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
                 config: payload_builder_config,
             },
@@ -193,12 +199,14 @@ impl Engine {
                 chain: chain.clone(),
                 sync_registry: sync_registry.clone(),
                 event_tx: event_tx.clone(),
+                import_gate: import_gate.clone(),
             },
             rpc_engine,
             forkchoice_validator,
             mempool_listener,
             sync_registry,
-            reorg_handler
+            reorg_handler,
+            import_gate,
         };
 
         engine
@@ -561,6 +569,7 @@ impl Engine {
                 .or_else(|| self.read_storage.get_payload_by_block_hash(forkchoice_state.head_block_hash).map(|(p, _, _, _)| p.header.clone()));
 
             if let Some(header) = head_header {
+                let _import_guard = self.import_gate.enter();
                 if status.status == PayloadStatusEnum::Valid {
                     // Reset sync status to None to ensure ChainManagerImpl returns dynamic height.
                     // Previously we set it to a static Info, which could become stale.
@@ -604,9 +613,14 @@ impl Engine {
                                     }
 
                                     if !blocks_to_execute.is_empty() {
-                                        if let Err(e) = self.execution.execute_blocks_with_batch(blocks_to_execute.clone()) {
+                                        let first_block = blocks_to_execute.first().cloned();
+                                        let execution = self.execution.clone();
+                                        let execution_result = tokio::task::spawn_blocking(move || {
+                                            execution.execute_blocks_with_batch(blocks_to_execute)
+                                        }).await.map_err(|e| RpcError::Internal(format!("Synchronous promotion task failed to join: {}", e)))?;
+                                        if let Err(e) = execution_result {
                                             error!("[Engine] Synchronous promotion failed during execution: {}", e);
-                                            if let Some(first_block) = blocks_to_execute.first() {
+                                            if let Some(first_block) = first_block {
                                                 let hash = first_block.header.hash_slow();
                                                 self.chain.add_invalid_block(hash, first_block.header.parent_hash, InvalidationReason::Soft).await;
                                                 self.invalidate_descendants(hash).await;
@@ -621,7 +635,7 @@ impl Engine {
                                     }
 
                                     for block in &context.new_canonical_blocks {
-                                        self.mempool_listener.handle_canonical_block(block.clone()).await;
+                                        self.mempool_listener.remove_included_now(block);
                                         TRANSACTIONS_COMMITTED_TOTAL.add(block.body.transactions.len() as f64);
                                     }
                                     

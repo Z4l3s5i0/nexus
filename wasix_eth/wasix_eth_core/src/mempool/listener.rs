@@ -3,16 +3,20 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use wasix_eth_storage::read::DatabaseReadProvider;
 use wasix_eth_storage::read_traits::HeaderProvider;
-use wasix_eth_types::{Block, BlockId, SignerRecoverable, Transaction, B256, U256};
+use wasix_eth_types::{Address, Block, BlockId, Transaction, B256, U256};
 use wasix_eth_utils::{error, info};
 
 enum MempoolEvent {
-    CanonicalBlock(Block<Transaction>),
+    CanonicalBlock {
+        block: Block<Transaction>,
+        affected_addresses: Option<Vec<Address>>,
+    },
     Reorg(B256),
 }
 
 pub struct MempoolListener {
     event_tx: mpsc::UnboundedSender<MempoolEvent>,
+    mempool: Arc<dyn MempoolProvider>,
 }
 
 impl MempoolListener {
@@ -22,14 +26,14 @@ impl MempoolListener {
     ) -> Self {
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
-        let listener = Self { event_tx };
+        let listener = Self { event_tx: event_tx.clone(), mempool: mempool.clone() };
 
         // Spawn background task to process events
         tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
                 match event {
-                    MempoolEvent::CanonicalBlock(block) => {
-                        Self::process_canonical_block(mempool.clone(), read_storage.clone(), block).await;
+                    MempoolEvent::CanonicalBlock { block, affected_addresses } => {
+                        Self::process_canonical_block(mempool.clone(), read_storage.clone(), block, affected_addresses).await;
                     }
                     MempoolEvent::Reorg(head_hash) => {
                         Self::process_reorg(mempool.clone(), read_storage.clone(), head_hash).await;
@@ -42,26 +46,38 @@ impl MempoolListener {
     }
 
     pub async fn handle_canonical_block(&self, block: Block<Transaction>) {
-        let _ = self.event_tx.send(MempoolEvent::CanonicalBlock(block));
+        let _ = self.event_tx.send(MempoolEvent::CanonicalBlock { block, affected_addresses: None });
     }
 
-    async fn process_canonical_block(mempool: Arc<dyn MempoolProvider>, read_storage: DatabaseReadProvider, block: Block<Transaction>) {
-        let base_fee = block.header.base_fee_per_gas.unwrap_or_default();
-        let mut affected_addresses = Vec::new();
-        let mut tx_hashes = Vec::new();
-
-        for tx in &block.body.transactions {
-            tx_hashes.push(*tx.hash());
-            if let Ok(sender) = tx.recover_signer() {
-                affected_addresses.push(sender);
-            }
-        }
-
-        // 1. Remove included transactions FIRST
+    pub fn remove_included_now(&self, block: &Block<Transaction>) -> Vec<Address> {
+        let tx_hashes = block.body.transactions.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
+        let affected_addresses = self.mempool.remove_transactions_now(&tx_hashes);
         if !tx_hashes.is_empty() {
-            info!("[MempoolListener] Removing {} transactions included in canonical block #{}", tx_hashes.len(), block.header.number);
-            mempool.remove_transactions(&tx_hashes).await;
+            info!("[MempoolListener] Removed {} included transactions synchronously from canonical block #{}", tx_hashes.len(), block.header.number);
         }
+        let _ = self.event_tx.send(MempoolEvent::CanonicalBlock {
+            block: block.clone(),
+            affected_addresses: Some(affected_addresses.clone()),
+        });
+        affected_addresses
+    }
+
+    async fn process_canonical_block(
+        mempool: Arc<dyn MempoolProvider>,
+        read_storage: DatabaseReadProvider,
+        block: Block<Transaction>,
+        affected_addresses: Option<Vec<Address>>,
+    ) {
+        let base_fee = block.header.base_fee_per_gas.unwrap_or_default();
+        let mut affected_addresses = if let Some(affected_addresses) = affected_addresses {
+            affected_addresses
+        } else {
+            let tx_hashes = block.body.transactions.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
+            if !tx_hashes.is_empty() {
+                info!("[MempoolListener] Removing {} transactions included in canonical block #{}", tx_hashes.len(), block.header.number);
+            }
+            mempool.remove_transactions(&tx_hashes).await
+        };
 
         // 2. Update base fee
         let old_base_fee = mempool.base_fee().await;

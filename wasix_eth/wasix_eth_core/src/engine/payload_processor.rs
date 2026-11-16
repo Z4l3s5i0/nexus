@@ -1,6 +1,7 @@
 use dashmap::{DashMap, DashSet};
 use futures_util::{future::BoxFuture, FutureExt};
 use crate::engine::canonicality_tracker::CanonicalState;
+use crate::engine::import_gate::ImportGate;
 use crate::engine::sidechain_tracker::{BlockTree};
 use crate::sync::registry::SyncRegistry;
 use crate::Consensus;
@@ -57,6 +58,7 @@ pub struct PayloadProcessor {
     pub chain: Arc<dyn ChainManager>,
     pub sync_registry: Arc<SyncRegistry>,
     pub event_tx: broadcast::Sender<EngineEvent>,
+    pub import_gate: Arc<ImportGate>,
 }
 
 impl PayloadProcessor {
@@ -685,6 +687,7 @@ impl PayloadProcessor {
         }
 
         // 5. Execute block
+        let _import_guard = self.import_gate.enter();
         let parent_state_root = parent_header.as_ref().map(|h| h.state_root);
         let execution = Arc::clone(&self.execution);
         let block_clone = block.clone();

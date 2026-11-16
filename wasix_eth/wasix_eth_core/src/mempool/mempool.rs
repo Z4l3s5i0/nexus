@@ -1,6 +1,7 @@
-use std::collections::{HashMap, BinaryHeap};
+use std::collections::{HashMap, HashSet, BinaryHeap};
 use std::cmp::Ordering;
 use std::ops::Deref;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use im::{Vector, HashMap as ImmutableMap};
@@ -13,6 +14,7 @@ use wasix_eth_utils::{debug, info, metrics::{MEMPOOL_SIZE, MEMPOOL_REJECTED_TRAN
 pub struct MempoolSnapshot {
     pub pending: ImmutableMap<Address, Vector<PooledTransaction>>,
     pub blobs: Arc<ImmutableMap<B256, Arc<(Blob, Bytes48, Bytes48)>>>,
+    pub generation: u64,
 }
 
 impl MempoolSnapshot {
@@ -228,6 +230,8 @@ impl Mempool {
             inner: Arc::new(MempoolInner {
                 state: ArcSwap::from_pointee(MempoolInternalState::default()),
                 base_fee: RwLock::new(base_fee),
+                full_revalidation_running: AtomicBool::new(false),
+                full_revalidation_pending: AtomicBool::new(false),
             }),
         }
     }
@@ -270,7 +274,8 @@ impl Mempool {
         let state = self.inner.state.load();
         MempoolSnapshot { 
             pending: state.pending_transactions.clone(), 
-            blobs: Arc::new(state.blobs.clone())
+            blobs: Arc::new(state.blobs.clone()),
+            generation: state.generation,
         }
     }
 }
@@ -287,6 +292,8 @@ impl Mempool {
 
 #[derive(Debug, Default, Clone)]
 pub struct MempoolInternalState {
+    /// Incremented for every successfully published state change.
+    pub generation: u64,
     /// Transactions ready for inclusion (no nonce gaps, sufficient balance).
     pub pending_transactions: ImmutableMap<Address, Vector<PooledTransaction>>,
     /// Transactions waiting for a previous nonce to arrive.
@@ -309,6 +316,8 @@ pub struct MempoolInner {
     pub state: ArcSwap<MempoolInternalState>,
     /// Current base fee for transactions in the mempool.
     pub base_fee: RwLock<U256>,
+    pub(crate) full_revalidation_running: AtomicBool,
+    pub(crate) full_revalidation_pending: AtomicBool,
 }
 
 /// Metadata for a transaction in the mempool.
@@ -319,6 +328,10 @@ pub struct TxMetadata {
 }
 
 impl MempoolInner {
+    pub(crate) fn request_full_revalidation(&self) -> bool {
+        self.full_revalidation_pending.store(true, AtomicOrdering::Release);
+        self.full_revalidation_running.compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire).is_ok()
+    }
     /// Internal helper to update the mempool state atomically.
     pub(crate) fn update_state<F>(&self, mut f: F)
     where
@@ -328,6 +341,7 @@ impl MempoolInner {
             let current = self.state.load();
             let mut new_state = (**current).clone();
             f(&mut new_state);
+            new_state.generation = new_state.generation.wrapping_add(1);
             let new_arc = Arc::new(new_state);
             let prev = self.state.compare_and_swap(&current, new_arc.clone());
             if Arc::ptr_eq(&current, &prev) {
@@ -514,34 +528,83 @@ impl MempoolInner {
 
     /// Clear the mempool.
     pub fn clear(&self) {
-        self.state.store(Arc::new(MempoolInternalState::default()));
+        self.update_state(|state| {
+            state.pending_transactions.clear();
+            state.queued_transactions.clear();
+            state.next_arrival_seq = 0;
+            state.pooled_envelopes.clear();
+            state.pooled_bytes.clear();
+            state.blobs.clear();
+            state.missing_blobs.clear();
+        });
         MEMPOOL_SIZE.set(0.0);
     }
 
-    /// Remove transactions that have been included in a block.
-    pub fn remove_transactions(&self, tx_hashes: &[B256]) {
-        if !tx_hashes.is_empty() {
-            info!("[Mempool] Removing {} transactions from mempool", tx_hashes.len());
-        }
-        
-        self.update_state(|state| {
-            let mut removed_txs = Vec::new();
+    /// Remove included transactions and stale lower nonces for their senders.
+    pub fn remove_transactions(&self, tx_hashes: &[B256]) -> Vec<Address> {
+        self.remove_transactions_inner(tx_hashes, true)
+    }
 
-            // Retain transactions not in tx_hashes
-            for (_, queue) in state.pending_transactions.iter_mut() {
+    pub(crate) fn remove_transactions_exact(&self, tx_hashes: &[B256]) -> Vec<Address> {
+        self.remove_transactions_inner(tx_hashes, false)
+    }
+
+    fn remove_transactions_inner(&self, tx_hashes: &[B256], prune_lower_nonces: bool) -> Vec<Address> {
+        if tx_hashes.is_empty() {
+            return Vec::new();
+        }
+
+        let tx_hashes: HashSet<B256> = tx_hashes.iter().copied().collect();
+        info!("[Mempool] Removing {} transactions from mempool", tx_hashes.len());
+
+        let mut affected_senders = HashSet::new();
+        self.update_state(|state| {
+            affected_senders.clear();
+            let mut highest_removed_nonce = HashMap::new();
+            if prune_lower_nonces {
+                for (sender, queue) in state.pending_transactions.iter() {
+                    for tx in queue.iter() {
+                        if tx_hashes.contains(tx.hash()) {
+                            highest_removed_nonce.entry(*sender)
+                                .and_modify(|nonce: &mut u64| *nonce = (*nonce).max(tx.nonce()))
+                                .or_insert_with(|| tx.nonce());
+                        }
+                    }
+                }
+                for (sender, queue) in state.queued_transactions.iter() {
+                    for tx in queue.iter() {
+                        if tx_hashes.contains(tx.hash()) {
+                            highest_removed_nonce.entry(*sender)
+                                .and_modify(|nonce: &mut u64| *nonce = (*nonce).max(tx.nonce()))
+                                .or_insert_with(|| tx.nonce());
+                        }
+                    }
+                }
+            }
+
+            let mut removed_txs = Vec::new();
+            for (sender, queue) in state.pending_transactions.iter_mut() {
+                let highest_nonce = highest_removed_nonce.get(sender).copied();
                 queue.retain(|tx| {
-                    if tx_hashes.contains(tx.hash()) {
-                        removed_txs.push(tx.clone());
+                    let included = tx_hashes.contains(tx.hash());
+                    let stale_nonce = prune_lower_nonces
+                        && highest_nonce.map(|nonce| tx.nonce() <= nonce).unwrap_or(false);
+                    if included || stale_nonce {
+                        removed_txs.push((*sender, tx.clone()));
                         false
                     } else {
                         true
                     }
                 });
             }
-            for (_, queue) in state.queued_transactions.iter_mut() {
+            for (sender, queue) in state.queued_transactions.iter_mut() {
+                let highest_nonce = highest_removed_nonce.get(sender).copied();
                 queue.retain(|tx| {
-                    if tx_hashes.contains(tx.hash()) {
-                        removed_txs.push(tx.clone());
+                    let included = tx_hashes.contains(tx.hash());
+                    let stale_nonce = prune_lower_nonces
+                        && highest_nonce.map(|nonce| tx.nonce() <= nonce).unwrap_or(false);
+                    if included || stale_nonce {
+                        removed_txs.push((*sender, tx.clone()));
                         false
                     } else {
                         true
@@ -550,7 +613,8 @@ impl MempoolInner {
             }
 
             // Clean up associated data for removed transactions
-            for tx in removed_txs {
+            for (sender, tx) in removed_txs {
+                affected_senders.insert(sender);
                 let hash = tx.hash();
                 if tx.is_eip4844() {
                     if let Some(hashes) = tx.blob_versioned_hashes() {
@@ -567,8 +631,9 @@ impl MempoolInner {
             state.pending_transactions.retain(|_, queue| !queue.is_empty());
             state.queued_transactions.retain(|_, queue| !queue.is_empty());
         });
-        
+
         MEMPOOL_SIZE.set(self.len() as f64);
+        affected_senders.into_iter().collect()
     }
 }
 
@@ -833,7 +898,107 @@ mod tests {
         MempoolSnapshot {
             pending,
             blobs: Arc::new(blobs),
+            generation: 0,
         }
+    }
+
+    #[test]
+    fn generation_increments_and_is_included_in_snapshots() {
+        let mempool = Mempool::new(U256::ZERO);
+        assert_eq!(mempool.snapshot().generation, 0);
+
+        mempool.inner.update_state(|state| {
+            state.next_arrival_seq += 1;
+        });
+        assert_eq!(mempool.inner.state.load().generation, 1);
+        assert_eq!(mempool.snapshot().generation, 1);
+
+        mempool.inner.update_state(|state| {
+            state.next_arrival_seq += 1;
+        });
+        assert_eq!(mempool.snapshot().generation, 2);
+
+        mempool.inner.clear();
+        assert_eq!(mempool.snapshot().generation, 3);
+    }
+
+    #[tokio::test]
+    async fn generation_advances_on_transaction_mutations() {
+        let mempool = Mempool::new(U256::ZERO);
+        let tx = Transaction::Legacy(TxLegacy {
+            nonce: 0,
+            ..Default::default()
+        }.into_signed(Signature::test_signature()));
+
+        let before_add = mempool.snapshot().generation;
+        assert!(mempool.inner.add_transaction(tx.clone(), 0).await);
+        let after_add = mempool.snapshot().generation;
+        assert!(after_add > before_add);
+
+        mempool.inner.remove_transactions(&[*tx.hash()]);
+        let after_remove = mempool.snapshot().generation;
+        assert!(after_remove > after_add);
+
+        let sender = Address::repeat_byte(0x55);
+        let queued = Transaction::Legacy(TxLegacy {
+            nonce: 1,
+            ..Default::default()
+        }.into_signed(Signature::test_signature()));
+        mempool.inner.update_state(|state| {
+            state.queued_transactions.insert(sender, vec![PooledTransaction::new(queued.clone(), 0)].into_iter().collect());
+        });
+        let before_promotion = mempool.snapshot().generation;
+        mempool.inner.promote_queued(sender, 1);
+        assert!(mempool.snapshot().generation > before_promotion);
+    }
+
+    #[tokio::test]
+    async fn remove_transactions_prunes_sender_nonces_and_returns_sender() {
+        let mempool = Mempool::new(U256::ZERO);
+        let signature = Signature::test_signature();
+        let make_tx = |nonce| Transaction::Legacy(TxLegacy {
+            nonce,
+            ..Default::default()
+        }.into_signed(signature.clone()));
+        let tx0 = make_tx(0);
+        let tx2 = make_tx(2);
+        let tx3 = make_tx(3);
+        let sender = Address::repeat_byte(0x42);
+        mempool.inner.update_state(|state| {
+            state.pending_transactions.insert(sender, vec![PooledTransaction::new(tx0.clone(), 0)].into_iter().collect());
+            state.queued_transactions.insert(sender, vec![
+                PooledTransaction::new(tx2.clone(), 1),
+                PooledTransaction::new(tx3.clone(), 2),
+            ].into_iter().collect());
+        });
+
+        let generation_before_removal = mempool.snapshot().generation;
+        let affected = mempool.inner.remove_transactions(&[*tx2.hash()]);
+        assert!(mempool.snapshot().generation > generation_before_removal);
+        assert_eq!(affected, vec![sender]);
+        assert_eq!(mempool.inner.len(), 1);
+
+        let state = mempool.inner.state.load();
+        assert!(!state.pending_transactions.contains_key(&sender));
+        let remaining = state.queued_transactions.get(&sender).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].nonce(), 3);
+        assert_eq!(*remaining[0].hash(), *tx3.hash());
+
+        let generation_before_promotion = mempool.snapshot().generation;
+        mempool.inner.promote_queued(sender, 3);
+        assert!(mempool.snapshot().generation > generation_before_promotion);
+        assert_eq!(mempool.inner.state.load().pending_transactions[&sender][0].nonce(), 3);
+    }
+
+    #[test]
+    fn full_revalidation_requests_are_coalesced() {
+        let inner = MempoolInner::default();
+
+        assert!(inner.request_full_revalidation());
+        assert!(!inner.request_full_revalidation());
+        assert!(inner.full_revalidation_pending.load(AtomicOrdering::Acquire));
+        assert!(inner.full_revalidation_running.load(AtomicOrdering::Acquire));
     }
 
     #[tokio::test]

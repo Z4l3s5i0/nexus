@@ -1,4 +1,6 @@
 use alloy_primitives::Address;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use wasix_eth_types::{async_trait, ConsensusTransaction, Transaction, B256, U256, Blob, Bytes48, TxPooledEnvelope, Bytes};
 use wasix_eth_storage::read::DatabaseReadProvider;
@@ -6,7 +8,172 @@ use wasix_eth_storage::read_traits::AccountProvider;
 use crate::mempool::mempool::{Mempool, MempoolSnapshot};
 use im::HashMap as ImmutableMap;
 use wasix_eth_storage::{ChainProvider, HeaderProvider};
-use wasix_eth_utils::info;
+use wasix_eth_utils::{error, info};
+
+impl Mempool {
+    fn schedule_full_revalidation(&self, state: DatabaseReadProvider) {
+        if !self.inner.request_full_revalidation() {
+            return;
+        }
+
+        let mempool = self.clone();
+        tokio::spawn(async move {
+            loop {
+                mempool.inner.full_revalidation_pending.store(false, Ordering::Release);
+                mempool.revalidate_inner(&state, None).await;
+
+                if mempool.inner.full_revalidation_pending.load(Ordering::Acquire) {
+                    continue;
+                }
+
+                mempool.inner.full_revalidation_running.store(false, Ordering::Release);
+                if !mempool.inner.full_revalidation_pending.swap(false, Ordering::AcqRel) {
+                    break;
+                }
+                if mempool.inner.full_revalidation_running.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    async fn revalidate_inner(&self, state: &DatabaseReadProvider, addresses: Option<Vec<Address>>) {
+        let base_fee = *self.inner.base_fee.read().await;
+        let mempool_state = self.inner.state.load_full();
+        let state = state.clone();
+
+        let (to_remove, addresses_to_promote, current_nonces) = match tokio::task::spawn_blocking(move || {
+            let chain_config = state.chain_config().ok().flatten();
+            let latest_header = state.header(wasix_eth_types::BlockId::Number(wasix_eth_types::BlockNumberOrTag::Latest)).ok().flatten();
+            let blob_base_fee = latest_header.as_ref().and_then(|header| header.excess_blob_gas).map(|excess| {
+                let update_fraction = match (chain_config.as_ref(), latest_header.as_ref()) {
+                    (Some(config), Some(header)) => {
+                        let fork = wasix_eth_types::Hardfork::get_active_fork(config, header.number, header.timestamp);
+                        fork.blob_params(config).map(|params| params.update_fraction)
+                    }
+                    _ => None,
+                }.unwrap_or(wasix_eth_types::BLOB_GASPRICE_UPDATE_FRACTION as u128);
+                wasix_eth_types::calc_blob_gasprice(excess, update_fraction)
+            }).unwrap_or(0);
+
+            let mut to_remove = Vec::new();
+            let mut addresses_to_promote = Vec::new();
+            let mut current_nonces = HashMap::new();
+
+            let mut process_address = |address: Address| {
+                let (current_nonce, current_balance) = if let Ok(Some(account)) = state.account(address, None) {
+                    (account.nonce, account.balance)
+                } else {
+                    (0, U256::ZERO)
+                };
+                current_nonces.insert(address, current_nonce);
+
+                if let Some(queue) = mempool_state.pending_transactions.get(&address) {
+                    for tx in queue.iter() {
+                        if should_remove_transaction(tx, current_nonce, current_balance, base_fee, blob_base_fee, mempool_state.as_ref()) {
+                            to_remove.push(*tx.hash());
+                        }
+                    }
+                }
+
+                if let Some(queue) = mempool_state.queued_transactions.get(&address) {
+                    for tx in queue.iter() {
+                        if should_remove_transaction(tx, current_nonce, current_balance, base_fee, blob_base_fee, mempool_state.as_ref()) {
+                            to_remove.push(*tx.hash());
+                        }
+                    }
+                    addresses_to_promote.push(address);
+                }
+            };
+
+            if let Some(addresses) = addresses {
+                let mut seen = HashSet::new();
+                for address in addresses {
+                    if seen.insert(address) {
+                        process_address(address);
+                    }
+                }
+            } else {
+                let mut seen = HashSet::new();
+                for (address, _) in mempool_state.pending_transactions.iter() {
+                    if seen.insert(*address) {
+                        process_address(*address);
+                    }
+                }
+                for (address, _) in mempool_state.queued_transactions.iter() {
+                    if seen.insert(*address) {
+                        process_address(*address);
+                    }
+                }
+            }
+
+            (to_remove, addresses_to_promote, current_nonces)
+        }).await {
+            Ok(result) => result,
+            Err(join_error) => {
+                error!("[Mempool] Revalidation database task failed: {}", join_error);
+                return;
+            }
+        };
+
+        if !to_remove.is_empty() {
+            info!("[Mempool] Removing {} invalid transactions during revalidation", to_remove.len());
+            self.inner.remove_transactions_exact(&to_remove);
+        }
+
+        for address in addresses_to_promote {
+            let current_nonce = current_nonces.get(&address).copied().unwrap_or(0);
+            let next_nonce = self.inner.state.load().pending_transactions.get(&address)
+                .and_then(|queue| queue.back().map(|tx| tx.nonce() + 1))
+                .unwrap_or(current_nonce);
+            self.inner.promote_queued(address, next_nonce);
+        }
+    }
+}
+
+fn should_remove_transaction(
+    tx: &wasix_eth_types::Transaction,
+    current_nonce: u64,
+    current_balance: U256,
+    base_fee: U256,
+    blob_base_fee: u128,
+    mempool_state: &crate::mempool::mempool::MempoolInternalState,
+) -> bool {
+    let tx_nonce = tx.nonce();
+    let max_fee = tx.max_fee_per_gas();
+    if max_fee < base_fee.to::<u128>() {
+        info!("[Mempool] Evicting transaction {:?} (nonce: {}) because max fee {} is below base fee {}", tx.hash(), tx_nonce, max_fee, base_fee);
+        return true;
+    }
+
+    let gas_limit = tx.gas_limit() as u128;
+    let value = tx.value().to::<u128>();
+    let mut required_balance = U256::from(gas_limit * max_fee + value);
+    if tx.is_eip4844() {
+        let blob_gas_used = tx.blob_versioned_hashes().map(|hashes| hashes.len()).unwrap_or(0) as u64
+            * wasix_eth_types::DATA_GAS_PER_BLOB;
+        required_balance = required_balance.saturating_add(U256::from(blob_gas_used as u128 * blob_base_fee));
+    }
+
+    if tx_nonce < current_nonce || current_balance < required_balance {
+        info!("[Mempool] Evicting transaction {:?} (nonce: {}) due to {} (balance: {}, required: {})",
+            tx.hash(), tx_nonce, if tx_nonce < current_nonce { "stale nonce" } else { "insufficient balance" }, current_balance, required_balance);
+        return true;
+    }
+
+    if tx.is_eip4844() {
+        if let Some(hashes) = tx.blob_versioned_hashes() {
+            for hash in hashes {
+                if !mempool_state.blobs.contains_key(hash) {
+                    info!("[Mempool] Evicting transaction {:?} because blob {:?} is missing", tx.hash(), hash);
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
 
 #[async_trait]
 pub trait MempoolProvider: Send + Sync {
@@ -17,7 +184,10 @@ pub trait MempoolProvider: Send + Sync {
     async fn revalidate(&self, state: &DatabaseReadProvider, addresses: Option<Vec<Address>>);
     async fn pop_transactions(&self, n: usize) -> Vec<Transaction>;
     async fn peek_transactions(&self, n: usize) -> Vec<Transaction>;
-    async fn remove_transactions(&self, tx_hashes: &[B256]);
+    fn remove_transactions_now(&self, tx_hashes: &[B256]) -> Vec<Address>;
+    async fn remove_transactions(&self, tx_hashes: &[B256]) -> Vec<Address> {
+        self.remove_transactions_now(tx_hashes)
+    }
     async fn get_all_transactions(&self) -> Vec<Transaction>;
     async fn get_transactions_by_sender(&self, address: Address) -> Vec<Transaction>;
     async fn len(&self) -> usize;
@@ -56,11 +226,7 @@ impl MempoolProvider for Mempool {
 
         if increased {
             info!("[Mempool] Base fee increased from {} to {}. Revalidating mempool asynchronously...", old_fee, new_base_fee);
-            let mempool = self.clone();
-            let state = state.clone();
-            tokio::spawn(async move {
-                mempool.revalidate(&state, None).await;
-            });
+            self.schedule_full_revalidation(state.clone());
         }
     }
 
@@ -68,158 +234,10 @@ impl MempoolProvider for Mempool {
     /// Removes transactions that are no longer valid (e.g. nonce too low, insufficient balance).
     /// If `addresses` is provided, only those accounts are revalidated.
     async fn revalidate(&self, state: &DatabaseReadProvider, addresses: Option<Vec<Address>>) {
-        let mut to_remove = Vec::new();
-        let mut addresses_to_promote = Vec::new();
-
-        let base_fee = *self.inner.base_fee.read().await;
-        let mempool_state = self.inner.state.load();
-
-        let process_address = |address: Address, to_remove: &mut Vec<B256>, addresses_to_promote: &mut Vec<Address>| {
-            let (current_nonce, current_balance) = if let Ok(Some(acc)) = state.account(address, None) {
-                (acc.nonce, acc.balance)
-            } else {
-                (0, U256::ZERO)
-            };
-
-            let chain_config = state.chain_config().ok().flatten();
-            let latest_header = state.header(wasix_eth_types::BlockId::Number(wasix_eth_types::BlockNumberOrTag::Latest)).ok().flatten();
-            let blob_base_fee = latest_header.as_ref().and_then(|h| h.excess_blob_gas).map(|excess| {
-                if let (Some(config), Some(header)) = (chain_config.as_ref(), latest_header.as_ref()) {
-                    let fork = wasix_eth_types::Hardfork::get_active_fork(config, header.number, header.timestamp);
-                    if let Some(params) = fork.blob_params(config) {
-                        wasix_eth_types::calc_blob_gasprice(excess, params.update_fraction)
-                    } else {
-                        wasix_eth_types::calc_blob_gasprice(excess, wasix_eth_types::BLOB_GASPRICE_UPDATE_FRACTION as u128)
-                    }
-                } else {
-                    wasix_eth_types::calc_blob_gasprice(excess, wasix_eth_types::BLOB_GASPRICE_UPDATE_FRACTION as u128)
-                }
-            }).unwrap_or(0);
-
-            // Check pending transactions
-            if let Some(queue) = mempool_state.pending_transactions.get(&address) {
-                for tx in queue.iter() {
-                    let tx_nonce = tx.nonce();
-                    let max_fee = tx.max_fee_per_gas();
-
-                    if max_fee < base_fee.to::<u128>() {
-                        info!("[Mempool] Evicting transaction {:?} (nonce: {}) because max fee {} is below base fee {}", 
-                            tx.hash(), tx_nonce, max_fee, base_fee);
-                        to_remove.push(*tx.hash());
-                        continue;
-                    }
-
-                    let gas_limit = tx.gas_limit() as u128;
-                    let max_fee_per_gas = tx.max_fee_per_gas();
-                    let value = tx.value().to::<u128>();
-                    let mut required_balance = U256::from(gas_limit * max_fee_per_gas + value);
-
-                    if tx.is_eip4844() {
-                        let blob_gas_used = tx.blob_versioned_hashes().map(|h| h.len()).unwrap_or(0) as u64 * wasix_eth_types::DATA_GAS_PER_BLOB;
-                        let blob_fee = U256::from(blob_gas_used as u128 * blob_base_fee);
-                        required_balance = required_balance.saturating_add(blob_fee);
-                    }
-
-                    if tx_nonce < current_nonce || current_balance < required_balance {
-                        info!("[Mempool] Evicting transaction {:?} (nonce: {}) due to {} (balance: {}, required: {})",
-                            tx.hash(), tx_nonce, if tx_nonce < current_nonce { "stale nonce" } else { "insufficient balance" }, current_balance, required_balance);
-                        to_remove.push(*tx.hash());
-                        continue;
-                    }
-
-                    if tx.is_eip4844() {
-                        if let Some(hashes) = tx.blob_versioned_hashes() {
-                            for hash in hashes {
-                                if !mempool_state.blobs.contains_key(hash) {
-                                    info!("[Mempool] Evicting transaction {:?} because blob {:?} is missing", tx.hash(), hash);
-                                    to_remove.push(*tx.hash());
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Check queued transactions
-            if let Some(queue) = mempool_state.queued_transactions.get(&address) {
-                for tx in queue.iter() {
-                    let tx_nonce = tx.nonce();
-                    let max_fee = tx.max_fee_per_gas();
-
-                    if max_fee < base_fee.to::<u128>() {
-                        info!("[Mempool] Evicting transaction {:?} (nonce: {}) because max fee {} is below base fee {}", 
-                            tx.hash(), tx_nonce, max_fee, base_fee);
-                        to_remove.push(*tx.hash());
-                        continue;
-                    }
-
-                    let gas_limit = tx.gas_limit() as u128;
-                    let max_fee_per_gas = tx.max_fee_per_gas();
-                    let value = tx.value().to::<u128>();
-                    let mut required_balance = U256::from(gas_limit * max_fee_per_gas + value);
-
-                    if tx.is_eip4844() {
-                        let blob_gas_used = tx.blob_versioned_hashes().map(|h| h.len()).unwrap_or(0) as u64 * wasix_eth_types::DATA_GAS_PER_BLOB;
-                        let blob_fee = U256::from(blob_gas_used as u128 * blob_base_fee);
-                        required_balance = required_balance.saturating_add(blob_fee);
-                    }
-
-                    if tx_nonce < current_nonce || current_balance < required_balance {
-                        info!("[Mempool] Evicting transaction {:?} (nonce: {}) due to {} (balance: {}, required: {})",
-                            tx.hash(), tx_nonce, if tx_nonce < current_nonce { "stale nonce" } else { "insufficient balance" }, current_balance, required_balance);
-                        to_remove.push(*tx.hash());
-                        continue;
-                    }
-
-                    if tx.is_eip4844() {
-                        if let Some(hashes) = tx.blob_versioned_hashes() {
-                            for hash in hashes {
-                                if !mempool_state.blobs.contains_key(hash) {
-                                    info!("[Mempool] Evicting transaction {:?} because blob {:?} is missing", tx.hash(), hash);
-                                    to_remove.push(*tx.hash());
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                addresses_to_promote.push(address);
-            }
-        };
-
-        if let Some(addrs) = addresses {
-            for addr in addrs {
-                process_address(addr, &mut to_remove, &mut addresses_to_promote);
-            }
+        if let Some(addresses) = addresses {
+            self.revalidate_inner(state, Some(addresses)).await;
         } else {
-            // Full revalidation
-            for (addr, _) in mempool_state.pending_transactions.iter() {
-                process_address(*addr, &mut to_remove, &mut addresses_to_promote);
-            }
-            for (addr, _) in mempool_state.queued_transactions.iter() {
-                if !mempool_state.pending_transactions.contains_key(addr) {
-                    process_address(*addr, &mut to_remove, &mut addresses_to_promote);
-                }
-            }
-        }
-
-        if !to_remove.is_empty() {
-            info!("[Mempool] Removing {} invalid transactions during revalidation", to_remove.len());
-            self.remove_transactions(&to_remove).await;
-        }
-
-        // Try to promote queued transactions in case some were removed or new ones can be moved
-        for address in addresses_to_promote {
-            let current_nonce = if let Ok(Some(acc)) = state.account(address, None) {
-                acc.nonce
-            } else {
-                0
-            };
-            let next_nonce = self.inner.state.load().pending_transactions.get(&address)
-                .and_then(|q| q.back().map(|t| t.nonce() + 1))
-                .unwrap_or(current_nonce);
-            self.inner.promote_queued(address, next_nonce);
+            self.schedule_full_revalidation(state.clone());
         }
     }
 
@@ -231,8 +249,8 @@ impl MempoolProvider for Mempool {
         self.inner.peek_transactions(n)
     }
 
-    async fn remove_transactions(&self, tx_hashes: &[B256]) {
-        self.inner.remove_transactions(tx_hashes);
+    fn remove_transactions_now(&self, tx_hashes: &[B256]) -> Vec<Address> {
+        self.inner.remove_transactions(tx_hashes)
     }
 
     async fn get_all_transactions(&self) -> Vec<Transaction> {
@@ -425,7 +443,7 @@ impl MempoolProvider for NoopMempoolProvider {
     async fn revalidate(&self, _state: &DatabaseReadProvider, _addresses: Option<Vec<Address>>) {}
     async fn pop_transactions(&self, _n: usize) -> Vec<Transaction> { Vec::new() }
     async fn peek_transactions(&self, _n: usize) -> Vec<Transaction> { Vec::new() }
-    async fn remove_transactions(&self, _tx_hashes: &[B256]) {}
+    fn remove_transactions_now(&self, _tx_hashes: &[B256]) -> Vec<Address> { Vec::new() }
     async fn get_all_transactions(&self) -> Vec<Transaction> { Vec::new() }
     async fn get_transactions_by_sender(&self, _address: Address) -> Vec<Transaction> { Vec::new() }
     async fn len(&self) -> usize { 0 }
@@ -435,7 +453,7 @@ impl MempoolProvider for NoopMempoolProvider {
     async fn peek_best_transactions(&self, _target_gas_limit: u64, _base_fee: U256, _blob_base_fee: Option<U256>, _max_blobs_per_block: Option<u32>) -> (Vec<Transaction>, Vec<Transaction>) {
         (Vec::new(), Vec::new())
     }
-    fn snapshot(&self) -> MempoolSnapshot { MempoolSnapshot { pending: ImmutableMap::new(), blobs: Self::empty_blobs() } }
+    fn snapshot(&self) -> MempoolSnapshot { MempoolSnapshot { pending: ImmutableMap::new(), blobs: Self::empty_blobs(), generation: 0 } }
     async fn add_blob(&self, _versioned_hash: B256, _blob: Blob, _commitment: Bytes48, _proof: Bytes48) {}
     async fn get_blob(&self, _versioned_hash: B256) -> Option<(Blob, Bytes48, Bytes48)> { None }
     async fn get_transaction(&self, _hash: B256) -> Option<Transaction> { None }

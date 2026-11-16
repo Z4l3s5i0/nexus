@@ -645,7 +645,7 @@ impl ExecutionProvider for EthExecutionProvider {
             }
         }
         if let Some(token) = &interruption_token {
-            if token.is_cancelled() {
+            if token.is_cancelled() && !building {
                 return Err(anyhow::anyhow!("Interruption signaled before transaction execution"));
             }
         }
