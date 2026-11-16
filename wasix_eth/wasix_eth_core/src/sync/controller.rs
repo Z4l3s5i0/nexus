@@ -49,6 +49,44 @@ impl SyncController {
     pub async fn start(&self) {
         info!("[Sync] Starting synchronization controller...");
         let notify = self.sync_registry.subscribe();
+
+        // Start a background task for syncing missing blobs
+        let mempool = self.mempool.clone();
+        let downloader = Downloader::new(self.downloader.peer_provider.clone());
+        let processor = self.processor.clone();
+        tokio::spawn(async move {
+            loop {
+                // Polling interval with jitter to avoid synchronized traffic
+                let interval = 30 + (rand::random::<u64>() % 15);
+                tokio::time::sleep(Duration::from_secs(interval)).await;
+                
+                let missing = mempool.get_transactions_with_missing_blobs().await;
+                if !missing.is_empty() {
+                    debug!("[Sync] Found {} transactions in mempool with missing blobs, attempting to sync...", missing.len());
+                    
+                    // Mark attempt immediately to avoid re-selecting in next 60s if this takes time
+                    mempool.mark_blob_sync_attempt(&missing).await;
+
+                    // Try to find a peer to sync from
+                    if let Some(peer_id) = downloader.get_any_peer().await {
+                        match downloader.download_pooled_transactions(&peer_id, missing).await {
+                            Ok(txs) => {
+                                if !txs.is_empty() {
+                                    info!("[Sync] Successfully synced {} missing pooled transactions from {}", txs.len(), peer_id);
+                                    for tx in txs {
+                                        let _ = processor.process_pooled_transaction(tx).await;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                debug!("[Sync] Failed to sync missing blobs from {}: {}", peer_id, e);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
         loop {
             // Process all pending targets in a loop to catch up quickly
             loop {

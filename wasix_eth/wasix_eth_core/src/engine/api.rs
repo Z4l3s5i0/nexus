@@ -2,7 +2,7 @@ use crate::engine::canonicality_tracker::CanonicalState;
 use crate::account_manager::AccountManager;
 use crate::mempool::mempool_provider::MempoolProvider;
 use crate::{Consensus, EngineEvent};
-use alloy_rlp::{Decodable, Encodable};
+use alloy_rlp::Encodable;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use wasix_eth_execution::execution_provider::{ExecutionProvider, TransactValueCallCreate};
@@ -23,6 +23,7 @@ use wasix_eth_types::BlockId;
 use wasix_eth_types::BlockNumberOrTag;
 use wasix_eth_types::Bytes;
 use wasix_eth_types::ChainConfig;
+use wasix_eth_types::Decodable2718;
 use wasix_eth_types::Filter;
 use wasix_eth_types::FixedBytes;
 use wasix_eth_types::Log;
@@ -307,35 +308,60 @@ impl RPCEngine {
         let data = hex::decode(data.trim_start_matches("0x"))
             .map_err(|e| RpcError::InvalidParams(format!("Invalid hex: {}", e)))?;
 
-        // Try decoding as a standard Transaction first (without sidecars)
-        if let Ok(tx) = Transaction::decode(&mut &data[..]) {
-            let pooled_tx = match tx {
-                Transaction::Legacy(signed) => TxPooledEnvelope::Legacy(signed),
-                Transaction::Eip2930(signed) => TxPooledEnvelope::Eip2930(signed),
-                Transaction::Eip1559(signed) => TxPooledEnvelope::Eip1559(signed),
-                Transaction::Eip4844(signed) => {
-                    let (tx_variant, signature, hash) = signed.into_parts();
-                    let tx = match tx_variant {
-                        wasix_eth_types::TxEip4844Variant::TxEip4844(tx) => tx,
-                        wasix_eth_types::TxEip4844Variant::TxEip4844WithSidecar(tx_sidecar) => tx_sidecar.tx,
-                    };
-                    TxPooledEnvelope::Eip4844(Signed::new_unchecked(
-                        alloy_consensus::TxEip4844WithSidecar {
-                            tx,
-                            sidecar: Default::default(),
-                        },
-                        signature,
-                        hash,
-                    ))
-                }
-                Transaction::Eip7702(signed) => TxPooledEnvelope::Eip7702(signed),
-            };
-            return self.import_pooled_transaction(pooled_tx, data).await;
-        }
+        // Try decoding as TxPooledEnvelope (EIP-2718 network format)
+        let mut data_slice = &data[..];
+        let pooled_tx: TxPooledEnvelope = if let Ok(pooled) = TxPooledEnvelope::decode_2718(&mut data_slice) {
+            pooled
+        } else {
+            // If it fails, it might be a raw transaction envelope without the pooled wrapper
+            let mut data_slice_retry = &data[..];
+            let tx = Transaction::decode_2718(&mut data_slice_retry)
+                .map_err(|e| RpcError::InvalidParams(format!("Invalid RLP: {}", e)))?;
 
-        // Try decoding as TxPooledEnvelope to handle 4844 transactions with sidecars (network format)
-        let pooled_tx: TxPooledEnvelope = Decodable::decode(&mut &data[..])
-            .map_err(|e| RpcError::InvalidParams(format!("Invalid RLP: {}", e)))?;
+            match tx {
+                Transaction::Legacy(t) => TxPooledEnvelope::Legacy(t),
+                Transaction::Eip2930(t) => TxPooledEnvelope::Eip2930(t),
+                Transaction::Eip1559(t) => TxPooledEnvelope::Eip1559(t),
+                Transaction::Eip4844(t) => {
+                    let (variant, signature, hash) = t.into_parts();
+                    match variant {
+                        wasix_eth_types::TxEip4844Variant::TxEip4844(inner) => {
+                            TxPooledEnvelope::Eip4844(Signed::new_unchecked(
+                                alloy_consensus::TxEip4844WithSidecar {
+                                    tx: inner.clone(),
+                                    sidecar: Default::default(),
+                                },
+                                signature,
+                                hash,
+                            ))
+                        }
+                        wasix_eth_types::TxEip4844Variant::TxEip4844WithSidecar(inner) => {
+                            let sidecar = match &inner.sidecar {
+                                wasix_eth_types::BlobTransactionSidecarVariant::Eip4844(s) => {
+                                    wasix_eth_types::BlobTransactionSidecarEip7594::new(
+                                        s.blobs.clone(),
+                                        s.commitments.clone(),
+                                        s.proofs.clone(),
+                                    )
+                                }
+                                wasix_eth_types::BlobTransactionSidecarVariant::Eip7594(s) => {
+                                    s.clone()
+                                }
+                            };
+                            TxPooledEnvelope::Eip4844(Signed::new_unchecked(
+                                alloy_consensus::TxEip4844WithSidecar {
+                                    tx: inner.tx.clone(),
+                                    sidecar,
+                                },
+                                signature,
+                                hash,
+                            ))
+                        }
+                    }
+                }
+                Transaction::Eip7702(t) => TxPooledEnvelope::Eip7702(t),
+            }
+        };
 
         self.import_pooled_transaction(pooled_tx, data).await
     }

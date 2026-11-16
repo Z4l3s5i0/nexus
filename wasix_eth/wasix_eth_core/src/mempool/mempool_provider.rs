@@ -34,6 +34,9 @@ pub trait MempoolProvider: Send + Sync {
     async fn add_pooled_bytes(&self, hash: B256, bytes: Bytes);
     async fn get_pooled_bytes(&self, hash: B256) -> Option<Bytes>;
     async fn next_expected_nonce(&self, address: Address, state_nonce: u64) -> u64;
+    /// Identify transactions in the mempool that are EIP-4844 but are missing their required blobs.
+    async fn get_transactions_with_missing_blobs(&self) -> Vec<B256>;
+    async fn mark_blob_sync_attempt(&self, tx_hashes: &[B256]);
 }
 
 #[async_trait]
@@ -321,6 +324,73 @@ impl MempoolProvider for Mempool {
         self.next_expected_nonce(address, state_nonce).await
     }
 
+    async fn get_transactions_with_missing_blobs(&self) -> Vec<B256> {
+        let mut missing = Vec::new();
+        let state = self.inner.state.load();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        
+        for (_, queue) in state.pending_transactions.iter() {
+            for tx in queue.iter() {
+                if tx.is_eip4844() {
+                    let hash = *tx.hash();
+                    if let Some(last_attempt) = state.missing_blobs.get(&hash) {
+                        if now - last_attempt < 60 {
+                            continue;
+                        }
+                    }
+
+                    if let Some(hashes) = tx.blob_versioned_hashes() {
+                        for h in hashes {
+                            if !state.blobs.contains_key(h) {
+                                missing.push(hash);
+                                break;
+                            }
+                        }
+                    }
+                }
+                if missing.len() >= 32 { break; }
+            }
+            if missing.len() >= 32 { break; }
+        }
+
+        if missing.len() < 32 {
+            for (_, queue) in state.queued_transactions.iter() {
+                for tx in queue.iter() {
+                    if tx.is_eip4844() {
+                        let hash = *tx.hash();
+                        if let Some(last_attempt) = state.missing_blobs.get(&hash) {
+                            if now - last_attempt < 60 {
+                                continue;
+                            }
+                        }
+
+                        if let Some(hashes) = tx.blob_versioned_hashes() {
+                            for h in hashes {
+                                if !state.blobs.contains_key(h) {
+                                    missing.push(hash);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if missing.len() >= 32 { break; }
+                }
+                if missing.len() >= 32 { break; }
+            }
+        }
+        missing
+    }
+
+    async fn mark_blob_sync_attempt(&self, tx_hashes: &[B256]) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        let hashes = tx_hashes.to_vec();
+        self.inner.update_state(move |state| {
+            for hash in &hashes {
+                state.missing_blobs.insert(*hash, now);
+            }
+        });
+    }
+
     async fn nonce_lookup(&self, address: Address, state_nonce: u64) -> (u64, u64) {
         let state = self.inner.state.load();
         let next_pending = if let Some(q) = state.pending_transactions.get(&address) {
@@ -374,5 +444,7 @@ impl MempoolProvider for NoopMempoolProvider {
     async fn add_pooled_bytes(&self, _hash: B256, _bytes: Bytes) {}
     async fn get_pooled_bytes(&self, _hash: B256) -> Option<Bytes> { None }
     async fn next_expected_nonce(&self, _address: Address, state_nonce: u64) -> u64 { state_nonce }
+    async fn get_transactions_with_missing_blobs(&self) -> Vec<B256> { Vec::new() }
+    async fn mark_blob_sync_attempt(&self, _tx_hashes: &[B256]) {}
     async fn nonce_lookup(&self, _address: Address, state_nonce: u64) -> (u64, u64) { (state_nonce, state_nonce) }
 }

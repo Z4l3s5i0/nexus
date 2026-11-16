@@ -113,7 +113,22 @@ impl MempoolSnapshot {
             let tx = queue.get(*cursor).unwrap();
 
             // Just add them as candidates, don't check gas here as execution will check
-            result_optimistic.push(tx.clone());
+            // BUT we MUST check blob availability for EIP-4844
+            let mut skip = false;
+            if tx.is_eip4844() {
+                if let Some(hashes) = tx.blob_versioned_hashes() {
+                    for hash in hashes {
+                        if !self.blobs.contains_key(hash) {
+                            skip = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if !skip {
+                result_optimistic.push(tx.clone());
+            }
 
             *cursor += 1;
             if let Some(next_tx) = queue.get(*cursor) {
@@ -208,6 +223,8 @@ pub struct MempoolInternalState {
     pub pooled_bytes: ImmutableMap<B256, Bytes>,
     /// Blobs, commitments and proofs associated with EIP-4844 transactions, indexed by versioned hash.
     pub blobs: ImmutableMap<B256, Arc<(Blob, Bytes48, Bytes48)>>,
+    /// Tracks EIP-4844 transaction hashes that are missing blobs.
+    pub missing_blobs: ImmutableMap<B256, u64>, // tx_hash -> last_sync_attempt_timestamp
 }
 
 #[derive(Debug, Default)]
