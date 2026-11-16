@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/li
 # Copy the source code
 COPY . .
 
-# Build the application
-RUN cargo build --release
+# The WASIX overlay is for cross-compilation, not this native Linux image.
+RUN rm -f /app/.cargo/config.toml && cargo build --release --locked
 
 # Runtime stage
 FROM debian:bookworm-slim

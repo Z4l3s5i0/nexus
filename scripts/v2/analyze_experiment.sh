@@ -19,6 +19,22 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DB_EXPORTER="$SCRIPT_DIR/db_exporter/target/release/db_exporter"
+METADATA="$EXP_DIR/metadata.json"
+declare -A NODE_TYPES
+if [ -f "$METADATA" ]; then
+    if command -v python3 &>/dev/null; then
+        PYTHON=python3
+    elif command -v python &>/dev/null; then
+        PYTHON=python
+    else
+        echo "Error: Python is required to read metadata." >&2
+        exit 1
+    fi
+    NODE_TYPE_LIST=$("$PYTHON" "$SCRIPT_DIR/evaluate_logs.py" --storage-node-types "$METADATA") || exit 1
+    while read -r index type; do
+        NODE_TYPES[$index]=${type%$'\r'}
+    done <<< "$NODE_TYPE_LIST"
+fi
 
 # 0. Ensure db_exporter is built
 if [ ! -f "$DB_EXPORTER" ]; then
@@ -56,6 +72,16 @@ if [ -d "$EXP_DIR/data_v2" ]; then
     for node_dir in "$EXP_DIR/data_v2"/node-*; do
         [ -d "$node_dir" ] || continue
         node_name=$(basename "$node_dir")
+        if [ -f "$METADATA" ]; then
+            if [[ ! "$node_name" =~ ^node-([0-9]+)$ ]] || [ -z "${NODE_TYPES[${BASH_REMATCH[1]}]:-}" ]; then
+                echo "  Skipping $node_name: node type unavailable in metadata"
+                continue
+            fi
+            if [ "${NODE_TYPES[${BASH_REMATCH[1]}]}" = geth ]; then
+                echo "  Skipping $node_name: Geth storage is not a wasix_eth redb database"
+                continue
+            fi
+        fi
         # Path to EL database might vary, check common locations
         EL_DB=""
         if [ -f "$node_dir/el/linux-$node_name" ]; then
@@ -95,7 +121,13 @@ if [ ! -d "$LOGS_DIR" ]; then
 fi
 
 if [ -d "$LOGS_DIR" ]; then
-    sudo bash "$SCRIPT_DIR/evaluate.sh" "$LOGS_DIR" "$CHAIN_ID" | sudo tee "$EXP_DIR/analysis/log_evaluation.txt" > /dev/null
+    if [ -f "$METADATA" ]; then
+        set -o pipefail
+        sudo "$PYTHON" "$SCRIPT_DIR/evaluate_logs.py" "$LOGS_DIR" "$CHAIN_ID" "$METADATA" | sudo tee "$EXP_DIR/analysis/log_evaluation.txt" > /dev/null
+        set +o pipefail
+    else
+        sudo bash "$SCRIPT_DIR/evaluate.sh" "$LOGS_DIR" "$CHAIN_ID" | sudo tee "$EXP_DIR/analysis/log_evaluation.txt" > /dev/null
+    fi
     echo "  Log evaluation saved to $EXP_DIR/analysis/log_evaluation.txt"
 else
     echo "Warning: No logs found for evaluation."

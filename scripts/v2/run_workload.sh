@@ -17,6 +17,7 @@ NETWORK=""
 CONTENDER_IMAGE="docker.io/z4l3s5i0/contender:latest"
 STATE_DIR="$(pwd)/.contender_state"
 SKIP_FUNDING=false
+RUN_ID=""
 
 usage() {
     echo "Usage: $0 [options]"
@@ -35,6 +36,7 @@ usage() {
     echo "  --image NAME     Contender Docker image name (default: $CONTENDER_IMAGE)"
     echo "  --state-dir DIR  Directory to store contender state (default: $STATE_DIR)"
     echo "  --skip-funding   Skip funding accounts (passed to contender)"
+    echo "  --run-id ID      Label containers for this experiment"
     exit 1
 }
 
@@ -54,6 +56,7 @@ while [[ "$#" -gt 0 ]]; do
         --image) CONTENDER_IMAGE="$2"; shift ;;
         --state-dir) STATE_DIR="$2"; shift ;;
         --skip-funding) SKIP_FUNDING=true ;;
+        --run-id) RUN_ID="$2"; shift ;;
         *) usage ;;
     esac
     shift
@@ -94,6 +97,9 @@ fi
 
 EXTRA_ARGS=""
 DOCKER_OPTS="-i"
+if [ -n "$RUN_ID" ]; then
+    DOCKER_OPTS="$DOCKER_OPTS --rm --label wasix-evm.experiment=$RUN_ID"
+fi
 # Check for network
 if [ -n "$NETWORK" ]; then
     DOCKER_OPTS="$DOCKER_OPTS --network $NETWORK"

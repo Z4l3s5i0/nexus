@@ -9,6 +9,8 @@ WORKLOAD_DURATION=300 # Default workload duration in seconds
 WAIT_DURATION=1800 # Default wait duration after workload
 LINUX_NODES=5
 WASIX_NODES=5
+GETH_NODES=0
+METRICS_IMAGE=""
 WORKLOAD_PERCENT=""
 WORKLOAD_TYPE="exp/uber"
 SPAMMER_ACCOUNTS=4
@@ -22,6 +24,8 @@ usage() {
     echo "  --chain-id ID    Chain ID to use (default: $CHAIN_ID)"
     echo "  --linux-nodes N  Number of rustcompiled nodes (default: $LINUX_NODES)"
     echo "  --wasix-nodes N  Number of WASM-compiled nodes (default: $WASIX_NODES)"
+    echo "  --geth-nodes N   Number of Geth nodes (default: $GETH_NODES)"
+    echo "  --metrics-image IMAGE Use an existing metrics image instead of building locally"
     echo "  --workload-percent N Percent of nodes to receive workload (default: 100)"
     echo "  --workload-type TYPE Workload type/scenario (default: $WORKLOAD_TYPE)"
     echo "  --spammer-accounts N Number of accounts per spammer (default: $SPAMMER_ACCOUNTS)"
@@ -36,6 +40,8 @@ while [[ "$#" -gt 0 ]]; do
         --chain-id) CHAIN_ID="$2"; shift ;;
         --linux-nodes) LINUX_NODES="$2"; shift ;;
         --wasix-nodes) WASIX_NODES="$2"; shift ;;
+        --geth-nodes) GETH_NODES="$2"; shift ;;
+        --metrics-image) METRICS_IMAGE="$2"; shift ;;
         --workload-percent) WORKLOAD_PERCENT="$2"; shift ;;
         --workload-type) WORKLOAD_TYPE="$2"; shift ;;
         --spammer-accounts) SPAMMER_ACCOUNTS="$2"; shift ;;
@@ -46,53 +52,39 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NODES=$((LINUX_NODES + WASIX_NODES))
+source "$SCRIPT_DIR/common.sh"
 
 # If WORKLOAD_PERCENT is not set, default to 100
 if [ -z "$WORKLOAD_PERCENT" ]; then
     WORKLOAD_PERCENT=100
 fi
 
-# Calculate absolute number of nodes for workload
-WORKLOAD_NODES=$((NODES * WORKLOAD_PERCENT / 100))
-# Ensure at least 1 node if percent > 0
-if [ "$WORKLOAD_NODES" -eq 0 ] && [ "$WORKLOAD_PERCENT" -gt 0 ]; then
-    WORKLOAD_NODES=1
-fi
-
-# Ensure WORKLOAD_NODES does not exceed NODES
-if [ "$WORKLOAD_NODES" -gt "$NODES" ]; then
-    echo "Warning: workload-nodes ($WORKLOAD_NODES) cannot be greater than nodes ($NODES). Setting workload-nodes to $NODES."
-    WORKLOAD_NODES=$NODES
-fi
-
-# Calculate how many nodes of each type should get the workload
-# In start_local.sh, the first LINUX_NODES nodes are linux, and the rest are wasix.
-c_linux=$LINUX_NODES
-c_wasix=$WASIX_NODES
-
-# We want to distribute WORKLOAD_NODES according to the same ratio of LINUX vs WASIX
-if [ "$NODES" -gt 0 ]; then
-    w_linux=$((WORKLOAD_NODES * c_linux / NODES))
-else
-    w_linux=0
-fi
-w_wasix=$((WORKLOAD_NODES - w_linux))
-
-# Adjust in case we don't have enough nodes of a certain type
-if [ "$w_linux" -gt "$c_linux" ]; then w_linux=$c_linux; fi
-if [ "$w_wasix" -gt "$c_wasix" ]; then w_wasix=$c_wasix; fi
+# Validate counts and allocate targets with largest-remainder rounding.
+ALLOCATION=$(python3 "$SCRIPT_DIR/workload_allocation.py" "$LINUX_NODES" "$GETH_NODES" "$WASIX_NODES" "$WORKLOAD_PERCENT")
+read -r NODES WORKLOAD_NODES w_linux w_geth w_wasix <<< "$ALLOCATION"
+c_linux=$((10#$LINUX_NODES))
+c_geth=$((10#$GETH_NODES))
+c_wasix=$((10#$WASIX_NODES))
 
 echo "=== Starting Experiment Workflow ==="
 echo "Chain ID: $CHAIN_ID"
 echo "Workload Duration: $WORKLOAD_DURATION seconds"
 echo "Wait Duration: $WAIT_DURATION seconds"
-echo "Nodes: $NODES (Linux: $c_linux, WASM: $c_wasix)"
-echo "Workload Nodes: $WORKLOAD_NODES (Linux: $w_linux, WASM: $w_wasix)"
+echo "Nodes: $NODES (Linux: $c_linux, Geth: $c_geth, WASM: $c_wasix)"
+echo "Workload Nodes: $WORKLOAD_NODES (Linux: $w_linux, Geth: $w_geth, WASM: $w_wasix)"
 
 # 1. Start the local network
 echo "Step 1: Starting local network..."
-bash "$SCRIPT_DIR/start_local.sh" --chain-id "$CHAIN_ID" --linux-nodes "$c_linux" --wasix-nodes "$c_wasix" --setup --cleanup --registry docker.io/z4l3s5i0
+START_OPTIONS=(--chain-id "$CHAIN_ID" --linux-nodes "$c_linux" --geth-nodes "$c_geth" --wasix-nodes "$c_wasix" --setup --cleanup --registry docker.io/z4l3s5i0)
+if [ -n "$METRICS_IMAGE" ]; then START_OPTIONS+=(--metrics-image "$METRICS_IMAGE"); fi
+bash "$SCRIPT_DIR/start_local.sh" "${START_OPTIONS[@]}"
+COMPOSE_CMD=$(get_compose_cmd)
+FIRST_EL=$($COMPOSE_CMD -f docker-compose.v2.yml ps -q el-node-0)
+NETWORK_NAME=$(docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' "$FIRST_EL")
+if [ -z "$NETWORK_NAME" ]; then
+    echo "Error: could not determine the experiment execution network." >&2
+    exit 1
+fi
 
 # 2. Start manage_logs
 echo "Step 2: Starting background log processor..."
@@ -103,30 +95,28 @@ echo "Step 3: Waiting 60 seconds for network stabilization..."
 sleep 60
 
 # 4. Start run_workload for each node in background
-echo "Step 4: Starting workload for $WORKLOAD_NODES node(s) in background ($w_linux Linux, $w_wasix WASM)..."
+echo "Step 4: Starting workload for $WORKLOAD_NODES node(s) in background ($w_linux Linux, $w_geth Geth, $w_wasix WASM)..."
 MNEMONIC="sleep moment list remain like wall lake industry canvas wonder ecology elite duck salad naive syrup frame brass utility club odor country obey pudding"
 WORKLOAD_PIDS=()
 BASE_PORT=8545
+RUN_ID="${CHAIN_ID}-$(date +%s)-$$"
 
 # Target indices
 TARGET_INDICES=()
-# Linux nodes are 0 to c_linux-1
-for i in $(seq 0 $((w_linux - 1))); do
-    if [ $i -lt $c_linux ]; then
-        TARGET_INDICES+=($i)
-    fi
+# Node indices follow native, Geth, WASIX order.
+for ((i = 0; i < w_linux; i++)); do
+    TARGET_INDICES+=("$i")
 done
-# WASM nodes are c_linux to NODES-1
-for i in $(seq 0 $((w_wasix - 1))); do
-    idx=$((c_linux + i))
-    if [ $idx -lt $NODES ]; then
-        TARGET_INDICES+=($idx)
-    fi
+for ((i = 0; i < w_geth; i++)); do
+    TARGET_INDICES+=("$((c_linux + i))")
+done
+for ((i = 0; i < w_wasix; i++)); do
+    TARGET_INDICES+=("$((c_linux + c_geth + i))")
 done
 
 for i in "${TARGET_INDICES[@]}"; do
     RPC_PORT=$((BASE_PORT + i))
-    RPC_URL="http://experiments-el-node-$i-1:$RPC_PORT"
+    RPC_URL="http://el-node-$i:$RPC_PORT"
     
     # Deriving private key for the account index i
     echo "Deriving private key for node $i..."
@@ -150,10 +140,11 @@ for i in "${TARGET_INDICES[@]}"; do
         --pk "$PRIV_KEY" \
         --seed "$SEED" \
         --duration $((WORKLOAD_DURATION)) \
-        --network experiments_blockchain-net \
+        --network "$NETWORK_NAME" \
         --scenario "$WORKLOAD_TYPE" \
         --tps "$TPS" \
         --accounts "$SPAMMER_ACCOUNTS" \
+        --run-id "$RUN_ID" \
         --min-balance "100eth" \
         --rpc "$RPC_URL" < /dev/null &
     WORKLOAD_PIDS+=($!)
@@ -175,8 +166,8 @@ for PID in "${WORKLOAD_PIDS[@]}"; do
     fi
 done
 
-# Also stop all contender containers
-CONTENDER_CONTAINERS=$(docker ps --filter "ancestor=z4l3s5i0/contender" --format "{{.ID}}")
+# Only stop contender containers started for this experiment.
+CONTENDER_CONTAINERS=$(docker ps --filter "label=wasix-evm.experiment=$RUN_ID" --format "{{.ID}}")
 if [ -n "$CONTENDER_CONTAINERS" ]; then
     echo "Stopping contender containers..."
     docker stop $CONTENDER_CONTAINERS || true
@@ -195,6 +186,12 @@ sleep 5
 
 # 9. Collect results with sudo
 echo "Step 9: Collecting experiment results..."
+TARGETS_CSV=$(IFS=,; echo "${TARGET_INDICES[*]}")
+python3 "$SCRIPT_DIR/write_experiment_metadata.py" \
+    --chain-id "$CHAIN_ID" --linux "$c_linux" --geth "$c_geth" --wasix "$c_wasix" \
+    --scenario "$WORKLOAD_TYPE" --duration "$WORKLOAD_DURATION" --wait-duration "$WAIT_DURATION" \
+    --tps "$TPS" --accounts "$SPAMMER_ACCOUNTS" --percent "$WORKLOAD_PERCENT" \
+    --targets "$TARGETS_CSV" --output data_v2/experiment_metadata.json
 COLLECT_OUTPUT=$(sudo bash "$SCRIPT_DIR/collect_results.sh")
 echo "$COLLECT_OUTPUT"
 EXP_DIR_PATH=$(echo "$COLLECT_OUTPUT" | grep "RESULT_DIR=" | cut -d'=' -f2)

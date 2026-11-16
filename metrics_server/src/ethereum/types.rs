@@ -27,10 +27,24 @@ pub fn parse_hex_f64(value: &Value) -> Result<f64> {
     }
 }
 
-pub fn syncing_to_numeric(value: &Value) -> f64 {
+pub fn syncing_to_numeric(value: &Value) -> Result<f64> {
     match value {
-        Value::Bool(b) => if *b { 1.0 } else { 0.0 },
-        Value::Object(_) => 1.0,
-        _ => 0.0,
+        Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
+        Value::Object(_) => Ok(1.0),
+        _ => Err(anyhow!("unexpected eth_syncing result: {:?}", value)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn syncing_results_do_not_treat_missing_data_as_synced() {
+        assert_eq!(syncing_to_numeric(&json!(false)).unwrap(), 0.0);
+        assert_eq!(syncing_to_numeric(&json!(true)).unwrap(), 1.0);
+        assert_eq!(syncing_to_numeric(&json!({"currentBlock": "0x1"})).unwrap(), 1.0);
+        assert!(syncing_to_numeric(&json!(null)).is_err());
     }
 }

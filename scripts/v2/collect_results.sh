@@ -4,17 +4,61 @@ set -e
 # Experiment Result Collection Script
 # Moves all relevant logs, databases, and state files into a single folder for analysis.
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/common.sh"
+COMPOSE_FILE="docker-compose.v2.yml"
+if [ ! -f "$COMPOSE_FILE" ]; then
+    echo "Error: $COMPOSE_FILE is required to stop the metrics writer safely." >&2
+    exit 1
+fi
+COMPOSE_CMD=$(get_compose_cmd)
 EXP_DIR="experiments/exp_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$EXP_DIR"
 
 echo "Collecting experiment results into $EXP_DIR..."
 
+# Capture registry and the exact Geth exposition while the services are running.
+if [ -f data_v2/experiment_metadata.json ]; then
+    cp data_v2/experiment_metadata.json "$EXP_DIR/metadata.json"
+    while read -r index port; do
+        [ -n "$index" ] || continue
+        if ! $COMPOSE_CMD -f "$COMPOSE_FILE" exec -T metrics-server \
+            curl -fsS --max-time 10 "http://el-node-$index:$port/debug/metrics/prometheus" \
+            > "$EXP_DIR/geth-metrics-node-$index.prom"; then
+            rm -f "$EXP_DIR/geth-metrics-node-$index.prom"
+            echo "Warning: Geth node $index metric inventory is unavailable." >&2
+        fi
+    done < <(python3 -c 'import json; d=json.load(open("data_v2/experiment_metadata.json")); [print(n["index"], 9050+n["index"]) for n in d["nodes"] if n["type"] == "geth"]')
+fi
+curl -fsS --max-time 5 http://127.0.0.1:9100/api/nodes > "$EXP_DIR/registry-nodes.json" || rm -f "$EXP_DIR/registry-nodes.json"
+cp "$SCRIPT_DIR/GETH_METRICS.md" "$EXP_DIR/GETH_METRICS.md"
+
+# A stopped writer is required for a consistent redb copy. Stop Prometheus as
+# well before copying its volume; resolve the volume from this exact container.
+PROM_CONTAINER=$($COMPOSE_CMD -f "$COMPOSE_FILE" ps -q prometheus)
+METRICS_CONTAINER=$($COMPOSE_CMD -f "$COMPOSE_FILE" ps -q metrics-server)
+if [ -z "$METRICS_CONTAINER" ]; then
+    echo "Error: metrics-server container is not running; cannot confirm a clean snapshot." >&2
+    exit 1
+fi
+PROM_VOLUME=""
+if [ -n "$PROM_CONTAINER" ]; then
+    PROM_VOLUME=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/prometheus"}}{{.Name}}{{end}}{{end}}' "$PROM_CONTAINER")
+fi
+$COMPOSE_CMD -f "$COMPOSE_FILE" stop metrics-server prometheus
+METRICS_EXIT=$(docker inspect --format '{{.State.ExitCode}}' "$METRICS_CONTAINER")
+if [ "$METRICS_EXIT" != 0 ]; then
+    echo "Error: metrics-server exited with code $METRICS_EXIT; refusing to archive an unconfirmed database snapshot." >&2
+    exit 1
+fi
+
 # 1. Metrics Server Database
-if [ -d "metrics_server/data" ]; then
+if [ -f "data_v2/metrics-server/metrics.redb" ]; then
     echo "Copying metrics_server database..."
-    cp -r "metrics_server/data" "$EXP_DIR/metrics_server_data"
+    cp -a "data_v2/metrics-server" "$EXP_DIR/metrics_server_data"
 else
-    echo "Warning: metrics_server/data not found."
+    echo "Error: metrics database data_v2/metrics-server/metrics.redb not found after stopping the writer." >&2
+    exit 1
 fi
 
 # 2. Logs Dump
@@ -62,32 +106,11 @@ if [ -f "docker-compose.v2.yml" ]; then
 fi
 
 # 7. Prometheus Database
-# Since Prometheus data is usually in a volume, we try to copy it out using a temporary container
-COMPOSE_FILE="docker-compose.v2.yml"
-if [ -f "$COMPOSE_FILE" ]; then
-    echo "Attempting to extract Prometheus database from volume..."
-    # Determine the volume name (standard is <project>_prometheus-data)
-    # We can try to get it from docker-compose if possible, or assume a pattern
-    PROJECT_NAME=$(basename "$(pwd)" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')
-    VOLUME_NAME="${PROJECT_NAME}_prometheus-data"
-    
-    # Check if volume exists
-    if docker volume inspect "$VOLUME_NAME" >/dev/null 2>&1; then
-        echo "Extracting volume $VOLUME_NAME..."
-        docker run --rm -v "$VOLUME_NAME:/from" -v "$(pwd)/$EXP_DIR:/to" alpine tar -cz -C /from . | tar -xz -C "$EXP_DIR/prometheus_data" 2>/dev/null || \
-        mkdir -p "$EXP_DIR/prometheus_data" && docker run --rm -v "$VOLUME_NAME:/from" -v "$(pwd)/$EXP_DIR/prometheus_data:/to" alpine cp -a /from/. /to/
-    else
-        echo "Warning: Prometheus volume $VOLUME_NAME not found. Trying default names..."
-        # Fallback to some common names
-        for vol in "prometheus-data" "v2_prometheus-data"; do
-            if docker volume inspect "$vol" >/dev/null 2>&1; then
-                echo "Extracting volume $vol..."
-                mkdir -p "$EXP_DIR/prometheus_data"
-                docker run --rm -v "$vol:/from" -v "$(pwd)/$EXP_DIR/prometheus_data:/to" alpine cp -a /from/. /to/
-                break
-            fi
-        done
-    fi
+if [ -n "$PROM_VOLUME" ]; then
+    mkdir -p "$EXP_DIR/prometheus_data"
+    docker run --rm -v "$PROM_VOLUME:/from:ro" -v "$(pwd)/$EXP_DIR/prometheus_data:/to" alpine cp -a /from/. /to/
+else
+    echo "Warning: no Prometheus volume found for this Compose project."
 fi
 
 # 8. Aggregate Logs
@@ -103,7 +126,9 @@ cat <<EOF > "$EXP_DIR/README_ANALYSIS.md"
 This folder contains all data collected from the experiment run.
 
 ## Data Structure
-- \`metrics_server_data/\`: Raw redb database from metrics-server.
+- \`metadata.json\`: Runtime/client mapping, node IDs, images and workload parameters.
+- \`geth-metrics-node-*.prom\`: Observed Geth metric exposition, where available.
+- \`metrics_server_data/\`: redb database copied after stopping metrics-server.
 - \`logs_dump/\`: Split log files.
 - \`aggregated_logs/\`: Consolidated log files per service.
 - \`data_v2/\`: Node-specific execution and consensus data.
@@ -126,8 +151,9 @@ cd ../../scripts/v2/db_exporter && cargo build --release && cd -
 Tables included: \`experiments\`, \`nodes\`, \`metric_samples\`, \`rpc_observations\`.
 
 ### 3. Node Execution Data (redb)
-Each node's execution data is in \`data_v2/node-i/el/eth.redb\`. 
-It follows the schema defined in \`wasix_eth_storage/src/tables.rs\`.
+For native and WASIX nodes, execution data may be in \`data_v2/node-i/el/eth.redb\`.
+Geth uses a different storage layout; do not apply the wasix_eth schema to it.
+Node state is copied while execution clients are running and is not a guaranteed consistent snapshot.
 You can use the \`wasix_eth_storage\` crate as a library to read this data programmatically.
 
 ### 4. Prometheus Data

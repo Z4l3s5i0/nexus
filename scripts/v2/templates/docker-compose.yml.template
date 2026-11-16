@@ -6,12 +6,14 @@ services:
   # Metrics Server
   metrics-server:
     image: ${METRICS_IMAGE:-wasix-eth-metrics:latest}
+    stop_signal: SIGINT
+    stop_grace_period: 2m
     # Fallback to build if image not found or requested
     ${METRICS_BUILD_SECTION:-# No build section}
     ports:
       - "9100:9100"
     volumes:
-      - ./metrics_server/data:/app/data
+      - ./data_v2/metrics-server:/app/data
     networks:
       - blockchain-net
     healthcheck:

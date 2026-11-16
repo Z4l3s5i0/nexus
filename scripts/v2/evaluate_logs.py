@@ -5,6 +5,24 @@ import json
 from collections import defaultdict
 from datetime import datetime
 
+def load_metadata(path):
+    try:
+        with open(path, encoding='utf-8') as f:
+            metadata = json.load(f)
+        nodes = metadata['nodes']
+        if not isinstance(nodes, list) or not nodes:
+            raise ValueError('nodes must be a non-empty array')
+        result = {}
+        for node in nodes:
+            index = node['index']
+            if (type(index) is not int or index < 0 or index in result or
+                    node['type'] not in ('native', 'geth', 'wasix')):
+                raise ValueError('invalid or duplicate node index/type')
+            result[index] = node
+        return result
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise ValueError(f'Invalid metadata {path}: {exc}') from exc
+
 def parse_log_line(line):
     # Regex to match: [EXP] EVENT_NAME key1=value1 key2=value2 ...
     # Note: Some values might be in quotes like hash="0x..."
@@ -29,7 +47,7 @@ def parse_log_line(line):
         
     return event_name, kv_pairs
 
-def process_logs(log_dir, target_chain_id=None):
+def process_logs(log_dir, target_chain_id=None, nodes=None):
     tx_recv_times = defaultdict(dict)  # tx_hash -> {peer_id: timestamp}
     tx_exec_times = {}                 # tx_hash -> timestamp
     block_recv_times = defaultdict(dict) # block_hash -> {peer_id: timestamp}
@@ -47,6 +65,8 @@ def process_logs(log_dir, target_chain_id=None):
         'total_tx_exec_ms': 0,
         'total_block_exec_ms': 0
     })
+    measurements = defaultdict(lambda: defaultdict(int))
+    unknown_nodes = set()
 
     # Sort files to process them in chronological order per node
     all_files = sorted([f for f in os.listdir(log_dir) if f.endswith('.log')])
@@ -63,6 +83,17 @@ def process_logs(log_dir, target_chain_id=None):
         
         if target_chain_id and file_chain_id != target_chain_id:
             continue
+
+        if nodes is not None:
+            match = re.fullmatch(r'el-node-(\d+)', node_id)
+            if not match:
+                continue
+            index = int(match.group(1))
+            if index not in nodes:
+                unknown_nodes.add(node_id)
+                continue
+            if nodes[index]['type'] == 'geth':
+                continue
             
         files_to_process.append((filename, node_id))
     
@@ -84,6 +115,22 @@ def process_logs(log_dir, target_chain_id=None):
                     continue
                 
                 event, data = parsed
+                if nodes is not None:
+                    event_fields = {
+                        'P2P_RECV_TX': 'tx_received', 'TX_RPC_RECV': 'tx_received',
+                        'P2P_SEND_TX': 'tx_sent', 'P2P_RECV_BLOCK': 'blocks_received',
+                        'P2P_SEND_BLOCK': 'blocks_sent', 'BLOCK_EXEC_END': 'blocks_executed',
+                        'TX_EXEC_START': 'tx_executed',
+                    }
+                    if event in event_fields:
+                        measurements[node_id][event_fields[event]] += 1
+                    for field, event_name, key in (
+                        ('total_gas', 'TX_EXEC_END', 'gas_used'),
+                        ('total_tx_exec_ms', 'TX_EXEC_END', 'elapsed_ms'),
+                        ('total_block_exec_ms', 'BLOCK_EXEC_END', 'elapsed_ms'),
+                    ):
+                        if event == event_name and key in data:
+                            measurements[node_id][field] += 1
                 
                 if event in ['P2P_RECV_TX', 'TX_RPC_RECV']:
                     tx_hash = data.get('hash')
@@ -142,7 +189,10 @@ def process_logs(log_dir, target_chain_id=None):
         'tx_recv_times': tx_recv_times,
         'tx_exec_times': tx_exec_times,
         'block_recv_times': block_recv_times,
-        'block_exec_times': block_exec_times
+        'block_exec_times': block_exec_times,
+        'measurements': measurements,
+        'unknown_nodes': sorted(unknown_nodes),
+        'metadata_nodes': nodes,
     }
 
 def calculate_metrics(data):
@@ -220,10 +270,52 @@ def calculate_metrics(data):
         },
         'node_breakdown': {node: stats for node, stats in data['node_stats'].items()}
     }
+
+    if data['metadata_nodes'] is not None:
+        measurements = data['measurements']
+        for section in ('inclusion_latency', 'propagation_latency'):
+            if not results[section]['count']:
+                for key in ('avg', 'min', 'max'):
+                    if key in results[section]:
+                        results[section][key] = None
+        for result_key, field in (('avg_tx_exec_ms', 'total_tx_exec_ms'),
+                                  ('avg_block_exec_ms', 'total_block_exec_ms')):
+            count = sum(m[field] for m in measurements.values())
+            total = sum(s[field] for s in data['node_stats'].values())
+            results['execution_times'][result_key] = total / count if count else None
+        for key, field in (('transactions_executed', 'tx_executed'),
+                           ('blocks_executed', 'blocks_executed'),
+                           ('total_tx_exec_ms', 'total_tx_exec_ms'),
+                           ('total_block_exec_ms', 'total_block_exec_ms')):
+            if not any(m[field] for m in measurements.values()):
+                results['total_stats'][key] = None
+        for node, stats in results['node_breakdown'].items():
+            for field in stats:
+                if not measurements[node][field]:
+                    stats[field] = None
+        results['coverage'] = {
+            'status': 'partial',
+            'note': 'Only observed wasix_eth EXP events are included; counts and gas per block are partial and log latencies are approximate (file order and execution fallback).',
+            'nodes': {f'el-node-{index}': {
+                'type': node['type'],
+                'status': ('unavailable: Geth EXP events are not supported' if node['type'] == 'geth'
+                           else 'available: observed EXP events' if f'el-node-{index}' in data['node_stats']
+                           else 'unavailable: no EXP events observed')
+            } for index, node in data['metadata_nodes'].items()},
+            'unknown_nodes': data['unknown_nodes'],
+        }
     
     return results
 
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == '--storage-node-types':
+        try:
+            for index, node in sorted(load_metadata(sys.argv[2]).items()):
+                print(index, node['type'])
+        except ValueError as exc:
+            print(exc, file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
     if len(sys.argv) < 2:
         print("Usage: python evaluate_logs.py <log_dir> [chain_id]")
         sys.exit(1)
@@ -234,48 +326,69 @@ if __name__ == "__main__":
         sys.exit(1)
         
     target_chain_id = sys.argv[2] if len(sys.argv) > 2 else None
+    metadata_path = sys.argv[3] if len(sys.argv) > 3 else os.path.join(os.path.dirname(os.path.abspath(log_dir)), 'metadata.json')
+    try:
+        nodes = load_metadata(metadata_path) if len(sys.argv) > 3 or os.path.exists(metadata_path) else None
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        sys.exit(1)
     
     if target_chain_id:
         print(f"Processing logs in {log_dir} for chain_id {target_chain_id}...")
     else:
         print(f"Processing all logs in {log_dir}...")
         
-    data = process_logs(log_dir, target_chain_id)
+    data = process_logs(log_dir, target_chain_id, nodes)
     metrics = calculate_metrics(data)
+
+    if nodes is not None:
+        print('\nCoverage: partial; only observed wasix_eth EXP events. Counts and gas per block are partial; latencies are approximate.')
+        for node, coverage in metrics['coverage']['nodes'].items():
+            print(f"  {node} ({coverage['type']}): {coverage['status']}")
+        for node in data['unknown_nodes']:
+            print(f'  {node}: unavailable (not present in metadata)')
+
+    def format_value(value, precision=3, suffix=''):
+        return 'unavailable' if value is None else f'{value:.{precision}f}{suffix}'
     
     print("\n=== Experiment Metrics ===")
-    print(f"Total Transactions Executed: {metrics['total_stats']['transactions_executed']}")
-    print(f"Total Blocks Executed: {metrics['total_stats']['blocks_executed']}")
+    def count_value(value):
+        return 'unavailable' if value is None else str(value)
+
+    print(f"Total Transactions Executed: {count_value(metrics['total_stats']['transactions_executed'])}")
+    print(f"Total Blocks Executed: {count_value(metrics['total_stats']['blocks_executed'])}")
     
     ex = metrics['execution_times']
     print(f"\nAverage Execution Times:")
-    print(f"  Avg Transaction Execution: {ex['avg_tx_exec_ms']:.3f}ms")
-    print(f"  Avg Block Execution:       {ex['avg_block_exec_ms']:.3f}ms")
+    print(f"  Avg Transaction Execution: {format_value(ex['avg_tx_exec_ms'], suffix='ms')}")
+    print(f"  Avg Block Execution:       {format_value(ex['avg_block_exec_ms'], suffix='ms')}")
     
     il = metrics['inclusion_latency']
     print(f"\nInclusion Latency (Time from P2P recv to EVM exec):")
-    print(f"  Avg: {il['avg']:.3f}s")
-    print(f"  Min: {il['min']:.3f}s")
-    print(f"  Max: {il['max']:.3f}s")
+    print(f"  Avg: {format_value(il['avg'], suffix='s')}")
+    print(f"  Min: {format_value(il['min'], suffix='s')}")
+    print(f"  Max: {format_value(il['max'], suffix='s')}")
     print(f"  Count: {il['count']}")
     
     pl = metrics['propagation_latency']
     print(f"\nBlock Propagation Latency (Time from first node recv to other nodes recv):")
-    print(f"  Avg: {pl['avg']:.3f}s")
-    print(f"  Max: {pl['max']:.3f}s")
+    print(f"  Avg: {format_value(pl['avg'], suffix='s')}")
+    print(f"  Max: {format_value(pl['max'], suffix='s')}")
     
     print("\nNode Breakdown:")
     for node, stats in metrics['node_breakdown'].items():
         print(f"  {node}:")
-        print(f"    TX Recv/Sent: {stats['tx_received']}/{stats['tx_sent']}")
-        print(f"    Blocks Executed: {stats['blocks_executed']}")
-        if stats['blocks_executed'] > 0:
+        print(f"    TX Recv/Sent: {count_value(stats['tx_received'])}/{count_value(stats['tx_sent'])}")
+        print(f"    Blocks Executed: {count_value(stats['blocks_executed'])}")
+        if stats['blocks_executed'] and stats['total_gas'] is not None and stats['total_block_exec_ms'] is not None:
             avg_gas = stats['total_gas'] / stats['blocks_executed']
-            avg_block_ms = stats['total_block_exec_ms'] / stats['blocks_executed']
-            print(f"    Avg Gas/Block: {avg_gas:.0f}")
+            block_count = data['measurements'][node]['total_block_exec_ms'] if nodes is not None else stats['blocks_executed']
+            avg_block_ms = stats['total_block_exec_ms'] / block_count
+            print(f"    Avg Gas/Block{' (partial)' if nodes is not None else ''}: {avg_gas:.0f}")
             print(f"    Avg Block Exec: {avg_block_ms:.2f}ms")
-        if stats['tx_executed'] > 0:
-            avg_tx_ms = stats['total_tx_exec_ms'] / stats['tx_executed']
+        if stats['tx_executed'] and stats['total_tx_exec_ms'] is not None:
+            tx_count = data['measurements'][node]['total_tx_exec_ms'] if nodes is not None else stats['tx_executed']
+            avg_tx_ms = stats['total_tx_exec_ms'] / tx_count
             print(f"    Avg TX Exec: {avg_tx_ms:.2f}ms")
         
     print("\n--- Time Series Data ---")
