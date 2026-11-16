@@ -532,6 +532,7 @@ impl AppBuilder {
             slot_duration_ms: args.common.slot_duration * 1000,
             initial_wait_ms: (args.common.slot_duration * 1000 * 20) / 100,
             grace_period_ms: 200,
+            ..Default::default()
         };
 
         // Initialize Node without genesis - this will fail if genesis hasn't been initialized
@@ -573,6 +574,7 @@ impl AppBuilder {
             slot_duration_ms: args.common.slot_duration * 1000,
             initial_wait_ms: (args.common.slot_duration * 1000 * 20) / 100,
             grace_period_ms: 200,
+            ..Default::default()
         };
 
         // Initialize Node (Coordinator)

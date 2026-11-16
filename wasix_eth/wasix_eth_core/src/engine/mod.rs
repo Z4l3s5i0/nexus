@@ -7,3 +7,4 @@ pub mod forkchoice_validator;
 pub mod canonicality_tracker;
 pub mod sidechain_tracker;
 pub mod reorg_manager;
+pub mod state_tip;

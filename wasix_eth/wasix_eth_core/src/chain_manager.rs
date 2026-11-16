@@ -404,8 +404,8 @@ impl ChainManager for ChainManagerImpl {
         false
     }
 
-    async fn revert_to_height(&self, height: u64) -> wasix_eth_types::Result<()> {
-        self.reorg_handler.revert_to_height(height).await
+    async fn revert_to_height(&self, from_height: u64, to_height: u64) -> wasix_eth_types::Result<()> {
+        self.reorg_handler.revert_to_height(from_height, to_height).await
     }
 
     async fn resolve_reorg(&self, old_head: B256, new_head: B256) -> wasix_eth_types::Result<ReorgContext> {

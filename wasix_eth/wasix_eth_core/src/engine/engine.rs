@@ -14,7 +14,7 @@ use alloy_rpc_types::RpcBlockHash;
 use tokio::sync::broadcast;
 use wasix_eth_execution::execution_provider::ExecutionProvider;
 use wasix_eth_storage::read::DatabaseReadProvider;
-use wasix_eth_storage::read_traits::{BlockProvider, ChainProvider, HeaderProvider, StateBranchProvider};
+use wasix_eth_storage::read_traits::{BlockProvider, ChainProvider, HeaderProvider};
 use wasix_eth_storage::write::DatabaseWriteProvider;
 use wasix_eth_types::eip6110_utils::encode_deposit_request;
 use wasix_eth_types::error::{RpcError, RpcResult};
@@ -51,6 +51,7 @@ use wasix_eth_utils::{debug, error, info};
 use crate::engine::api::RPCEngine;
 use crate::engine::forkchoice_validator::ForkchoiceValidator;
 use crate::engine::import_gate::ImportGate;
+use crate::engine::state_tip::StateTip;
 use crate::mempool::listener::MempoolListener;
 
 #[derive(Clone, Debug)]
@@ -63,6 +64,74 @@ pub enum EngineEvent {
         tx: Transaction,
         is_local: bool,
     },
+}
+
+#[cfg(test)]
+mod fork_switch_tests {
+    use super::{classify_switch, ForkSwitchMode};
+
+    #[test]
+    fn short_extension_is_synchronous() {
+        assert_eq!(classify_switch(6, 6, false, 1), ForkSwitchMode::Synchronous);
+        assert_eq!(classify_switch(1, 1, false, 1), ForkSwitchMode::Synchronous);
+    }
+
+    #[test]
+    fn one_block_sibling_switch_is_synchronous() {
+        assert_eq!(classify_switch(7, 6, true, 1), ForkSwitchMode::Synchronous);
+    }
+
+    #[test]
+    fn moderate_reorg_is_synchronous() {
+        assert_eq!(classify_switch(10, 5, true, 4), ForkSwitchMode::Synchronous);
+        assert_eq!(classify_switch(20, 10, true, 10), ForkSwitchMode::Synchronous);
+    }
+
+    #[test]
+    fn canonical_only_switch_is_synchronous() {
+        assert_eq!(classify_switch(30, 30, false, 0), ForkSwitchMode::Synchronous);
+        assert_eq!(classify_switch(30, 0, false, 0), ForkSwitchMode::Synchronous);
+    }
+
+    #[test]
+    fn deep_switch_runs_in_background() {
+        assert_eq!(classify_switch(100, 10, true, 1), ForkSwitchMode::Background);
+        assert_eq!(classify_switch(10, 10, false, 65), ForkSwitchMode::Background);
+        assert_eq!(classify_switch(40, 10, true, 40), ForkSwitchMode::Background);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ForkSwitchMode {
+    Synchronous,
+    Background,
+}
+
+/// Maximum number of state operations (reverted plus re-executed blocks) that a
+/// fork switch may perform synchronously inside a forkchoiceUpdated call.
+const MAX_SYNCHRONOUS_SWITCH_BLOCKS: u64 = 64;
+
+/// Decides whether a fork switch runs synchronously. Only the state work counts:
+/// blocks reverted from the state tip plus blocks re-executed on top of the
+/// common ancestor. Marking blocks canonical is cheap and never forces the
+/// background path.
+fn classify_switch(
+    tip_number: u64,
+    ancestor_number: u64,
+    is_reorg: bool,
+    blocks_to_execute: usize,
+) -> ForkSwitchMode {
+    let reverted_blocks = if is_reorg {
+        tip_number.saturating_sub(ancestor_number)
+    } else {
+        0
+    };
+
+    if reverted_blocks.saturating_add(blocks_to_execute as u64) <= MAX_SYNCHRONOUS_SWITCH_BLOCKS {
+        ForkSwitchMode::Synchronous
+    } else {
+        ForkSwitchMode::Background
+    }
 }
 
 #[derive(Clone)]
@@ -84,6 +153,7 @@ pub struct Engine {
     pub sync_registry: Arc<SyncRegistry>,
     pub reorg_handler: Arc<ReorgHandler>,
     pub import_gate: Arc<ImportGate>,
+    pub state_tip: Arc<StateTip>,
 }
 
 
@@ -157,6 +227,13 @@ impl Engine {
         let processing_payloads = Arc::new(DashSet::new());
         let in_flight_results = Arc::new(DashMap::new());
         let import_gate = Arc::new(ImportGate::default());
+        let state_tip_hash = read_storage.forkchoice("head").ok().flatten().unwrap_or(B256::ZERO);
+        let state_tip_number = if state_tip_hash == B256::ZERO {
+            0
+        } else {
+            read_storage.block_number(state_tip_hash).ok().flatten().unwrap_or(0)
+        };
+        let state_tip = Arc::new(StateTip::new(state_tip_hash, state_tip_number));
 
         let engine = Self {
             read_storage: read_storage.clone(),
@@ -181,6 +258,8 @@ impl Engine {
                 in_flight_interruptions: Arc::new(DashSet::new()),
                 build_statuses: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
                 payload_slots: Arc::new(DashMap::new()),
+                payload_budget_end: Arc::new(DashMap::new()),
+                in_flight_tx_counts: Arc::new(DashMap::new()),
                 last_built_generation: Arc::new(DashMap::new()),
                 import_gate: import_gate.clone(),
                 build_notify: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
@@ -200,6 +279,7 @@ impl Engine {
                 sync_registry: sync_registry.clone(),
                 event_tx: event_tx.clone(),
                 import_gate: import_gate.clone(),
+                state_tip: state_tip.clone(),
             },
             rpc_engine,
             forkchoice_validator,
@@ -207,6 +287,7 @@ impl Engine {
             sync_registry,
             reorg_handler,
             import_gate,
+            state_tip,
         };
 
         engine
@@ -505,7 +586,6 @@ impl Engine {
         }
 
         // Now that head is known (and valid/syncing is handled by status below), validate safe and finalized
-        let mut head_number = 0;
         if forkchoice_state.head_block_hash != B256::ZERO {
             // Check if head block actually exists in our storage or payload map before checking ancestry.
             let head_header = self.read_storage.header(BlockId::Hash(RpcBlockHash::from(forkchoice_state.head_block_hash))).ok().flatten()
@@ -521,7 +601,6 @@ impl Engine {
                 });
             
             if let Some(header) = head_header {
-                head_number = header.number;
                 debug!("[Engine] Validating ancestry for head block #{}", header.number);
                 if let Some(value) = self.forkchoice_validator.check_safe_block(forkchoice_state, &header).await {
                     return value;
@@ -544,19 +623,11 @@ impl Engine {
         if forkchoice_state.head_block_hash != old_state.head_block_hash {
             self.payload_processor.abort_execution(old_state.head_block_hash);
         }
-        // Update forkchoice in storage
-        if head_number == 0 && forkchoice_state.head_block_hash != B256::ZERO {
-             head_number = self.read_storage.block_number(forkchoice_state.head_block_hash).ok().flatten().unwrap_or(0);
-        }
-
-        let _ = self.canonical.update_state(forkchoice_state, head_number).await;
 
         // 1. We already determined head_status above
         let status = head_status.clone();
 
         if status.status != PayloadStatusEnum::Valid && status.status != PayloadStatusEnum::Syncing {
-             // Rollback forkchoice in storage if the new head is explicitly invalid
-             let _ = self.canonical.update_state(old_state, old_head_number).await;
              return Ok(ForkchoiceUpdated {
                 payload_status: status,
                 payload_id: None,
@@ -575,211 +646,87 @@ impl Engine {
                     // Previously we set it to a static Info, which could become stale.
                     self.chain.set_sync_status(wasix_eth_types::SyncStatus::None).await;
 
-                    // 1. Identify newly canonical blocks and handle reorgs
-                    match self.chain.resolve_reorg(old_state.head_block_hash, forkchoice_state.head_block_hash).await {
-                        Ok(context) => {
-                            if context.is_reorg || !context.new_canonical_blocks.is_empty() {
-                                let engine = Arc::new(self.clone());
-                                let context_cloned = context.clone();
-                                let forkchoice_state_cloned = forkchoice_state.clone();
-                                let old_state_cloned = old_state.clone();
-                                let old_head_number_cloned = old_head_number;
-
-                                // Threshold for synchronous promotion to avoid "Inconsistent Head" in RPC clients
-                                let shallow_reorg_threshold = 3;
-                                
-                                // Check if all blocks are already in storage
-                                let mut all_in_storage = true;
-                                for block in &context.new_canonical_blocks {
-                                    let hash = block.header.hash_slow();
-                                    if self.read_storage.block_body_by_hash(hash).ok().flatten().is_none() {
-                                        all_in_storage = false;
-                                        break;
-                                    }
-                                }
-
-                                let is_shallow = (!context.is_reorg && context.new_canonical_blocks.len() <= shallow_reorg_threshold) || all_in_storage;
-
-                                if is_shallow {
-                                    debug!("[Engine] Shallow reorg ({} blocks). Processing synchronously.", context.new_canonical_blocks.len());
-                                    
-                                    // 2. Process blocks synchronously
-                                    let mut blocks_to_execute = Vec::new();
-                                    for block in &context.new_canonical_blocks {
-                                        let hash = block.header.hash_slow();
-                                        if self.read_storage.block_body_by_hash(hash).ok().flatten().is_none() {
-                                            blocks_to_execute.push(block.clone());
-                                        }
-                                    }
-
-                                    if !blocks_to_execute.is_empty() {
-                                        let first_block = blocks_to_execute.first().cloned();
-                                        let execution = self.execution.clone();
-                                        let execution_result = tokio::task::spawn_blocking(move || {
-                                            execution.execute_blocks_with_batch(blocks_to_execute)
-                                        }).await.map_err(|e| RpcError::Internal(format!("Synchronous promotion task failed to join: {}", e)))?;
-                                        if let Err(e) = execution_result {
-                                            error!("[Engine] Synchronous promotion failed during execution: {}", e);
-                                            if let Some(first_block) = first_block {
-                                                let hash = first_block.header.hash_slow();
-                                                self.chain.add_invalid_block(hash, first_block.header.parent_hash, InvalidationReason::Soft).await;
-                                                self.invalidate_descendants(hash).await;
-                                            }
-                                            return Err(RpcError::Internal("Synchronous promotion failed".to_string()));
-                                        }
-                                    }
-
-                                    if let Err(e) = self.reorg_handler.mark_branch_canonical(&context.new_canonical_blocks).await {
-                                        error!("[Engine] Failed to mark branch canonical synchronously: {}", e);
-                                        return Err(RpcError::Internal("Synchronous promotion failed to mark canonical".to_string()));
-                                    }
-
-                                    for block in &context.new_canonical_blocks {
-                                        self.mempool_listener.remove_included_now(block);
-                                        TRANSACTIONS_COMMITTED_TOTAL.add(block.body.transactions.len() as f64);
-                                    }
-                                    
-                                    // Note: We don't return SYNCING here. We fall through to finish the FCU normally with status VALID.
-                                    info!("[Engine] Synchronous reorg promotion complete for block #{}", header.number);
+                    if forkchoice_state.head_block_hash != old_state.head_block_hash {
+                        match self.chain.resolve_reorg(old_state.head_block_hash, forkchoice_state.head_block_hash).await {
+                            Ok(_) => {
+                                let state_tip = self.state_tip.get().await;
+                                let (state_is_reorg, state_ancestor_number, state_blocks_len) = if state_tip.0 == forkchoice_state.head_block_hash {
+                                    (false, state_tip.1, 0)
                                 } else {
-                                    // Deep reorg or too many blocks: process in background and return SYNCING
-                                    info!("[Engine] Deep reorg or many blocks ({}). Processing in background.", context.new_canonical_blocks.len());
-
-                                    // Mark reorg in progress globally
-                                    self.chain.set_reorg_in_progress(true).await;
-
-                                    // Mark the target head as promoting so that determine_payload_status returns SYNCING
-                                    self.chain.set_promoting(forkchoice_state.head_block_hash, true).await;
-
-                                    tokio::spawn(async move {
-                                        // 2. Handle reorgs FIRST: revert to common ancestor
-                                        if context_cloned.is_reorg {
-                                            info!("[Engine] Reorg detected! Attempting Fast Switch to hash {:?}", forkchoice_state_cloned.head_block_hash);
-                                            
-                                            // Cancel ALL ongoing executions to prevent node freeze during reorg
-                                            engine.payload_processor.abort_all_executions().await;
-
-                                            let mut fast_switch_success = false;
-                                            if let Ok(Some(state_root)) = engine.read_storage.state_root(forkchoice_state_cloned.head_block_hash) {
-                                                info!("[Engine] Found persisted StateRoot {:?} for new head. Performing Fast Switch.", state_root);
-                                                if let Err(e) = engine.reorg_handler.fast_switch(forkchoice_state_cloned.head_block_hash, state_root).await {
-                                                    warn!("[Engine] Fast Switch failed: {}. Falling back to standard revert.", e);
-                                                } else {
-                                                    fast_switch_success = true;
-                                                }
-                                            }
-
-                                            if !fast_switch_success {
-                                                // Find common ancestor height
-                                                let common_ancestor_height = engine.read_storage.header(BlockId::Hash(RpcBlockHash::from(context_cloned.common_ancestor_hash)))
-                                                    .ok()
-                                                    .flatten()
-                                                    .map(|h| h.number)
-                                                    .unwrap_or(0);
-                                                
-                                                info!("[Engine] Standard Reorg: Reverting chain to height {} (common ancestor: {:?})", common_ancestor_height, context_cloned.common_ancestor_hash);
-                                                
-                                                // Physically roll back state to common ancestor
-                                                if let Err(e) = engine.revert_to_height(common_ancestor_height).await {
-                                                    error!("[Engine] Failed to revert to height {}: {}", common_ancestor_height, e);
-                                                    // Rollback forkchoice if reorg fails
-                                                    let _ = engine.canonical.update_state(old_state_cloned, old_head_number_cloned).await;
-                                                    engine.chain.set_reorg_in_progress(false).await;
-                                                    engine.chain.set_promoting(forkchoice_state_cloned.head_block_hash, false).await;
-                                                    return;
-                                                }
-                                            }
-
-                                            engine.handle_reorgs_for_mempool(forkchoice_state_cloned, old_state_cloned.head_block_hash, context_cloned.common_ancestor_hash).await;
+                                    match self.chain.resolve_reorg(state_tip.0, forkchoice_state.head_block_hash).await {
+                                        Ok(s_ctx) => {
+                                            let anc_num = self.read_storage.block_number(s_ctx.common_ancestor_hash)
+                                                .ok().flatten().unwrap_or(0);
+                                            (s_ctx.is_reorg || s_ctx.common_ancestor_hash != state_tip.0, anc_num, s_ctx.new_canonical_blocks.len())
                                         }
+                                        Err(_) => (false, state_tip.1, 0),
+                                    }
+                                };
 
-                                        // 3. Handle canonical updates and re-execution
-                                        if !context_cloned.new_canonical_blocks.is_empty() {
-                                            // 3.1. Ensure all blocks in context are in main storage and their state is committed
-                                            let mut blocks_to_execute = Vec::new();
-                                            for block in &context_cloned.new_canonical_blocks {
-                                                let hash = block.header.hash_slow();
-                                                if engine.read_storage.block_body_by_hash(hash).ok().flatten().is_none() {
-                                                    debug!("[Engine] Queuing block {} from Payloads for background re-execution", hash);
-                                                    blocks_to_execute.push(block.clone());
-                                                }
-                                            }
-
-                                            if !blocks_to_execute.is_empty() {
-                                                info!("[Engine] Re-executing and committing {} blocks from Payloads in background", blocks_to_execute.len());
-                                                if let Err(e) = engine.execution.execute_blocks_with_batch(blocks_to_execute.clone()) {
-                                                    error!("[Engine] Promotion failed during execution: {}", e);
-                                                    if let Some(first_block) = blocks_to_execute.first() {
-                                                        let hash = first_block.header.hash_slow();
-                                                        engine.chain.add_invalid_block(hash, first_block.header.parent_hash, InvalidationReason::Soft).await;
-                                                        engine.invalidate_descendants(hash).await;
-                                                    }
-                                                    engine.chain.set_reorg_in_progress(false).await;
-                                                    engine.chain.set_promoting(forkchoice_state_cloned.head_block_hash, false).await;
-                                                    return;
-                                                }
-                                            }
-
-                                            if let Err(e) = engine.reorg_handler.mark_branch_canonical(&context_cloned.new_canonical_blocks).await {
-                                                error!("[Engine] Failed to mark branch canonical in background: {}", e);
-                                                if let Some(first_block) = context_cloned.new_canonical_blocks.first() {
-                                                    let hash = first_block.header.hash_slow();
-                                                    engine.chain.add_invalid_block(hash, first_block.header.parent_hash, InvalidationReason::Hard).await;
-                                                    engine.invalidate_descendants(hash).await;
-                                                }
-                                                engine.chain.set_reorg_in_progress(false).await;
-                                                engine.chain.set_promoting(forkchoice_state_cloned.head_block_hash, false).await;
-                                                return;
-                                            }
-
-                                            for block in &context_cloned.new_canonical_blocks {
-                                                engine.mempool_listener.handle_canonical_block(block.clone()).await;
-                                                TRANSACTIONS_COMMITTED_TOTAL.add(block.body.transactions.len() as f64);
-                                            }
-
-                                            // Trigger mempool revalidation
-                                            let mempool = engine.mempool.clone();
-                                            let read_storage = engine.read_storage.clone();
-                                            tokio::spawn(async move {
-                                                mempool.revalidate(&read_storage, None).await;
-                                            });
-
-                                            // Also trigger revalidation of dependent payloads
-                                            let payload_processor = engine.payload_processor.clone();
-                                            let last_canonical_hash = context_cloned.new_canonical_blocks.last().map(|b| b.header.hash_slow()).unwrap_or(forkchoice_state_cloned.head_block_hash);
-                                            tokio::spawn(async move {
-                                                payload_processor.revalidate_dependent_payloads(last_canonical_hash).await;
-                                            });
+                                match classify_switch(
+                                    state_tip.1,
+                                    state_ancestor_number,
+                                    state_is_reorg,
+                                    state_blocks_len,
+                                ) {
+                                    ForkSwitchMode::Synchronous => {
+                                        if let Err(error) = self.apply_fork_switch(old_state.head_block_hash, forkchoice_state, &header).await {
+                                            let _ = self.canonical.update_state(old_state.clone(), old_head_number).await;
+                                            return Err(error);
                                         }
+                                        info!("[Engine] Synchronous fork switch complete for block #{}", header.number);
+                                    }
+                                    ForkSwitchMode::Background => {
+                                        let target_head = forkchoice_state.head_block_hash;
+                                        let target_forkchoice_state = forkchoice_state;
+                                        let old_canonical_head = old_state.head_block_hash;
+                                        let chain = self.chain.clone();
+                                        let runtime = tokio::runtime::Handle::current();
+                                        let flags_guard = scopeguard::guard((), move |_| {
+                                            runtime.spawn(async move {
+                                                chain.set_promoting(target_head, false).await;
+                                                chain.set_reorg_in_progress(false).await;
+                                            });
+                                        });
 
-                                        // DONE! Clear the promoting flag and global reorg flag
-                                        engine.chain.set_reorg_in_progress(false).await;
-                                        engine.chain.set_promoting(forkchoice_state_cloned.head_block_hash, false).await;
-                                    });
+                                        self.chain.set_reorg_in_progress(true).await;
+                                        self.chain.set_promoting(target_head, true).await;
 
-                                    // Return SYNCING to the CL while the background task is running
-                                    return Ok(ForkchoiceUpdated {
-                                        payload_status: PayloadStatus {
-                                            status: PayloadStatusEnum::Syncing,
-                                            latest_valid_hash: self.chain.get_latest_valid_ancestor(forkchoice_state.head_block_hash).await,
-                                        },
-                                        payload_id: None,
-                                    });
+                                        let background_import_guard = self.import_gate.enter();
+                                        let engine = Arc::new(self.clone());
+                                        let old_state = old_state.clone();
+                                        let header_clone = header.clone();
+                                        tokio::spawn(async move {
+                                            let flags_guard = flags_guard;
+                                            if let Err(error) = engine.apply_fork_switch(old_canonical_head, target_forkchoice_state, &header_clone).await {
+                                                error!("[Engine] Background fork switch failed: {}", error);
+                                                let _ = engine.canonical.update_state(old_state, old_head_number).await;
+                                            }
+                                            engine.chain.set_promoting(target_head, false).await;
+                                            engine.chain.set_reorg_in_progress(false).await;
+                                            drop(background_import_guard);
+                                            let _ = scopeguard::ScopeGuard::<(), _>::into_inner(flags_guard);
+                                        });
+
+                                        return Ok(ForkchoiceUpdated {
+                                            payload_status: PayloadStatus {
+                                                status: PayloadStatusEnum::Syncing,
+                                                latest_valid_hash: self.chain.get_latest_valid_ancestor(target_head).await,
+                                            },
+                                            payload_id: None,
+                                        });
+                                    }
                                 }
                             }
+                            Err(error) => {
+                                error!("[Engine] Failed to resolve fork switch from {:?} to {:?}: {}", old_state.head_block_hash, forkchoice_state.head_block_hash, error);
+                                return Err(RpcError::Internal(format!("Fork-switch resolution failed: {}", error)));
+                            }
                         }
-                        Err(e) => {
-                            error!("[Engine] Failed to resolve reorg from {:?} to {:?}: {}", old_state.head_block_hash, forkchoice_state.head_block_hash, e);
-                            return Err(RpcError::Internal(format!("Reorg resolution failed: {}", e)));
-                        }
+                    } else {
+                        // Head did not change, but safe / finalized block hashes might have been updated
+                        let _ = self.canonical.update_state(forkchoice_state, header.number).await;
                     }
-                }
-                debug!("[Engine] Updating head to #{} hash {:?}", header.number, forkchoice_state.head_block_hash);
-                self.update_head_block(forkchoice_state, &header).await;
-
-                // Phase 3: Prune historical data (StateBranches, ChangeSets, TrieNodes)
-                if let Err(e) = self.write_storage.prune_historical_data(header.number) {
-                    warn!("[Engine] Failed to prune historical data at height {}: {}", header.number, e);
                 }
             }
         }
@@ -924,9 +871,101 @@ impl Engine {
         }
     }
 
-    async fn update_head_block(&self, forkchoice_state: ForkchoiceState, header: &Header) {
-        let _ = self.canonical.update_state(forkchoice_state, header.number).await;
-        CURRENT_HEAD_BLOCK.set(header.number as f64);
+    async fn apply_fork_switch(
+        &self,
+        old_canonical_head: B256,
+        forkchoice_state: ForkchoiceState,
+        head_header: &Header,
+    ) -> RpcResult<()> {
+        let new_head = forkchoice_state.head_block_hash;
+        let canonical_context = self.chain.resolve_reorg(old_canonical_head, new_head).await
+            .map_err(|e| RpcError::Internal(format!("Canonical fork-switch resolution failed: {}", e)))?;
+
+        let mut state_tip = self.state_tip.lock().await;
+        if state_tip.0 != new_head {
+            let state_context = self.chain.resolve_reorg(state_tip.0, new_head).await
+                .map_err(|e| RpcError::Internal(format!("State fork-switch resolution failed: {}", e)))?;
+            let is_state_reorg = state_context.is_reorg || state_context.common_ancestor_hash != state_tip.0;
+            let common_ancestor_number = self.read_storage.block_number(state_context.common_ancestor_hash)
+                .ok()
+                .flatten()
+                .or_else(|| {
+                    self.read_storage
+                        .header(BlockId::Hash(RpcBlockHash::from(state_context.common_ancestor_hash)))
+                        .ok()
+                        .flatten()
+                        .map(|header| header.number)
+                })
+                .unwrap_or(0);
+
+            if is_state_reorg {
+                let old_tip_hash = state_tip.0;
+                info!("[Engine] Reverting applied state from #{} to common ancestor #{}", state_tip.1, common_ancestor_number);
+                self.payload_processor.abort_all_executions().await;
+                self.chain.revert_to_height(state_tip.1, common_ancestor_number).await
+                    .map_err(|e| RpcError::Internal(format!("State revert failed: {}", e)))?;
+                *state_tip = (state_context.common_ancestor_hash, common_ancestor_number);
+
+                self.handle_reorgs_for_mempool(forkchoice_state, old_tip_hash, state_context.common_ancestor_hash).await;
+            }
+
+            let mut blocks_to_execute = state_context.new_canonical_blocks;
+            blocks_to_execute.sort_by_key(|block| block.header.number);
+            if !blocks_to_execute.is_empty() {
+                let first_block = blocks_to_execute.first().cloned();
+                let execution = self.execution.clone();
+                let execution_result = tokio::task::spawn_blocking(move || {
+                    execution.execute_blocks_with_batch(blocks_to_execute)
+                }).await.map_err(|e| RpcError::Internal(format!("Fork-switch execution task failed: {}", e)))?;
+
+                if let Err(e) = execution_result {
+                    if let Some(block) = first_block {
+                        let hash = block.header.hash_slow();
+                        self.chain.add_invalid_block(hash, block.header.parent_hash, InvalidationReason::Soft).await;
+                        self.invalidate_descendants(hash).await;
+                    }
+                    return Err(RpcError::Internal(format!("Fork-switch block execution failed: {}", e)));
+                }
+            }
+
+            *state_tip = (new_head, head_header.number);
+        }
+
+        if !canonical_context.new_canonical_blocks.is_empty() {
+            self.reorg_handler.mark_branch_canonical(&canonical_context.new_canonical_blocks).await
+                .map_err(|e| RpcError::Internal(format!("Failed to mark fork-switch branch canonical: {}", e)))?;
+
+            for block in &canonical_context.new_canonical_blocks {
+                self.mempool_listener.remove_included_now(block);
+                TRANSACTIONS_COMMITTED_TOTAL.add(block.body.transactions.len() as f64);
+            }
+        } else if let Ok(Some(block)) = self.read_storage.block_by_hash(new_head) {
+            self.reorg_handler.mark_branch_canonical(&vec![block]).await
+                .map_err(|e| RpcError::Internal(format!("Failed to mark head block canonical: {}", e)))?;
+        }
+
+        // Persist the complete incoming forkchoice state so safe/finalized hashes
+        // from this FCU are kept together with the new head.
+        self.canonical.update_state(forkchoice_state, head_header.number).await
+            .map_err(|e| RpcError::Internal(format!("Failed to update canonical head: {}", e)))?;
+        CURRENT_HEAD_BLOCK.set(head_header.number as f64);
+
+        if let Err(e) = self.write_storage.prune_historical_data(head_header.number) {
+            warn!("[Engine] Failed to prune historical data at height {}: {}", head_header.number, e);
+        }
+
+        let mempool = self.mempool.clone();
+        let read_storage = self.read_storage.clone();
+        tokio::spawn(async move {
+            mempool.revalidate(&read_storage, None).await;
+        });
+
+        let payload_processor = self.payload_processor.clone();
+        tokio::spawn(async move {
+            payload_processor.revalidate_dependent_payloads(new_head).await;
+        });
+
+        Ok(())
     }
 
     pub async fn import_block(&self, block: Block<Transaction>) -> wasix_eth_types::Result<()> {
@@ -1074,17 +1113,18 @@ impl Engine {
         self.payload_builder.build_new_payload(head_block_hash, attr, status).await
     }
     
-    pub async fn revert_to_height(&self, height: u64) -> wasix_eth_types::Result<()> {
-        self.chain.revert_to_height(height).await?;
+    pub async fn revert_to_height(&self, from_height: u64, to_height: u64) -> wasix_eth_types::Result<()> {
+        self.chain.revert_to_height(from_height, to_height).await?;
 
         // Side effects: Update metrics and emit event
         let (head_hash, head_number) = self.chain.head_block().await;
+        *self.state_tip.lock().await = (head_hash, head_number);
         CURRENT_HEAD_BLOCK.set(head_number as f64);
 
         if self.read_storage.header(BlockId::Hash(head_hash.into())).is_ok() {
             self.mempool_listener.handle_reorg(head_hash).await;
             // let _ = self.event_tx.send(EngineEvent::Reorg { hash: head_hash, number: head_number });
-            debug!("[Engine] Reorg handled for height {}", height);
+            debug!("[Engine] Reorg handled for height {}", to_height);
         }
 
         Ok(())

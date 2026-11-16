@@ -2,6 +2,7 @@ use dashmap::{DashMap, DashSet};
 use futures_util::{future::BoxFuture, FutureExt};
 use crate::engine::canonicality_tracker::CanonicalState;
 use crate::engine::import_gate::ImportGate;
+use crate::engine::state_tip::StateTip;
 use crate::engine::sidechain_tracker::{BlockTree};
 use crate::sync::registry::SyncRegistry;
 use crate::Consensus;
@@ -59,6 +60,11 @@ pub struct PayloadProcessor {
     pub sync_registry: Arc<SyncRegistry>,
     pub event_tx: broadcast::Sender<EngineEvent>,
     pub import_gate: Arc<ImportGate>,
+    pub state_tip: Arc<StateTip>,
+}
+
+fn should_commit_block(parent_hash: B256, state_tip_hash: B256) -> bool {
+    parent_hash == state_tip_hash
 }
 
 impl PayloadProcessor {
@@ -688,6 +694,8 @@ impl PayloadProcessor {
 
         // 5. Execute block
         let _import_guard = self.import_gate.enter();
+        let mut state_tip = self.state_tip.lock().await;
+        let commit = should_commit_block(parent_hash, state_tip.0);
         let parent_state_root = parent_header.as_ref().map(|h| h.state_root);
         let execution = Arc::clone(&self.execution);
         let block_clone = block.clone();
@@ -695,7 +703,11 @@ impl PayloadProcessor {
         let start_time = std::time::Instant::now();
 
         let exec_result = match tokio::task::spawn_blocking(move || {
-            execution.execute_block_with_state_root_and_building(block_clone, true, parent_state_root, false, Some(token))
+            if commit {
+                execution.execute_block_with_state_root_and_building_timed(block_clone, true, parent_state_root, false, Some(token))
+            } else {
+                execution.execute_block_side_commit_timed(block_clone)
+            }
         }).await {
             Ok(spawn_res) => spawn_res,
             Err(e) => {
@@ -708,7 +720,7 @@ impl PayloadProcessor {
         exp!("[EXP] BLOCK_EXEC_END number={} hash={:?} elapsed_ms={}", block.header.number, actual_hash, elapsed.as_millis());
 
         
-        let (final_block, receipts, metas) = match exec_result {
+        let (final_block, receipts, metas, mut measurements) = match exec_result {
             Ok(res) => res,
             Err(e) => {
                 error!("[PayloadProcessor] Execution failed for block {}: {}", block.header.number, e);
@@ -727,6 +739,11 @@ impl PayloadProcessor {
                 });
             }
         };
+
+        if commit {
+            *state_tip = (final_block.header.hash_slow(), final_block.header.number);
+        }
+        drop(state_tip);
 
         // 6. Post-execution validation
         let cumulative_gas_used = receipts.last().map(|r| r.receipt.cumulative_gas_used).unwrap_or(0);
@@ -778,6 +795,7 @@ impl PayloadProcessor {
         };
         let td = parent_td + U256::from(final_block.header.difficulty);
 
+        let persistence_start = std::time::Instant::now();
         tokio::task::spawn_blocking(move || -> wasix_eth_types::error::RpcResult<()> {
             let batch = storage.begin_batch().map_err(|e| RpcError::Internal(e.to_string()))?;
 
@@ -809,6 +827,15 @@ impl PayloadProcessor {
             info!("[PayloadProcessor] Block {} (hash: {}) successfully committed to storage", block_number, block_hash);
             Ok(())
         }).await.map_err(|e| RpcError::Internal(format!("Storage task panicked: {}", e)))??;
+        measurements.persistence += persistence_start.elapsed();
+        let tx_count = final_block.body.transactions.len();
+        self.execution.cost_model().record(tx_count, measurements.state_root + measurements.persistence);
+        exp!("[EXP] IMPORT_END number={} txs={} exec_ms={} root_ms={} persist_ms={}",
+            block_number,
+            tx_count,
+            measurements.execution.as_millis(),
+            measurements.state_root.as_millis(),
+            measurements.persistence.as_millis());
 
         let _ = self.event_tx.send(EngineEvent::NewBlock {
             block: final_block.clone(),
@@ -908,5 +935,18 @@ impl PayloadProcessor {
                 self.block_tree.remove_block(hash).await;
             }
         }.boxed()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_commit_block;
+    use wasix_eth_types::B256;
+
+    #[test]
+    fn only_a_block_extending_the_state_tip_is_committed() {
+        let tip = B256::repeat_byte(1);
+        assert!(should_commit_block(tip, tip));
+        assert!(!should_commit_block(B256::repeat_byte(2), tip));
     }
 }

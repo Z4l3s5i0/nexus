@@ -165,13 +165,20 @@ impl ReorgHandler {
     }
 
 
-    pub async fn revert_to_height(&self, height: u64) -> wasix_eth_types::Result<()> {
-        let (_, head_number) = self.canonical.get_head().await;
+    pub async fn revert_to_height(&self, from_height: u64, to_height: u64) -> wasix_eth_types::Result<()> {
+        if to_height > from_height {
+            return Err(anyhow::anyhow!(
+                "Cannot revert applied state from height {} to higher height {}",
+                from_height,
+                to_height
+            )
+            .into());
+        }
 
-        info!("Reverting chain from {} to {}", head_number, height);
+        info!("Reverting chain from {} to {}", from_height, to_height);
 
-        // Revert state changes from head_number down to height + 1 in chunks
-        for h in (height + 1..=head_number).rev() {
+        // Revert state changes from the applied-state tip down to to_height + 1.
+        for h in heights_to_revert(from_height, to_height) {
             let batch = self.write_storage.begin_batch()?;
 
             // 1. Roll back account state changes (Balances, Nonces, etc.)
@@ -217,10 +224,10 @@ impl ReorgHandler {
         }
 
         // Update canonical head
-        let new_head_hash = self.read_storage.block_hash(height)?
-            .ok_or_else(|| anyhow::anyhow!("Block hash not found for height {}", height))?;
+        let new_head_hash = self.read_storage.block_hash(to_height)?
+            .ok_or_else(|| anyhow::anyhow!("Block hash not found for height {}", to_height))?;
 
-        self.canonical.update_head(new_head_hash, height).await?;
+        self.canonical.update_head(new_head_hash, to_height).await?;
 
         // Finalize reorg with head update
         let batch = self.write_storage.begin_batch()?;
@@ -335,4 +342,19 @@ impl ReorgHandler {
 //     }
 // 
 //     Ok(())
+}
+
+fn heights_to_revert(from_height: u64, to_height: u64) -> impl Iterator<Item = u64> {
+    (to_height.saturating_add(1)..=from_height).rev()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::heights_to_revert;
+
+    #[test]
+    fn revert_range_starts_at_the_supplied_state_tip_height() {
+        assert_eq!(heights_to_revert(9, 6).collect::<Vec<_>>(), vec![9, 8, 7]);
+        assert!(heights_to_revert(6, 6).next().is_none());
+    }
 }

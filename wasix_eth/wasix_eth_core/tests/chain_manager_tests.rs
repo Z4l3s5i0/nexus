@@ -157,7 +157,7 @@ mod tests {
         writer.commit().unwrap();
         cm.set_head_block(hash2, 2).await;
 
-        cm.revert_to_height(1).await.unwrap();
+        cm.revert_to_height(2, 1).await.unwrap();
         assert_eq!(cm.head_block().await, (hash1, 1));
     }
 
@@ -165,10 +165,10 @@ mod tests {
     async fn test_revert_to_height_no_op() {
         let (cm, _, _dir) = setup().await;
         cm.set_head_block(B256::repeat_byte(1), 1).await;
-        cm.revert_to_height(1).await.unwrap();
+        cm.revert_to_height(1, 1).await.unwrap();
         assert_eq!(cm.head_block().await, (B256::repeat_byte(1), 1));
 
-        cm.revert_to_height(2).await.unwrap();
+        cm.revert_to_height(1, 1).await.unwrap();
         assert_eq!(cm.head_block().await, (B256::repeat_byte(1), 1));
     }
 
@@ -194,7 +194,7 @@ mod tests {
         writer.commit().unwrap();
         cm.set_head_block(hash1, 1).await;
 
-        cm.revert_to_height(0).await.unwrap();
+        cm.revert_to_height(1, 0).await.unwrap();
         assert_eq!(cm.head_block().await, (hash0, 0));
     }
 

@@ -3,6 +3,7 @@ use crate::engine::import_gate::ImportGate;
 use crate::{Consensus, EngineEvent};
 use std::sync::Arc;
 use tokio::sync::{broadcast, Notify};
+use wasix_eth_execution::cost_model::BuildCostModel;
 use wasix_eth_execution::execution_provider::ExecutionProvider;
 use wasix_eth_storage::read::DatabaseReadProvider;
 use wasix_eth_storage::read_traits::{BlockProvider, ChainProvider};
@@ -21,7 +22,7 @@ use wasix_eth_types::B256;
 use wasix_eth_types::U256;
 use wasix_eth_types::BlobsBundleV1;
 use wasix_eth_types::ConsensusTransaction;
-use wasix_eth_utils::{debug, info, error, warn};
+use wasix_eth_utils::{debug, info, error, warn, exp};
 use wasix_eth_types::Result;
 
 use std::collections::HashMap;
@@ -42,6 +43,33 @@ pub struct PayloadBuilderConfig {
     pub slot_duration_ms: u64,
     pub initial_wait_ms: u64,
     pub grace_period_ms: u64,
+    /// Hard cap for how long `getPayload` waits for an in-flight build.
+    pub get_payload_max_wait_ms: u64,
+    /// Builds must be persisted this long before the slot starts.
+    pub finalize_safety_margin_ms: u64,
+    /// Minimum build window when FCU arrives late in the slot.
+    pub min_build_window_ms: u64,
+}
+
+fn compute_budget_end(now: std::time::SystemTime, attr_ts: u64, cfg: &PayloadBuilderConfig) -> std::time::SystemTime {
+    let slot_start = std::time::UNIX_EPOCH + std::time::Duration::from_secs(attr_ts);
+    let margin_end = slot_start
+        .checked_sub(std::time::Duration::from_millis(cfg.finalize_safety_margin_ms))
+        .unwrap_or(std::time::UNIX_EPOCH);
+    let min_end = now + std::time::Duration::from_millis(cfg.min_build_window_ms);
+    margin_end.max(min_end)
+}
+
+/// Returns the maximum number of transactions for the next build, or `None` when the
+/// remaining budget cannot even cover finalizing a single transaction.
+/// The first build only uses 25% of the remaining budget so that a non-empty payload is
+/// stored early; rebuilds reserve half of the budget for execution and half for finalizing.
+fn plan_build(remaining: std::time::Duration, first_build: bool, model: &BuildCostModel) -> Option<usize> {
+    if remaining < model.estimate_finalize(1) {
+        return None;
+    }
+    let finalize_share = if first_build { remaining / 4 } else { remaining / 2 };
+    Some(model.max_txs_for(finalize_share).max(1))
 }
 
 fn derive_effective_slot_ms(parent_ts: u64, attr_ts: u64, max_slot_ms: u64) -> u64 {
@@ -56,6 +84,9 @@ impl Default for PayloadBuilderConfig {
             slot_duration_ms: 12000,
             initial_wait_ms: 2400, // 20% of 12s
             grace_period_ms: 200,
+            get_payload_max_wait_ms: 1500,
+            finalize_safety_margin_ms: 300,
+            min_build_window_ms: 1000,
         }
     }
 }
@@ -77,6 +108,10 @@ pub struct PayloadBuilder {
     pub build_statuses: Arc<RwLock<HashMap<PayloadId, BuildStatus>>>,
     /// Effective consensus slot length for each payload.
     pub payload_slots: Arc<DashMap<PayloadId, u64>>,
+    /// Wall-clock time by which each payload's builds must be persisted.
+    pub payload_budget_end: Arc<DashMap<PayloadId, std::time::SystemTime>>,
+    /// Number of transactions offered to the build currently running for each payload.
+    pub in_flight_tx_counts: Arc<DashMap<PayloadId, usize>>,
     /// Mempool generation used by the last build attempt for each payload.
     pub last_built_generation: Arc<DashMap<PayloadId, u64>>,
     pub import_gate: Arc<ImportGate>,
@@ -93,14 +128,13 @@ impl PayloadBuilder {
         }
     }
 
-    async fn wait_for_build_tokens_to_clear(&self, payload_id: &PayloadId, timeout: std::time::Duration) {
+    async fn wait_for_rebuild_to_clear(&self, payload_id: &PayloadId, deadline: std::time::Instant) {
         let notify = self.build_notify.read().ok()
             .and_then(|notifies| notifies.get(payload_id).cloned());
 
         let wait_until_complete = async {
             loop {
-                let has_active_build = self.cancel_tokens.read().unwrap().contains_key(payload_id)
-                    || self.rebuild_interruption_tokens.read().unwrap().contains_key(payload_id);
+                let has_active_build = self.rebuild_interruption_tokens.read().unwrap().contains_key(payload_id);
                 if !has_active_build {
                     break;
                 }
@@ -116,7 +150,13 @@ impl PayloadBuilder {
             }
         };
 
+        let timeout = deadline.saturating_duration_since(std::time::Instant::now());
         let _ = tokio::time::timeout(timeout, wait_until_complete).await;
+    }
+
+    fn finalize_margin(&self, payload_id: &PayloadId, max_wait: std::time::Duration) -> std::time::Duration {
+        let in_flight_txs = self.in_flight_tx_counts.get(payload_id).map(|count| *count).unwrap_or(0);
+        self.execution.cost_model().estimate_finalize(in_flight_txs).min(max_wait / 2)
     }
 
     fn effective_slot_ms(&self, parent_ts: u64, attr_ts: u64) -> u64 {
@@ -182,6 +222,8 @@ impl PayloadBuilder {
         }
         let effective_slot_ms = self.effective_slot_ms(parent_block.header.timestamp, attr.timestamp);
         self.payload_slots.insert(id.clone(), effective_slot_ms);
+        let budget_end = compute_budget_end(std::time::SystemTime::now(), attr.timestamp, &self.config);
+        self.payload_budget_end.insert(id.clone(), budget_end);
 
         {
             let tokens = self.cancel_tokens.read().unwrap();
@@ -323,8 +365,8 @@ impl PayloadBuilder {
         let deadline_ms = effective_slot_ms.saturating_mul(35) / 100;
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(deadline_ms);
 
-        let (finalized_block, receipts, metas) = match tokio::task::spawn_blocking(move || {
-            execution.execute_block_for_payload(
+        let (finalized_block, receipts, metas, measurements) = match tokio::task::spawn_blocking(move || {
+            execution.execute_block_for_payload_timed(
                 vec![], // Empty transaction set
                 vec![], // No optimistic transactions
                 &parent_header_clone,
@@ -351,6 +393,7 @@ impl PayloadBuilder {
         let receipts_clone = receipts.clone();
         let metas_clone = metas.clone();
         let id_clone = id.clone();
+        let persistence_start = std::time::Instant::now();
 
         match tokio::task::spawn_blocking(move || {
             write_storage.add_payload(id_clone, finalized_block_clone, receipts_clone, metas_clone, bundle)
@@ -365,6 +408,14 @@ impl PayloadBuilder {
                 return Err(RpcError::Internal(e.to_string()));
             }
         }
+
+        let persistence = persistence_start.elapsed();
+        self.execution.cost_model().record(0, measurements.state_root + persistence);
+        exp!("[EXP] BUILD_END id={:?} txs=0 exec_ms={} root_ms={} persist_ms={}",
+            id,
+            measurements.execution.as_millis(),
+            measurements.state_root.as_millis(),
+            persistence.as_millis());
 
         info!("[PayloadBuilder] Created initial empty payload_id={:?} for block_number={}", id, parent_block.header.number + 1);
         Ok(())
@@ -437,7 +488,7 @@ impl PayloadBuilder {
 
         // 3. Take a mempool snapshot and peek best transactions
         let snapshot = self.mempool.snapshot();
-        let (transactions, optimistic_transactions) = snapshot.peek_best_transactions(
+        let (mut transactions, mut optimistic_transactions) = snapshot.peek_best_transactions(
             parent_block.header.gas_limit, 
             U256::from(base_fee_per_gas.unwrap_or_default()),
             blob_base_fee.map(U256::from),
@@ -448,6 +499,25 @@ impl PayloadBuilder {
         if last_built_generation == Some(snapshot.generation) {
             return Ok(());
         }
+
+        // Budget the build so execution, state root and persistence finish before the slot starts.
+        let now = std::time::SystemTime::now();
+        let budget_end = self.payload_budget_end.get(&payload_id).map(|end| *end)
+            .unwrap_or_else(|| compute_budget_end(now, payload_block.header.timestamp, &self.config));
+        let remaining = budget_end.duration_since(now).unwrap_or_default();
+        let first_build = self.build_statuses.read().ok()
+            .and_then(|statuses| statuses.get(&payload_id).copied())
+            == Some(BuildStatus::InitialBuildInProgress);
+        let cost_model = self.execution.cost_model();
+        let max_txs = match plan_build(remaining, first_build, &cost_model) {
+            Some(max_txs) => max_txs,
+            None => {
+                debug!("[PayloadBuilder] Skipping build for {:?}: budget exhausted ({}ms left)", payload_id, remaining.as_millis());
+                return Ok(());
+            }
+        };
+        transactions.truncate(max_txs);
+        optimistic_transactions.truncate(max_txs.saturating_sub(transactions.len()));
 
         let transactions_unchanged = transactions.len() == payload_block.body.transactions.len()
             && transactions.iter().zip(payload_block.body.transactions.iter())
@@ -474,11 +544,14 @@ impl PayloadBuilder {
         // Cleanup token when this scope ends
         let rebuild_tokens = Arc::clone(&self.rebuild_interruption_tokens);
         let in_flight_interruptions = Arc::clone(&self.in_flight_interruptions);
+        let in_flight_tx_counts = Arc::clone(&self.in_flight_tx_counts);
+        in_flight_tx_counts.insert(payload_id, transactions.len() + optimistic_transactions.len());
         let payload_id_copy = payload_id;
         let _cleanup = scopeguard::guard((), move |_| {
             let mut tokens = rebuild_tokens.write().unwrap();
             tokens.remove(&payload_id_copy);
             in_flight_interruptions.remove(&payload_id_copy);
+            in_flight_tx_counts.remove(&payload_id_copy);
         });
         // --------------------------------
 
@@ -491,9 +564,12 @@ impl PayloadBuilder {
         
         let effective_slot_ms = self.payload_slots.get(&payload_id).map(|slot| *slot).unwrap_or(self.config.slot_duration_ms);
         let deadline_ms = effective_slot_ms.saturating_mul(35) / 100;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(deadline_ms);
+        let loop_start = std::time::Instant::now();
+        let slot_cap = loop_start + std::time::Duration::from_millis(deadline_ms);
+        let budget_cap = loop_start + remaining.saturating_sub(cost_model.estimate_finalize(max_txs));
+        let deadline = slot_cap.min(budget_cap);
         let result = tokio::task::spawn_blocking(move || {
-            execution.execute_block_for_payload(
+            execution.execute_block_for_payload_timed(
                 transactions,
                 optimistic_transactions,
                 &parent_header_clone,
@@ -505,7 +581,8 @@ impl PayloadBuilder {
         }).await.map_err(|e| RpcError::Internal(format!("Payload rebuilding task panicked: {}", e)))?
         .map_err(|e| RpcError::Internal(e.to_string()))?;
 
-        let (finalized_block, receipts, metas) = result;
+        let (finalized_block, receipts, metas, measurements) = result;
+        let tx_count = finalized_block.body.transactions.len();
 
         // 5. Check if new block is better
         let new_value = self.calculate_block_value(&finalized_block, &receipts);
@@ -524,6 +601,12 @@ impl PayloadBuilder {
             debug!("[PayloadBuilder] NOT rebuilding payload {:?}: new value {} is not better than old value {} (tx count: {} vs {})", 
                 payload_id, new_value, old_value, finalized_block.body.transactions.len(), payload_block.body.transactions.len());
             self.last_built_generation.insert(payload_id, snapshot.generation);
+            self.execution.cost_model().record(tx_count, measurements.state_root);
+            exp!("[EXP] BUILD_END id={:?} txs={} exec_ms={} root_ms={} persist_ms=0",
+                payload_id,
+                tx_count,
+                measurements.execution.as_millis(),
+                measurements.state_root.as_millis());
             return Ok(());
         }
 
@@ -551,10 +634,19 @@ impl PayloadBuilder {
         let finalized_block_clone = finalized_block.clone();
         let receipts_clone = receipts.clone();
         let metas_clone = metas.clone();
+        let persistence_start = std::time::Instant::now();
         tokio::task::spawn_blocking(move || {
             write_storage.add_payload(payload_id, finalized_block_clone, receipts_clone, metas_clone, bundle)
         }).await.map_err(|e| RpcError::Internal(format!("Payload rebuilding task panicked: {}", e)))?
         .map_err(|e| RpcError::Internal(e.to_string()))?;
+        let persistence = persistence_start.elapsed();
+        self.execution.cost_model().record(tx_count, measurements.state_root + persistence);
+        exp!("[EXP] BUILD_END id={:?} txs={} exec_ms={} root_ms={} persist_ms={}",
+            payload_id,
+            tx_count,
+            measurements.execution.as_millis(),
+            measurements.state_root.as_millis(),
+            persistence.as_millis());
         self.last_built_generation.insert(payload_id, snapshot.generation);
 
         Ok(())
@@ -562,69 +654,55 @@ impl PayloadBuilder {
 
     pub async fn get_payload(&self, payload_id: &PayloadId) -> RpcResult<(Block<Transaction>, Vec<Receipt>, Vec<wasix_eth_types::ReceiptMeta>, BlobsBundleV1)> {
         let wait_start = std::time::Instant::now();
-        let effective_slot_ms = self.payload_slots.get(payload_id).map(|slot| *slot).unwrap_or(self.config.slot_duration_ms);
-        let initial_wait = std::time::Duration::from_millis(effective_slot_ms.saturating_mul(20) / 100);
-        
-        // 1. Wait for initial build to complete, but cap it at configured timeout for BN response.
-        // If it's already completed, this returns immediately.
-        while wait_start.elapsed() < initial_wait {
-            let status = {
-                let statuses = self.build_statuses.read().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?;
-                statuses.get(payload_id).cloned()
-            };
+        let max_wait = std::time::Duration::from_millis(self.config.get_payload_max_wait_ms);
+        let hard_deadline = wait_start + max_wait;
 
-            if let Some(status) = status {
-                if status == BuildStatus::InitialBuildCompleted {
-                    break;
+        // 1. While the first build is pending (possibly still waiting for an import), wait for it
+        // without cancelling anything, leaving enough time for an interrupted build to finalize.
+        loop {
+            let status = self.build_statuses.read()
+                .map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?
+                .get(payload_id)
+                .copied();
+            let pending = status == Some(BuildStatus::InitialBuildInProgress) || self.import_gate.is_busy();
+            if !pending {
+                break;
+            }
+
+            let soft_deadline = hard_deadline
+                .checked_sub(self.finalize_margin(payload_id, max_wait))
+                .unwrap_or(wait_start);
+            let now = std::time::Instant::now();
+            if now >= soft_deadline {
+                break;
+            }
+
+            let notify = self.build_notify.read()
+                .map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?
+                .get(payload_id)
+                .cloned();
+            let poll = (soft_deadline - now).min(std::time::Duration::from_millis(20));
+            match notify {
+                Some(notify) => {
+                    let _ = tokio::time::timeout(poll, notify.notified()).await;
                 }
-                
-                // If in progress, wait on notify
-                let notify = {
-                    self.build_notify.read().map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?
-                        .get(payload_id).cloned()
-                };
-                
-                if let Some(n) = notify {
-                    let remaining = initial_wait.saturating_sub(wait_start.elapsed());
-                    if remaining.is_zero() { break; }
-                    let _ = tokio::time::timeout(remaining, n.notified()).await;
-                } else {
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                }
-            } else {
-                // Not found yet (wait a bit for it to be registered)
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                None => tokio::time::sleep(poll).await,
             }
         }
 
-        // 2. Check if we have a build active (either initial or rebuild)
-        let (initial_token, rebuild_token) = {
-            let initial = self.cancel_tokens.read().unwrap().get(payload_id).cloned();
-            let rebuild = self.rebuild_interruption_tokens.read().unwrap().get(payload_id).cloned();
-            (initial, rebuild)
-        };
-
-        // 3. If a build is active and we've waited enough, signal interruption.
-        if initial_token.is_some() || rebuild_token.is_some() {
+        // 2. Stop starting new builds, then stop only the tx loop of a running build so its
+        // state root and persistence still complete, and wait for it up to the hard deadline.
+        if let Some(loop_token) = self.cancel_tokens.read().unwrap().get(payload_id).cloned() {
+            loop_token.cancel();
+        }
+        let rebuild_token = self.rebuild_interruption_tokens.read().unwrap().get(payload_id).cloned();
+        if let Some(rebuild_token) = rebuild_token {
             if !self.in_flight_interruptions.contains(payload_id) {
                 self.in_flight_interruptions.insert(*payload_id);
-                
-                if let Some(t) = initial_token {
-                    debug!("[PayloadBuilder] Signaling interruption for INITIAL build of payload {:?}", payload_id);
-                    t.cancel();
-                }
-                if let Some(t) = rebuild_token {
-                    debug!("[PayloadBuilder] Signaling interruption for REBUILD of payload {:?}", payload_id);
-                    t.cancel();
-                }
+                debug!("[PayloadBuilder] Stopping tx loop of in-flight build for payload {:?}", payload_id);
+                rebuild_token.cancel();
             }
-
-            // 4. Wait for the active build to persist its result or finish, within a bounded grace period.
-            let grace_period_ms = self.config.grace_period_ms.max(effective_slot_ms.saturating_mul(10) / 100);
-            self.wait_for_build_tokens_to_clear(
-                payload_id,
-                std::time::Duration::from_millis(grace_period_ms),
-            ).await;
+            self.wait_for_rebuild_to_clear(payload_id, hard_deadline).await;
         }
 
         // 5. Return whatever we have in storage. If the builder was interrupted, 
@@ -634,6 +712,16 @@ impl PayloadBuilder {
 
         info!("[PayloadBuilder] Returning payload {:?} with {} transactions after {:?}ms", 
             payload_id, payload.0.body.transactions.len(), wait_start.elapsed().as_millis());
+        let build_status = self.build_statuses.read()
+            .map_err(|_| RpcError::Internal("Lock poisoned".to_string()))?
+            .get(payload_id)
+            .map(|status| format!("{:?}", status))
+            .unwrap_or_else(|| "Unknown".to_string());
+        exp!("[EXP] GET_PAYLOAD id={:?} waited_ms={} status={} txs={}",
+            payload_id,
+            wait_start.elapsed().as_millis(),
+            build_status,
+            payload.0.body.transactions.len());
         Ok(payload)
     }
 
@@ -680,7 +768,42 @@ impl PayloadBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::derive_effective_slot_ms;
+    use super::{compute_budget_end, derive_effective_slot_ms, plan_build, PayloadBuilderConfig};
+    use std::time::{Duration, UNIX_EPOCH};
+    use wasix_eth_execution::cost_model::BuildCostModel;
+
+    #[test]
+    fn budget_ends_before_future_slot_start() {
+        let cfg = PayloadBuilderConfig::default();
+        let now = UNIX_EPOCH + Duration::from_secs(100);
+        let end = compute_budget_end(now, 106, &cfg);
+        assert_eq!(end, UNIX_EPOCH + Duration::from_secs(106) - Duration::from_millis(cfg.finalize_safety_margin_ms));
+    }
+
+    #[test]
+    fn late_fcu_gets_minimum_build_window() {
+        let cfg = PayloadBuilderConfig::default();
+        let now = UNIX_EPOCH + Duration::from_secs(110);
+        let end = compute_budget_end(now, 106, &cfg);
+        assert_eq!(end, now + Duration::from_millis(cfg.min_build_window_ms));
+    }
+
+    #[test]
+    fn exhausted_budget_skips_build() {
+        let model = BuildCostModel::default();
+        assert_eq!(plan_build(Duration::ZERO, false, &model), None);
+        assert_eq!(plan_build(model.estimate_finalize(1) / 2, true, &model), None);
+    }
+
+    #[test]
+    fn first_build_is_smaller_than_rebuild() {
+        let model = BuildCostModel::default();
+        let budget = Duration::from_secs(4);
+        let first = plan_build(budget, true, &model).unwrap();
+        let rebuild = plan_build(budget, false, &model).unwrap();
+        assert!(first >= 1);
+        assert!(first <= rebuild);
+    }
 
     #[test]
     fn effective_slot_is_derived_and_clamped() {

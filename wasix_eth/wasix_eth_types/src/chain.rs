@@ -34,8 +34,8 @@ pub trait ChainManager: Send + Sync {
     /// Checks if the node has a block with the given hash.
     async fn has_block(&self, hash: B256) -> bool;
 
-    /// Reverts the chain to a specific height.
-    async fn revert_to_height(&self, height: u64) -> Result<()>;
+    /// Reverts the applied state from one height down to another.
+    async fn revert_to_height(&self, from_height: u64, to_height: u64) -> Result<()>;
 
     /// Checks if the given block hash is known to be invalid.
     async fn is_invalid(&self, hash: B256) -> bool;

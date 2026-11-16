@@ -71,7 +71,7 @@ async fn test_deep_reorg() {
 
     // 3. Trigger the ChainManager to recognize the second chain as canonical.
     // In this implementation, we manually trigger the reorg via revert_to_height and then setting new blocks
-    chain_manager.revert_to_height(2).await.unwrap();
+    chain_manager.revert_to_height(5, 2).await.unwrap();
     
     // After revert, latest should be 2
     assert_eq!(reader.latest_block_number().unwrap(), Some(2));
@@ -130,7 +130,7 @@ async fn test_same_height_reorg() {
     assert_eq!(context.new_canonical_blocks[0].header.hash_slow(), hash_5_prime);
 
     // 4. Perform reorg
-    chain_manager.revert_to_height(4).await.unwrap();
+    chain_manager.revert_to_height(5, 4).await.unwrap();
     chain_manager.mark_branch_canonical(&context.new_canonical_blocks).await.unwrap();
 
     // 5. Verify

@@ -1,4 +1,5 @@
 use crate::block::BlockProcessor;
+use crate::cost_model::BuildCostModel;
 use evm::backend::InMemoryEnvironment;
 pub use evm::standard::TransactValueCallCreate;
 use evm::standard::{Config, EtableResolver, ExecutionEtable, GasometerEtable, Invoker};
@@ -10,17 +11,44 @@ use wasix_eth_storage::write_traits::{AccountWriter, ChangeSetWriter, Transactio
 use wasix_eth_types::*;
 use wasix_eth_utils::{debug, info};
 use wasix_eth_types::PayloadAttributes;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::config::prepare_execution_env;
 pub use crate::executor::{EvmExecutor, TransactionExecutionResult};
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ExecutionMeasurements {
+    pub execution: Duration,
+    pub state_root: Duration,
+    pub persistence: Duration,
+}
+
 pub trait ExecutionProvider: Send + Sync {
+    fn cost_model(&self) -> Arc<BuildCostModel> {
+        Arc::new(BuildCostModel::default())
+    }
     fn execute_block(&self, block: Block<Transaction>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_block_with_commit(&self, block: Block<Transaction>, commit: bool) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_block_with_state_root(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
     fn execute_block_with_state_root_and_building(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
+    fn execute_block_with_state_root_and_building_timed(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, ExecutionMeasurements)> {
+        let started = Instant::now();
+        let (block, receipts, metas) = self.execute_block_with_state_root_and_building(block, commit, state_root, building, interruption_token)?;
+        Ok((block, receipts, metas, ExecutionMeasurements { execution: started.elapsed(), ..Default::default() }))
+    }
     fn execute_block_with_batch(&self, block: Block<Transaction>, batch: &mut BatchWriter, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>, _deadline: Option<std::time::Instant>, optimistic_transactions: Vec<Transaction>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
+    fn execute_block_with_batch_timed(&self, block: Block<Transaction>, batch: &mut BatchWriter, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>, deadline: Option<Instant>, optimistic_transactions: Vec<Transaction>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, ExecutionMeasurements)> {
+        let started = Instant::now();
+        let (block, receipts, metas) = self.execute_block_with_batch(block, batch, state_root, building, interruption_token, deadline, optimistic_transactions)?;
+        Ok((block, receipts, metas, ExecutionMeasurements { execution: started.elapsed(), ..Default::default() }))
+    }
     fn execute_block_side_commit(&self, block: Block<Transaction>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
+    fn execute_block_side_commit_timed(&self, block: Block<Transaction>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, ExecutionMeasurements)> {
+        let started = Instant::now();
+        let (block, receipts, metas) = self.execute_block_side_commit(block)?;
+        Ok((block, receipts, metas, ExecutionMeasurements { execution: started.elapsed(), ..Default::default() }))
+    }
     fn execute_blocks_with_batch(&self, blocks: Vec<Block<Transaction>>) -> Result<()>;
     fn execute_block_for_payload(
         &self,
@@ -32,6 +60,20 @@ pub trait ExecutionProvider: Send + Sync {
         interruption_token: Option<CancellationToken>,
         deadline: Option<std::time::Instant>,
     ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)>;
+    fn execute_block_for_payload_timed(
+        &self,
+        transactions: Vec<Transaction>,
+        optimistic_transactions: Vec<Transaction>,
+        parent_header: &Header,
+        attributes: &PayloadAttributes,
+        base_fee: Option<u64>,
+        interruption_token: Option<CancellationToken>,
+        deadline: Option<Instant>,
+    ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, ExecutionMeasurements)> {
+        let started = Instant::now();
+        let (block, receipts, metas) = self.execute_block_for_payload(transactions, optimistic_transactions, parent_header, attributes, base_fee, interruption_token, deadline)?;
+        Ok((block, receipts, metas, ExecutionMeasurements { execution: started.elapsed(), ..Default::default() }))
+    }
     fn run_execution(
         &self,
         transactions: Vec<Transaction>,
@@ -58,6 +100,7 @@ pub struct EthExecutionProvider {
     pub read_storage: wasix_eth_storage::read::DatabaseReadProvider,
     write_storage: wasix_eth_storage::write::DatabaseWriteProvider,
     executor: EvmExecutor,
+    cost_model: Arc<BuildCostModel>,
 }
 
 impl EthExecutionProvider {
@@ -69,6 +112,7 @@ impl EthExecutionProvider {
             read_storage,
             write_storage,
             executor: EvmExecutor,
+            cost_model: Arc::new(BuildCostModel::default()),
         }
     }
 
@@ -527,6 +571,9 @@ impl EthExecutionProvider {
 }
 
 impl ExecutionProvider for EthExecutionProvider {
+    fn cost_model(&self) -> Arc<BuildCostModel> {
+        self.cost_model.clone()
+    }
     fn execute_block(&self, block: Block<Transaction>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
         self.execute_block_with_commit(block, true)
     }
@@ -540,24 +587,36 @@ impl ExecutionProvider for EthExecutionProvider {
     }
 
     fn execute_block_side_commit(&self, block: Block<Transaction>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
+        self.execute_block_side_commit_timed(block)
+            .map(|(block, receipts, metas, _)| (block, receipts, metas))
+    }
+
+    fn execute_block_side_commit_timed(&self, block: Block<Transaction>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, ExecutionMeasurements)> {
         let mut batch = self.write_storage.begin_batch()?;
         batch.set_side_commit(true);
         let block_hash = block.header.hash_slow();
-        let (executed_block, receipts, metas) = self.execute_block_with_batch(block, &mut batch, None, false, None, None, vec![])?;
-        
+        let (executed_block, receipts, metas, mut measurements) = self.execute_block_with_batch_timed(block, &mut batch, None, false, None, None, vec![])?;
+
         // Persist the state root in the StateBranches table
         batch.insert_state_root(block_hash, executed_block.header.state_root)?;
-        
+
+        let persistence_start = Instant::now();
         batch.commit()?;
-        Ok((executed_block, receipts, metas))
+        measurements.persistence += persistence_start.elapsed();
+        Ok((executed_block, receipts, metas, measurements))
     }
 
     fn execute_block_with_state_root_and_building(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
+        self.execute_block_with_state_root_and_building_timed(block, commit, state_root, building, interruption_token)
+            .map(|(block, receipts, metas, _)| (block, receipts, metas))
+    }
+
+    fn execute_block_with_state_root_and_building_timed(&self, block: Block<Transaction>, commit: bool, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, ExecutionMeasurements)> {
         debug!("[Execution] execute_block_with_state_root: block {} commit={} state_root={:?} building={}", block.header.number, commit, state_root, building);
         self.write_storage.clear_tracking();
         let mut batch = self.write_storage.begin_batch()?;
         
-        let (executed_block, receipts, metas) = match self.execute_block_with_batch(block.clone(), &mut batch, state_root, building, interruption_token, None, vec![]) {
+        let (executed_block, receipts, metas, mut measurements) = match self.execute_block_with_batch_timed(block.clone(), &mut batch, state_root, building, interruption_token, None, vec![]) {
             Ok(res) => res,
             Err(e) => {
                 // Batch will be dropped here, and redb::WriteTransaction will be aborted
@@ -567,6 +626,7 @@ impl ExecutionProvider for EthExecutionProvider {
         
         if commit {
             debug!("[Execution] execute_block_with_state_root: committing batch for block {}", block.header.number);
+            let persistence_start = Instant::now();
 
             // Persist ChangeSets
             let account_changes = batch.collect_account_changes();
@@ -579,9 +639,10 @@ impl ExecutionProvider for EthExecutionProvider {
             }
 
             batch.commit()?;
+            measurements.persistence += persistence_start.elapsed();
         }
         
-        Ok((executed_block, receipts, metas))
+        Ok((executed_block, receipts, metas, measurements))
     }
 
     fn execute_blocks_with_batch(&self, blocks: Vec<Block<Transaction>>) -> Result<()> {
@@ -591,9 +652,12 @@ impl ExecutionProvider for EthExecutionProvider {
 
         self.write_storage.clear_tracking();
         let mut batch = self.write_storage.begin_batch()?;
+        let block_count = blocks.len();
+        let mut completed = Vec::with_capacity(block_count);
 
         for block in blocks {
-            let (executed_block, _receipts, metas) = self.execute_block_with_batch(block, &mut batch, None, false, None, None, vec![])?;
+            let (executed_block, _receipts, metas, mut measurements) = self.execute_block_with_batch_timed(block, &mut batch, None, false, None, None, vec![])?;
+            let persistence_start = Instant::now();
 
             // Persist ChangeSets for this block
             let account_changes = batch.collect_account_changes();
@@ -604,16 +668,45 @@ impl ExecutionProvider for EthExecutionProvider {
             for (i, meta) in metas.iter().enumerate() {
                 batch.insert_receipt_meta(executed_block.header.hash_slow(), i as u64, meta.clone())?;
             }
-            
+
+            measurements.persistence += persistence_start.elapsed();
+            completed.push((
+                executed_block.header.number,
+                executed_block.header.hash_slow(),
+                executed_block.body.transactions.len(),
+                measurements,
+            ));
+
             // Clear tracking for next block in batch
             batch.clear_tracking();
         }
 
+        let commit_start = Instant::now();
         batch.commit()?;
+        let commit_per_block = Duration::from_nanos(
+            (commit_start.elapsed().as_nanos() / block_count as u128).min(u64::MAX as u128) as u64,
+        );
+        for (number, hash, tx_count, mut measurements) in completed {
+            measurements.persistence += commit_per_block;
+            self.cost_model.record(tx_count, measurements.state_root + measurements.persistence);
+            wasix_eth_utils::exp!("[EXP] IMPORT_END number={} txs={} exec_ms={} root_ms={} persist_ms={}",
+                number,
+                tx_count,
+                measurements.execution.as_millis(),
+                measurements.state_root.as_millis(),
+                measurements.persistence.as_millis());
+            debug!("[Execution] Re-executed block {} ({:?}) during fork switch", number, hash);
+        }
         Ok(())
     }
 
-    fn execute_block_with_batch(&self, mut block: Block<Transaction>, batch: &mut BatchWriter, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>, _deadline: Option<std::time::Instant>, optimistic_transactions: Vec<Transaction>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
+    fn execute_block_with_batch(&self, block: Block<Transaction>, batch: &mut BatchWriter, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>, deadline: Option<Instant>, optimistic_transactions: Vec<Transaction>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
+        self.execute_block_with_batch_timed(block, batch, state_root, building, interruption_token, deadline, optimistic_transactions)
+            .map(|(block, receipts, metas, _)| (block, receipts, metas))
+    }
+
+    fn execute_block_with_batch_timed(&self, mut block: Block<Transaction>, batch: &mut BatchWriter, state_root: Option<B256>, building: bool, interruption_token: Option<CancellationToken>, _deadline: Option<Instant>, optimistic_transactions: Vec<Transaction>) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, ExecutionMeasurements)> {
+        let execution_start = Instant::now();
         let mut state_root = state_root;
         if state_root.is_none() && block.header.number > 0 {
             // Look up the parent header to get the correct state root for the reorged path
@@ -843,12 +936,27 @@ impl ExecutionProvider for EthExecutionProvider {
         block_processor.apply_block_rewards(fork, block.header.beneficiary, &block.body.ommers, state_root, block.header.number)?;
 
 
+        let root_start = Instant::now();
         let calculated_root = batch.calculate_state_root(fork >= Hardfork::SpuriousDragon, state_root)?;
+        let root_duration = root_start.elapsed();
         debug!("[Execution] State root calculated: {:?}", calculated_root);
+        if !building {
+            wasix_eth_utils::exp!("[EXP] IMPORT_ROOT number={} root_ms={}", block.header.number, root_duration.as_millis());
+        }
 
         self.finalize_block_header_with_requests(&mut block, &receipts, cumulative_gas_used, calculated_root, fork, building)?;
         info!("[Execution] Block header finalized for block {}", block.header.number);
-        Ok((block, receipts, metas))
+        let execution_duration = execution_start.elapsed().saturating_sub(root_duration);
+        Ok((
+            block,
+            receipts,
+            metas,
+            ExecutionMeasurements {
+                execution: execution_duration,
+                state_root: root_duration,
+                persistence: Duration::ZERO,
+            },
+        ))
     }
 
     fn execute_block_for_payload(
@@ -861,6 +969,28 @@ impl ExecutionProvider for EthExecutionProvider {
         interruption_token: Option<CancellationToken>,
         deadline: Option<std::time::Instant>,
     ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>)> {
+        self.execute_block_for_payload_timed(
+            transactions,
+            optimistic_transactions,
+            parent_header,
+            attributes,
+            base_fee,
+            interruption_token,
+            deadline,
+        )
+        .map(|(block, receipts, metas, _)| (block, receipts, metas))
+    }
+
+    fn execute_block_for_payload_timed(
+        &self,
+        transactions: Vec<Transaction>,
+        optimistic_transactions: Vec<Transaction>,
+        parent_header: &Header,
+        attributes: &PayloadAttributes,
+        base_fee: Option<u64>,
+        interruption_token: Option<CancellationToken>,
+        deadline: Option<Instant>,
+    ) -> Result<(Block<Transaction>, Vec<Receipt>, Vec<ReceiptMeta>, ExecutionMeasurements)> {
         let chain_id = self.read_storage.chain_id().unwrap_or(1);
         let chain_config = self.read_storage.chain_config()?.unwrap_or_else(|| ChainConfig {
             chain_id,
@@ -936,7 +1066,7 @@ impl ExecutionProvider for EthExecutionProvider {
         self.write_storage.clear_tracking();
         let mut batch = self.write_storage.begin_batch()?;
         
-        self.execute_block_with_batch(block, &mut batch, Some(parent_header.state_root), true, interruption_token, deadline, optimistic_transactions)
+        self.execute_block_with_batch_timed(block, &mut batch, Some(parent_header.state_root), true, interruption_token, deadline, optimistic_transactions)
     }
 
     fn run_execution(
