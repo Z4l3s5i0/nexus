@@ -113,7 +113,7 @@ jobs:
             hive-custom \
             --sim ethereum/engine \
             --client wasix-w-eth \
-            --sim.parallelism 20 \
+            --sim.parallelism 5 \
             --docker.pull=false
 
       - name: Parse test results

@@ -123,25 +123,47 @@ for ((i = 0; i < w_wasix; i++)); do
     TARGET_INDICES+=("$((c_linux + c_geth + i))")
 done
 
-# State readiness check function
+# State readiness check function — uses eth_syncing to detect when Geth snap sync state healing is complete
 wait_for_node_state_ready() {
     local rpc_url=$1
     local node_index=$2
-    local genesis_account="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"  # Default Foundry anvil account
     
     echo "Checking state readiness for node $node_index at $rpc_url..."
-    local max_attempts=60
+    local max_attempts=120
     for attempt in $(seq 1 $max_attempts); do
-        # Try to query balance of a genesis account
-        local response
-        response=$(curl -fsS --max-time 3 -H 'Content-Type: application/json' \
-            --data-binary "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getBalance\",\"params\":[\"$genesis_account\",\"latest\"],\"id\":1}" \
+        # Check if the node is syncing
+        local sync_response
+        sync_response=$(curl -fsS --max-time 3 -H 'Content-Type: application/json' \
+            --data-binary '{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":1}' \
             "$rpc_url" 2>/dev/null || true)
         
-        # Check if we got a valid response with a balance
-        if echo "$response" | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'result' in d and d.get('error') is None" 2>/dev/null; then
-            echo "Node $node_index state is ready."
+        # If eth_syncing returns false, the node is fully synced and ready
+        if echo "$sync_response" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d.get('result') == False" 2>/dev/null; then
+            echo "Node $node_index is fully synced and ready."
             return 0
+        fi
+        
+        # If eth_syncing returns a dict (snap sync in progress), check if state sync is complete
+        # During snap sync with Path-based state scheme, the response includes 'stateHealingDone'
+        local snap_sync_done
+        snap_sync_done=$(echo "$sync_response" | python3 -c "
+import json, sys
+d = json.load(sys.stdin).get('result')
+if isinstance(d, dict):
+    # Path-based state scheme: check stateHealingDone
+    print('true' if d.get('stateHealingDone', False) else 'false')
+else:
+    print('false')
+" 2>/dev/null || echo "false")
+        
+        if [ "$snap_sync_done" = "true" ]; then
+            echo "Node $node_index snap sync state healing is done."
+            return 0
+        fi
+        
+        # Periodically log progress
+        if [ $((attempt % 30)) -eq 0 ]; then
+            echo "Node $node_index still syncing (attempt $attempt/$max_attempts)..."
         fi
         
         if [ "$attempt" -eq "$max_attempts" ]; then
