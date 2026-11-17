@@ -6,6 +6,10 @@ on:
       - dev
   workflow_dispatch:
 
+permissions:
+  contents: write
+  workflows: write
+
 jobs:
   setup:
     name: Prepare Build Environment
