@@ -23,7 +23,21 @@ jobs:
         with:
           clean: false
 
+      - name: Check existing toolchain
+        id: check
+        run: |
+          echo "Checking if build tools are already available..."
+
+          if ! command -v rustc &>/dev/null || ! command -v cargo &>/dev/null; then
+            echo "needs_rust=true" >> $GITHUB_OUTPUT
+            echo "Rust toolchain is missing"
+          else
+            echo "needs_rust=false" >> $GITHUB_OUTPUT
+            echo "Rust toolchain is already installed"
+          fi
+
       - name: Set up Rust toolchain
+        if: steps.check.outputs.needs_rust == 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Rust Cache

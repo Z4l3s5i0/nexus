@@ -23,25 +23,61 @@ jobs:
         with:
           clean: false
 
+      - name: Check existing toolchain
+        id: check
+        run: |
+          echo "Checking if build tools are already available..."
+
+          if ! command -v rustc &>/dev/null || ! command -v cargo &>/dev/null; then
+            echo "needs_rust=true" >> $GITHUB_OUTPUT
+            echo "Rust toolchain is missing"
+          else
+            echo "needs_rust=false" >> $GITHUB_OUTPUT
+            echo "Rust toolchain is already installed"
+          fi
+
+          if ! command -v wasixcc &>/dev/null; then
+            echo "needs_wasixcc=true" >> $GITHUB_OUTPUT
+            echo "wasixcc is missing"
+          else
+            echo "needs_wasixcc=false" >> $GITHUB_OUTPUT
+            echo "wasixcc is already installed"
+          fi
+
+          if ! command -v cargo &>/dev/null || ! cargo wasix --version &>/dev/null; then
+            echo "needs_cargowasix=true" >> $GITHUB_OUTPUT
+            echo "cargo-wasix is missing"
+          else
+            echo "needs_cargowasix=false" >> $GITHUB_OUTPUT
+            echo "cargo-wasix is already installed"
+          fi
+
+          if ! command -v lld &>/dev/null && ! command -v ld.lld &>/dev/null; then
+            echo "needs_lld=true" >> $GITHUB_OUTPUT
+            echo "lld is missing"
+          else
+            echo "needs_lld=false" >> $GITHUB_OUTPUT
+            echo "lld is already installed"
+          fi
+
       - name: Set up Rust toolchain
+        if: steps.check.outputs.needs_rust == 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Set up wasixcc (C/C++ toolchain & sysroot)
+        if: steps.check.outputs.needs_wasixcc == 'true'
         uses: wasix-org/wasixcc@v0.4.7
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install build dependencies
+        if: steps.check.outputs.needs_lld == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y lld
 
-      - name: Verify wasixcc
-        run: |
-          wasixcc --version
-          which wasixcc
-
       - name: Set up cargo-wasix
+        if: steps.check.outputs.needs_cargowasix == 'true'
         uses: wasix-org/cargo-wasix@v0.1.34
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
