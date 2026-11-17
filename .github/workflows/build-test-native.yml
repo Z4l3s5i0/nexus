@@ -1,0 +1,107 @@
+name: Build & Test Native
+
+on:
+  push:
+    branches:
+      - dev
+  pull_request:
+    branches:
+      - dev
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build Native & Run Hive Tests
+    runs-on: ubuntu-latest
+    outputs:
+      build-status: ${{ steps.build-status.outputs.status }}
+      test-pass: ${{ steps.parse-results.outputs.pass }}
+      test-fail: ${{ steps.parse-results.outputs.fail }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: wasix_eth -> target
+
+      - name: Build native release binary
+        run: |
+          cd wasix_eth
+          cargo build --release
+
+      - name: Verify build artifact
+        id: build-status
+        run: |
+          test -f wasix_eth/target/release/wasix_eth || (echo "Native binary wasix_eth not found!" && exit 1)
+          ls -la wasix_eth/target/release/wasix_eth
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Build Linux client Docker image
+        run: |
+          docker build -t z4l3s5i0/wasix-eth-linux:latest -f wasix_eth/Dockerfile.linux wasix_eth
+
+      - name: Build Hive test runner image
+        run: |
+          docker build -t hive-custom -f hive/hive.dockerfile .
+
+      - name: Run Hive engine simulation - wasix-r-eth (native)
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v $(pwd)/workspace:/hive/workspace \
+            hive-custom \
+            --sim ethereum/engine \
+            --client wasix-r-eth \
+            --sim.parallelism 20 \
+            --docker.pull=false
+
+      - name: Parse test results
+        id: parse-results
+        if: always()
+        run: |
+          pass=0
+          fail=0
+          for f in workspace/logs/*.json; do
+            if [ -f "$f" ]; then
+              p=$(grep -o '"summaryResult":true' "$f" | wc -l)
+              f_count=$(grep -o '"summaryResult":false' "$f" | wc -l)
+              pass=$((pass + p))
+              fail=$((fail + f_count))
+            fi
+          done
+          echo "pass=$pass" >> $GITHUB_OUTPUT
+          echo "fail=$fail" >> $GITHUB_OUTPUT
+          echo "wasix-r-eth: $pass passed, $fail failed"
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hive-test-logs-wasix-r-eth
+          path: workspace/logs
+          retention-days: 30
+
+      - name: Generate build status badge
+        if: always()
+        uses: peterrhodesdev/build-a-badge@v1.3.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          filename: native-build-status
+          label: Native Build
+          message: ${{ steps.build-status.outputs.status }}
+          color: ${{ steps.build-status.outputs.status == 'success' && 'green' || 'red' }}
+
+      - name: Generate test status badge
+        if: always()
+        uses: peterrhodesdev/build-a-badge@v1.3.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          filename: wasix-r-eth-tests
+          label: wasix-r-eth
+          message: ${{ steps.parse-results.outputs.pass }}✓ ${{ steps.parse-results.outputs.fail }}✗
+          color: ${{ steps.parse-results.outputs.fail == '0' && 'green' || 'orange' }}

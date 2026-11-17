@@ -1,0 +1,44 @@
+name: Setup Environment
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  setup:
+    name: Prepare Build Environment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up wasixcc (C/C++ toolchain & sysroot)
+        uses: wasix-org/wasixcc@v0.4.7
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify wasixcc
+        run: |
+          wasixcc --version
+          which wasixcc
+
+      - name: Set up cargo-wasix
+        uses: wasix-org/cargo-wasix@v0.1.34
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: wasix_eth -> target
+
+      - name: Verify toolchain
+        run: |
+          rustc --version
+          cargo --version
+          cargo wasix --version
+          echo "Environment setup complete"
