@@ -536,58 +536,6 @@ PY
     fi
 }
 
-verify_geth_state_ready() {
-    local index=$1
-    local eth_port=$2
-    local service="el-node-$index"
-    
-    echo "Verifying state readiness for Geth node $index..."
-    local max_attempts=120
-    for attempt in $(seq 1 $max_attempts); do
-        # Check if the node is syncing
-        local sync_response
-        sync_response=$(curl -fsS --max-time 3 -H 'Content-Type: application/json' \
-            --data-binary '{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":1}' \
-            "http://127.0.0.1:$eth_port" 2>/dev/null || true)
-        
-        # If eth_syncing returns false, the node is fully synced and ready
-        if echo "$sync_response" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d.get('result') == False" 2>/dev/null; then
-            echo "Geth node $index is fully synced and ready."
-            return 0
-        fi
-        
-        # If eth_syncing returns a dict (snap sync in progress), check if state sync is complete
-        # During snap sync, the response is a dict with 'startingBlock', 'currentBlock', 'highestBlock'
-        # and 'stateHealed', 'stateHealingDone' fields for Path-based state scheme
-        local snap_sync_done
-        snap_sync_done=$(echo "$sync_response" | python3 -c "
-import json, sys
-d = json.load(sys.stdin).get('result')
-if isinstance(d, dict):
-    # Path-based state scheme: check stateHealingDone
-    print('true' if d.get('stateHealingDone', False) else 'false')
-else:
-    print('false')
-" 2>/dev/null || echo "false")
-        
-        if [ "$snap_sync_done" = "true" ]; then
-            echo "Geth node $index snap sync state healing is done."
-            return 0
-        fi
-        
-        # Periodically log progress
-        if [ $((attempt % 30)) -eq 0 ]; then
-            echo "Geth node $index still syncing (attempt $attempt/$max_attempts)..."
-        fi
-        
-        if [ "$attempt" -eq "$max_attempts" ]; then
-            echo "Warning: Geth node $index state readiness check timed out. The node may still sync in the background."
-            return 1
-        fi
-        sleep 2
-    done
-}
-
 verify_geth_mixed_peers() {
     if [ "$GETH_NODES" -eq 0 ] || [ $((LINUX_NODES + WASIX_NODES)) -eq 0 ]; then
         return 0
@@ -684,8 +632,6 @@ for i in $(seq 0 $((NODES - 1))); do
         $COMPOSE_CMD -f "$COMPOSE_FILE" run --rm --no-deps --entrypoint geth "el-node-$i" --datadir=/app/data init /app/startup/genesis.json
         $COMPOSE_CMD -f "$COMPOSE_FILE" up -d "el-node-$i"
         register_geth_node "$i" "$ETH_PORT" "$P2P_PORT" "$DISC_PORT" "$METRICS_PORT"
-        # Verify state is queryable after registration
-        verify_geth_state_ready "$i" "$ETH_PORT"
         CL_SERVICES="cl-node-$i"
         if [ "$IS_VAL" = "true" ]; then
             CL_SERVICES="$CL_SERVICES vc-node-$i"
