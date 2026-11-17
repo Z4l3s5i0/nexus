@@ -90,9 +90,18 @@ fi
 echo "Step 2: Starting background log processor..."
 bash "$SCRIPT_DIR/manage_logs.sh" start --chain-id "$CHAIN_ID"
 
-# 3. Wait for 60 seconds
-echo "Step 3: Waiting 60 seconds for network stabilization..."
-sleep 60
+# 3. Wait for network stabilization
+# Geth nodes need more time for state trie initialization, especially with Path-based state scheme
+# Calculate wait time based on node count and type
+if [ "$c_geth" -gt 0 ]; then
+    # Geth nodes: 120s base + 10s per Geth node
+    STABILIZATION_WAIT=$((120 + c_geth * 10))
+else
+    # Non-Geth nodes: 60s is sufficient
+    STABILIZATION_WAIT=60
+fi
+echo "Step 3: Waiting $STABILIZATION_WAIT seconds for network stabilization..."
+sleep "$STABILIZATION_WAIT"
 
 # 4. Start run_workload for each node in background
 echo "Step 4: Starting workload for $WORKLOAD_NODES node(s) in background ($w_linux Linux, $w_geth Geth, $w_wasix WASM)..."
@@ -114,6 +123,35 @@ for ((i = 0; i < w_wasix; i++)); do
     TARGET_INDICES+=("$((c_linux + c_geth + i))")
 done
 
+# State readiness check function
+wait_for_node_state_ready() {
+    local rpc_url=$1
+    local node_index=$2
+    local genesis_account="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"  # Default Foundry anvil account
+    
+    echo "Checking state readiness for node $node_index at $rpc_url..."
+    local max_attempts=60
+    for attempt in $(seq 1 $max_attempts); do
+        # Try to query balance of a genesis account
+        local response
+        response=$(curl -fsS --max-time 3 -H 'Content-Type: application/json' \
+            --data-binary "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getBalance\",\"params\":[\"$genesis_account\",\"latest\"],\"id\":1}" \
+            "$rpc_url" 2>/dev/null || true)
+        
+        # Check if we got a valid response with a balance
+        if echo "$response" | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'result' in d and d.get('error') is None" 2>/dev/null; then
+            echo "Node $node_index state is ready."
+            return 0
+        fi
+        
+        if [ "$attempt" -eq "$max_attempts" ]; then
+            echo "Warning: Node $node_index state readiness check timed out after $((max_attempts * 2)) seconds. Proceeding anyway..."
+            return 1
+        fi
+        sleep 2
+    done
+}
+
 for i in "${TARGET_INDICES[@]}"; do
     RPC_PORT=$((BASE_PORT + i))
     RPC_URL="http://el-node-$i:$RPC_PORT"
@@ -128,10 +166,16 @@ for i in "${TARGET_INDICES[@]}"; do
         exit 1
     fi
 
+    # Wait for this node's state to be ready before launching workload
+    wait_for_node_state_ready "$RPC_URL" "$i"
+
     echo "Launching workload for node $i at $RPC_URL with seed node$i"
     # We derive a deterministic seed based on the node index
     # to avoid collisions when using the same state directory.
     SEED="0x$(printf "node$i" | sha256sum | cut -d' ' -f1)"
+
+    # Separate state directory per node to avoid conflicts during setup
+    NODE_STATE_DIR=".contender_state/node_$i"
 
     # We pass --duration slightly longer than WORKLOAD_DURATION to ensure it doesn't exit early on its own
     # although we will kill it anyway.
@@ -146,6 +190,7 @@ for i in "${TARGET_INDICES[@]}"; do
         --accounts "$SPAMMER_ACCOUNTS" \
         --run-id "$RUN_ID" \
         --min-balance "100eth" \
+        --state-dir "$NODE_STATE_DIR" \
         --rpc "$RPC_URL" < /dev/null &
     WORKLOAD_PIDS+=($!)
 done
