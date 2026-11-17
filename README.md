@@ -3,10 +3,6 @@
 [![Setup Environment](https://github.com/Z4l3s5i0/nexus/actions/workflows/setup.yml/badge.svg)](https://github.com/Z4l3s5i0/nexus/actions/workflows/setup.yml)
 [![Build & Test Native](https://github.com/Z4l3s5i0/nexus/actions/workflows/build-test-native.yml/badge.svg)](https://github.com/Z4l3s5i0/nexus/actions/workflows/build-test-native.yml)
 [![Build & Test WASIX](https://github.com/Z4l3s5i0/nexus/actions/workflows/build-test-wasix.yml/badge.svg)](https://github.com/Z4l3s5i0/nexus/actions/workflows/build-test-wasix.yml)
-[![Native Build](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Z4l3s5i0/nexus/wiki/native-build-status.json)](https://github.com/Z4l3s5i0/nexus/actions/workflows/build-test-native.yml)
-[![wasix-r-eth](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Z4l3s5i0/nexus/wiki/wasix-r-eth-tests.json)](https://github.com/Z4l3s5i0/nexus/actions/workflows/build-test-native.yml)
-[![WASIX Build](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Z4l3s5i0/nexus/wiki/wasix-build-status.json)](https://github.com/Z4l3s5i0/nexus/actions/workflows/build-test-wasix.yml)
-[![wasix-w-eth](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Z4l3s5i0/nexus/wiki/wasix-w-eth-tests.json)](https://github.com/Z4l3s5i0/nexus/actions/workflows/build-test-wasix.yml)
 
 > An Ethereum execution client written in Rust, running inside a WebAssembly (WASIX) environment.
 
@@ -119,14 +115,16 @@ Every push to `dev` triggers a sequential CI pipeline:
 
 4. **[Cleanup](.github/workflows/cleanup.yml)** — Removes Docker images and workspace logs to free disk space.
 
-All workflows upload test logs as artifacts for inspection. The badges at the top of this README show:
-- **Setup Environment** — Status of the toolchain verification workflow.
-- **Build & Test Native** — Overall status of the native build and Hive tests.
-- **Build & Test WASIX** — Overall status of the WASIX build and Hive tests.
-- **Native Build** — Whether the native binary compiled and the Docker image built successfully.
-- **wasix-r-eth** — Number of passed ✓ and failed ✗ Hive Engine API tests for the native client.
-- **WASIX Build** — Whether the WASIX binary compiled and the Docker image built successfully.
-- **wasix-w-eth** — Number of passed ✓ and failed ✗ Hive Engine API tests for the WASIX client.
+All workflows upload test logs as artifacts for inspection.
+
+### Test Results
+
+| Runtime | Client | Tests Passed | Tests Failed | Total Tests |
+|---|---|---|---|---|
+| Native | wasix-r-eth | — | — | — |
+| WASIX | wasix-w-eth | — | — | — |
+
+*Test results are updated after each CI run. See the workflow run logs for detailed per-test results.*
 
 ## Documentation
 

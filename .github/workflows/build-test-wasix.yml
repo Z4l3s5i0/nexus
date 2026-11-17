@@ -5,9 +5,6 @@ on:
     types: [trigger-wasix-build]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build-and-test:
     name: Build WASIX & Run Hive Tests
@@ -137,6 +134,42 @@ jobs:
           echo "fail=$fail" >> $GITHUB_OUTPUT
           echo "wasix-w-eth: $pass passed, $fail failed"
 
+      - name: Validate results
+        id: validate
+        if: always()
+        run: |
+          build_ok="${{ steps.build-status.outputs.status }}"
+          pass=${{ steps.parse-results.outputs.pass }}
+          fail=${{ steps.parse-results.outputs.fail }}
+          total=$((pass + fail))
+          
+          echo "Build status: $build_ok"
+          echo "Tests passed: $pass / $total"
+          
+          # If build failed, mark workflow as failed
+          if [ "$build_ok" != "success" ]; then
+            echo "❌ Build failed — workflow marked as failed"
+            exit 1
+          fi
+          
+          # If no tests ran, mark as failed
+          if [ "$total" -eq 0 ]; then
+            echo "❌ No tests were executed — workflow marked as failed"
+            exit 1
+          fi
+          
+          # Check if at least 95% of tests passed
+          pass_percent=$((pass * 100 / total))
+          echo "Pass rate: ${pass_percent}%"
+          
+          if [ "$pass_percent" -lt 95 ]; then
+            echo "❌ Pass rate ${pass_percent}% is below 95% threshold — workflow marked as failed"
+            exit 1
+          fi
+          
+          echo "✅ Build passed and ${pass_percent}% of tests passed (≥95%) — workflow successful"
+          echo "result=success" >> $GITHUB_OUTPUT
+
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -144,33 +177,6 @@ jobs:
           name: hive-test-logs-wasix-w-eth
           path: workspace/logs
           retention-days: 30
-
-      - name: Fix workspace logs permissions
-        if: always()
-        run: |
-          chmod -R +w workspace/logs 2>/dev/null || true
-
-      - name: Generate build status badge
-        if: always()
-        continue-on-error: true
-        uses: peterrhodesdev/build-a-badge@v1.3.1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          filename: wasix-build-status
-          label: WASIX Build
-          message: ${{ steps.build-status.outputs.status }}
-          color: ${{ steps.build-status.outputs.status == 'success' && 'green' || 'red' }}
-
-      - name: Generate test status badge
-        if: always()
-        continue-on-error: true
-        uses: peterrhodesdev/build-a-badge@v1.3.1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          filename: wasix-w-eth-tests
-          label: wasix-w-eth
-          message: ${{ steps.parse-results.outputs.pass }}✓ ${{ steps.parse-results.outputs.fail }}✗
-          color: ${{ steps.parse-results.outputs.fail == '0' && 'green' || 'orange' }}
 
   trigger-cleanup:
     name: Trigger Cleanup
