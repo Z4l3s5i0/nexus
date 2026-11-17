@@ -103,8 +103,14 @@ jobs:
           path: workspace/logs
           retention-days: 30
 
+      - name: Fix workspace logs permissions
+        if: always()
+        run: |
+          chmod -R +w workspace/logs 2>/dev/null || true
+
       - name: Generate build status badge
         if: always()
+        continue-on-error: true
         uses: peterrhodesdev/build-a-badge@v1.3.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -115,6 +121,7 @@ jobs:
 
       - name: Generate test status badge
         if: always()
+        continue-on-error: true
         uses: peterrhodesdev/build-a-badge@v1.3.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

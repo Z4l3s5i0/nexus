@@ -14,6 +14,11 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.action == 'trigger-cleanup' }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
       - name: Remove Docker images
         run: |
           echo "Removing Docker images..."

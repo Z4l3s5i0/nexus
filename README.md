@@ -1,12 +1,12 @@
 # NEXUS
 
-[![Setup Environment](https://github.com/Z4l3s5i0/wasm-based-evm/actions/workflows/setup.yml/badge.svg)](https://github.com/Z4l3s5i0/wasm-based-evm/actions/workflows/setup.yml)
-[![Build & Test Native](https://github.com/Z4l3s5i0/wasm-based-evm/actions/workflows/build-test-native.yml/badge.svg)](https://github.com/Z4l3s5i0/wasm-based-evm/actions/workflows/build-test-native.yml)
-[![Build & Test WASIX](https://github.com/Z4l3s5i0/wasm-based-evm/actions/workflows/build-test-wasix.yml/badge.svg)](https://github.com/Z4l3s5i0/wasm-based-evm/actions/workflows/build-test-wasix.yml)
-[![Native Build](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Z4l3s5i0/wasm-based-evm/wiki/native-build-status.json)](https://github.com/Z4l3s5i0/wasm-based-evm/actions/workflows/build-test-native.yml)
-[![wasix-r-eth](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Z4l3s5i0/wasm-based-evm/wiki/wasix-r-eth-tests.json)](https://github.com/Z4l3s5i0/wasm-based-evm/actions/workflows/build-test-native.yml)
-[![WASIX Build](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Z4l3s5i0/wasm-based-evm/wiki/wasix-build-status.json)](https://github.com/Z4l3s5i0/wasm-based-evm/actions/workflows/build-test-wasix.yml)
-[![wasix-w-eth](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Z4l3s5i0/wasm-based-evm/wiki/wasix-w-eth-tests.json)](https://github.com/Z4l3s5i0/wasm-based-evm/actions/workflows/build-test-wasix.yml)
+[![Setup Environment](https://github.com/Z4l3s5i0/nexus/actions/workflows/setup.yml/badge.svg)](https://github.com/Z4l3s5i0/nexus/actions/workflows/setup.yml)
+[![Build & Test Native](https://github.com/Z4l3s5i0/nexus/actions/workflows/build-test-native.yml/badge.svg)](https://github.com/Z4l3s5i0/nexus/actions/workflows/build-test-native.yml)
+[![Build & Test WASIX](https://github.com/Z4l3s5i0/nexus/actions/workflows/build-test-wasix.yml/badge.svg)](https://github.com/Z4l3s5i0/nexus/actions/workflows/build-test-wasix.yml)
+[![Native Build](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Z4l3s5i0/nexus/wiki/native-build-status.json)](https://github.com/Z4l3s5i0/nexus/actions/workflows/build-test-native.yml)
+[![wasix-r-eth](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Z4l3s5i0/nexus/wiki/wasix-r-eth-tests.json)](https://github.com/Z4l3s5i0/nexus/actions/workflows/build-test-native.yml)
+[![WASIX Build](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Z4l3s5i0/nexus/wiki/wasix-build-status.json)](https://github.com/Z4l3s5i0/nexus/actions/workflows/build-test-wasix.yml)
+[![wasix-w-eth](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Z4l3s5i0/nexus/wiki/wasix-w-eth-tests.json)](https://github.com/Z4l3s5i0/nexus/actions/workflows/build-test-wasix.yml)
 
 > An Ethereum execution client written in Rust, running inside a WebAssembly (WASIX) environment.
 
@@ -109,16 +109,18 @@ CLI (wasix_eth_app)
 
 ## CI & Hive Testing
 
-Every push and pull request triggers three independent CI workflows:
+Every push to `dev` triggers a sequential CI pipeline:
 
-1. **[Setup Environment](.github/workflows/setup.yml)** — Prepares the build environment by installing the Rust toolchain (stable), `wasixcc` (WASIX C/C++ cross-compiler with sysroot), and `cargo-wasix` (WASIX build tool). Verifies all tools are correctly configured.
+1. **[Setup Environment](.github/workflows/setup.yml)** — Checks for existing build tools (Rust, `wasixcc`, `cargo-wasix`, `lld`) and installs only what's missing. Verifies all tools are correctly configured, then triggers the next stage.
 
-2. **[Build & Test Native](.github/workflows/build-test-native.yml)** — Compiles the native Linux binary (`cargo build --release`), builds the Docker image (`z4l3s5i0/wasix-eth-linux:latest`), then runs the Hive Ethereum Engine API simulation test suite against the `wasix-r-eth` client using a custom Hive runner (`hive/hive.dockerfile`). Tests execute with `--docker.pull=false` so the freshly built local image is used directly.
+2. **[Build & Test Native](.github/workflows/build-test-native.yml)** — Compiles the native Linux binary (`cargo build --release`), builds the Docker image (`z4l3s5i0/wasix-eth-linux:latest`), then runs the Hive Ethereum Engine API simulation test suite against the `wasix-r-eth` client using a custom Hive runner (`hive/hive.dockerfile`). Tests execute with `--docker.pull=false` so the freshly built local image is used directly. After completion, triggers the WASIX stage.
 
-3. **[Build & Test WASIX](.github/workflows/build-test-wasix.yml)** — Sets up the full WASIX toolchain, compiles the WASIX binary (`cargo wasix build --release`), builds the Docker image (`z4l3s5i0/wasix-eth-wasix:latest`), then runs the Hive Ethereum Engine API simulation test suite against the `wasix-w-eth` client. Tests execute with `--docker.pull=false` so the freshly built local image is used directly.
+3. **[Build & Test WASIX](.github/workflows/build-test-wasix.yml)** — Sets up the full WASIX toolchain, compiles the WASIX binary (`cargo wasix build --release`), builds the Docker image (`z4l3s5i0/wasix-eth-wasix:latest`), then runs the Hive Ethereum Engine API simulation test suite against the `wasix-w-eth` client. Tests execute with `--docker.pull=false` so the freshly built local image is used directly. After completion, triggers cleanup.
+
+4. **[Cleanup](.github/workflows/cleanup.yml)** — Removes Docker images and workspace logs to free disk space.
 
 All workflows upload test logs as artifacts for inspection. The badges at the top of this README show:
-- **Setup Environment** — Status of the toolchain preparation workflow.
+- **Setup Environment** — Status of the toolchain verification workflow.
 - **Build & Test Native** — Overall status of the native build and Hive tests.
 - **Build & Test WASIX** — Overall status of the WASIX build and Hive tests.
 - **Native Build** — Whether the native binary compiled and the Docker image built successfully.
