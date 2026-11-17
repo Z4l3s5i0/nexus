@@ -1,0 +1,33 @@
+name: Cleanup
+
+on:
+  repository_dispatch:
+    types: [trigger-cleanup]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    name: Cleanup Build Artifacts
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.action == 'trigger-cleanup' }}
+    steps:
+      - name: Remove Docker images
+        run: |
+          echo "Removing Docker images..."
+          docker rmi z4l3s5i0/wasix-eth-linux:latest || true
+          docker rmi z4l3s5i0/wasix-eth-wasix:latest || true
+          docker rmi hive-custom || true
+          docker image prune -f
+
+      - name: Remove workspace logs
+        run: |
+          echo "Removing workspace directory..."
+          rm -rf workspace
+
+      - name: Cleanup complete
+        run: |
+          echo "Cleanup finished successfully"
+          docker system df

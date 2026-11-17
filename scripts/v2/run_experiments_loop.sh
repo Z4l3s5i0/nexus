@@ -10,11 +10,13 @@ VARIANTS=(
 )
 WAIT_DURATION=900
 RATIO_VARIANTS=(
-    "10 0"
-    "5 5"
-    "0 10"
+    "10 0 0"
+    "0 10 0"
     "0 0 10"
+    "5 5 0"
     "0 5 5"
+    "5 0 5"
+    "3 3 4"
 )
 WORKLOAD_NODE_PERCENT=100
 

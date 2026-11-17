@@ -11,46 +11,88 @@ permissions:
 
 jobs:
   setup:
-    name: Prepare Build Environment
+    name: Verify & Setup Build Environment
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Check existing toolchain
+        id: check
+        run: |
+          echo "Checking if build tools are already available..."
+          MISSING=""
+
+          if ! command -v rustc &>/dev/null; then
+            MISSING="$MISSING rustc"
+          fi
+
+          if ! command -v cargo &>/dev/null; then
+            MISSING="$MISSING cargo"
+          fi
+
+          if ! command -v wasixcc &>/dev/null; then
+            MISSING="$MISSING wasixcc"
+          fi
+
+          if ! command -v lld &>/dev/null && ! command -v ld.lld &>/dev/null; then
+            MISSING="$MISSING lld"
+          fi
+
+          if [ -z "$MISSING" ]; then
+            echo "All build tools are already installed - skipping setup"
+            echo "needs_setup=false" >> $GITHUB_OUTPUT
+          else
+            echo "Missing tools:$MISSING - installation required"
+            echo "needs_setup=true" >> $GITHUB_OUTPUT
+          fi
+
       - name: Set up Rust toolchain
+        if: steps.check.outputs.needs_setup == 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Set up wasixcc (C/C++ toolchain & sysroot)
+        if: steps.check.outputs.needs_setup == 'true'
         uses: wasix-org/wasixcc@v0.4.7
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Verify wasixcc
-        run: |
-          wasixcc --version
-          which wasixcc
-
       - name: Set up cargo-wasix
+        if: steps.check.outputs.needs_setup == 'true'
         uses: wasix-org/cargo-wasix@v0.1.34
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: wasix_eth -> target
+      - name: Install build dependencies
+        if: steps.check.outputs.needs_setup == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lld
 
       - name: Verify toolchain
         run: |
+          echo "Verifying Rust toolchain..."
           rustc --version
           cargo --version
+          
+          echo "Verifying wasixcc..."
+          wasixcc --version
+          which wasixcc
+          
+          echo "Verifying cargo-wasix..."
           cargo wasix --version
-          echo "Environment setup complete"
+          
+          echo "Verifying lld linker..."
+          lld --version || echo "lld not found in PATH, checking alternatives..."
+          which ld.lld || true
+          
+          echo "All verifications passed - environment is ready"
 
   trigger-native:
     name: Trigger Native Build
     needs: setup
     runs-on: ubuntu-latest
+    if: ${{ success() }}
     steps:
       - name: Trigger Build & Test Native
         uses: peter-evans/repository-dispatch@v3

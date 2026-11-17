@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          clean: false
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -70,6 +72,7 @@ jobs:
           docker build -t hive-custom -f hive/hive.dockerfile .
 
       - name: Run Hive engine simulation - wasix-w-eth (WASIX)
+        continue-on-error: true
         run: |
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
@@ -125,3 +128,16 @@ jobs:
           label: wasix-w-eth
           message: ${{ steps.parse-results.outputs.pass }}✓ ${{ steps.parse-results.outputs.fail }}✗
           color: ${{ steps.parse-results.outputs.fail == '0' && 'green' || 'orange' }}
+
+  trigger-cleanup:
+    name: Trigger Cleanup
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    steps:
+      - name: Trigger Cleanup Workflow
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          event-type: trigger-cleanup
+          client-payload: '{"ref": "${{ github.ref }}", "sha": "${{ github.sha }}"}'

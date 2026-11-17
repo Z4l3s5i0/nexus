@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          clean: false
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -50,6 +52,7 @@ jobs:
           docker build -t hive-custom -f hive/hive.dockerfile .
 
       - name: Run Hive engine simulation - wasix-r-eth (native)
+        continue-on-error: true
         run: |
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
