@@ -11,23 +11,15 @@ use:
 - matplot/seaborn
 
 ## bugs
-- freeze at high contention workloads when reorging on reorging --> too long execution time
-- adjust gaslimit for contender workload spam
-- hive bugs:
-  - blobs
-  - reorg (forkchoiceupdate: context deadline exceeded)
-### mitigation ideas
-- evm parallelization and sidechain building with swapping
-- storage for (pre)validated payloads (one time execution)
-- snapshotting for freezes, rollbacks
+- high contention workloads do not include all the transactions,.. reorg back to few transactions?
 
 ## metrics
 Analyse papers.
 at the moment:
 - submit/commit ratio
+- block and transaction executiontime
 - latency?
 - syscalls?
-- block and transaction executiontime
 
 ## experiments
 - run a geth node gather the same metrics for a comparison

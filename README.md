@@ -1,5 +1,7 @@
 # NEXUS
 
+[![Hive Engine CI](https://github.com/Z4l3s5i0/wasm-based-evm/actions/workflows/hive-engine-ci.yml/badge.svg)](https://github.com/Z4l3s5i0/wasm-based-evm/actions/workflows/hive-engine-ci.yml)
+
 > An Ethereum execution client written in Rust, running inside a WebAssembly (WASIX) environment.
 
 **NEXUS** (powered by the `wasix_eth` crate) implements the core Ethereum protocol — EVM execution, block processing, P2P networking (RLPx + Discv4), JSON-RPC APIs (including the Engine API for consensus client integration), mempool management, chain synchronization, and reorg handling — while being portable across platforms thanks to WebAssembly.
@@ -98,6 +100,17 @@ CLI (wasix_eth_app)
 | `hive/` | Custom HIVE test suite Docker setup for Ethereum engine client testing |
 | `diablo_workloads/` | Solidity contracts (counter, dota, uber) and workload YAML configs for benchmarking |
 | `thesis_results/` | Benchmark result PDFs and failure reports (comparing wasix, rust, and wasm builds) |
+
+## CI & Hive Testing
+
+Every push and pull request triggers an automated CI pipeline ([`.github/workflows/hive-engine-ci.yml`](.github/workflows/hive-engine-ci.yml)) that:
+
+1. **Compiles** the project for both native Linux (`cargo build --release`) and WASIX (`cargo wasix build --release`).
+2. **Builds Docker images** tagged as `z4l3s5i0/wasix-eth-linux:latest` and `z4l3s5i0/wasix-eth-wasix:latest`, matching the Hive client definitions.
+3. **Runs the Hive Ethereum Engine API simulation test suite** against both client variants (`wasix-r-eth` and `wasix-w-eth`) using a custom Hive runner (`hive/hive.dockerfile`). Tests execute with `--docker.pull=false` so the freshly built local images are used directly without requiring Docker Hub credentials.
+4. **Uploads test logs** as workflow artifacts for inspection.
+
+Test results and logs are available under the **Actions** tab of the repository. The badge at the top of this README reflects the latest pipeline status.
 
 ## Documentation
 

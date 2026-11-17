@@ -1,0 +1,131 @@
+name: Hive Engine CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Native & WASIX Binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up wasixcc (C/C++ toolchain & sysroot)
+        uses: wasix-org/wasixcc@v0.4.7
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify wasixcc
+        run: |
+          wasixcc --version
+          which wasixcc
+
+      - name: Set up cargo-wasix
+        uses: wasix-org/cargo-wasix@v0.1.34
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: wasix_eth -> target
+
+      - name: Build native release binary
+        run: |
+          cd wasix_eth
+          cargo build --release
+
+      - name: Build WASIX release binary
+        run: |
+          cd wasix_eth
+          cargo wasix build --release
+
+      - name: Verify build artifacts
+        run: |
+          test -f wasix_eth/target/release/wasix_eth || (echo "Native binary wasix_eth not found!" && exit 1)
+          test -f wasix_eth/target/wasm32-wasmer-wasi/release/wasix_eth.wasi.wasm || (echo "WASIX binary wasix_eth.wasi.wasm not found!" && exit 1)
+          ls -la wasix_eth/target/release/wasix_eth
+          ls -la wasix_eth/target/wasm32-wasmer-wasi/release/wasix_eth.wasi.wasm
+
+      - name: Build Linux client Docker image
+        run: |
+          docker build -t z4l3s5i0/wasix-eth-linux:latest -f wasix_eth/Dockerfile.linux wasix_eth
+
+      - name: Build WASIX client Docker image
+        run: |
+          docker build -t z4l3s5i0/wasix-eth-wasix:latest -f wasix_eth/Dockerfile.wasix wasix_eth
+
+      - name: Build Hive test runner image
+        run: |
+          docker build -t hive-custom -f hive/hive.dockerfile .
+
+      - name: Save Docker images
+        run: |
+          docker save z4l3s5i0/wasix-eth-linux:latest z4l3s5i0/wasix-eth-wasix:latest hive-custom | gzip > docker-images.tar.gz
+
+      - name: Upload Docker images
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-images
+          path: docker-images.tar.gz
+          retention-days: 1
+
+  test:
+    name: Run Hive Engine Simulations
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Docker images
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-images
+          path: .
+
+      - name: Load Docker images
+        run: |
+          gunzip -c docker-images.tar.gz | docker load
+
+      - name: Run Hive engine simulation - wasix-r-eth (native)
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v $(pwd)/workspace:/hive/workspace \
+            hive-custom \
+            --sim ethereum/engine \
+            --client wasix-r-eth \
+            --sim.parallelism 20 \
+            --docker.pull=false
+
+      - name: Run Hive engine simulation - wasix-w-eth (WASIX)
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v $(pwd)/workspace:/hive/workspace \
+            hive-custom \
+            --sim ethereum/engine \
+            --client wasix-w-eth \
+            --sim.parallelism 5 \
+            --docker.pull=false
+
+      - name: Upload Hive test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hive-test-logs
+          path: workspace/logs
+          retention-days: 30
