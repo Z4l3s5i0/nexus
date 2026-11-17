@@ -1,18 +1,17 @@
 name: Build & Test WASIX
 
 on:
-  push:
-    branches:
-      - dev
-  pull_request:
-    branches:
-      - dev
+  workflow_run:
+    workflows: ["Setup Environment"]
+    types:
+      - completed
   workflow_dispatch:
 
 jobs:
   build-and-test:
     name: Build WASIX & Run Hive Tests
     runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     outputs:
       build-status: ${{ steps.build-status.outputs.status }}
       test-pass: ${{ steps.parse-results.outputs.pass }}
