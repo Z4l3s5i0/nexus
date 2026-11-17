@@ -1,6 +1,6 @@
 *
 !wasix-based-evm/
 !evm/
-!hive/clients/wasix-evm/
+!hive/
 !Cargo.toml
 !Cargo.lock
