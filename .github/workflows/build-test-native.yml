@@ -1,17 +1,18 @@
 name: Build & Test Native
 
 on:
-  workflow_run:
-    workflows: ["Setup Environment"]
-    types:
-      - completed
+  repository_dispatch:
+    types: [trigger-native-build]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build-and-test:
     name: Build Native & Run Hive Tests
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.action == 'trigger-native-build' }}
     outputs:
       build-status: ${{ steps.build-status.outputs.status }}
       test-pass: ${{ steps.parse-results.outputs.pass }}
@@ -67,8 +68,8 @@ jobs:
           fail=0
           for f in workspace/logs/*.json; do
             if [ -f "$f" ]; then
-              p=$(grep -o '"summaryResult":true' "$f" | wc -l)
-              f_count=$(grep -o '"summaryResult":false' "$f" | wc -l)
+              p=$(grep -o '"pass":true' "$f" | wc -l)
+              f_count=$(grep -o '"pass":false' "$f" | wc -l)
               pass=$((pass + p))
               fail=$((fail + f_count))
             fi
@@ -104,3 +105,16 @@ jobs:
           label: wasix-r-eth
           message: ${{ steps.parse-results.outputs.pass }}✓ ${{ steps.parse-results.outputs.fail }}✗
           color: ${{ steps.parse-results.outputs.fail == '0' && 'green' || 'orange' }}
+
+  trigger-wasix:
+    name: Trigger WASIX Build
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: ${{ always() && needs.build-and-test.result == 'success' }}
+    steps:
+      - name: Trigger Build & Test WASIX
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          event-type: trigger-wasix-build
+          client-payload: '{"ref": "${{ github.ref }}", "sha": "${{ github.sha }}"}'

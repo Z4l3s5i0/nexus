@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - dev
-  pull_request:
-    branches:
-      - dev
   workflow_dispatch:
 
 jobs:
@@ -46,3 +43,15 @@ jobs:
           cargo --version
           cargo wasix --version
           echo "Environment setup complete"
+
+  trigger-native:
+    name: Trigger Native Build
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Build & Test Native
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          event-type: trigger-native-build
+          client-payload: '{"ref": "${{ github.ref }}", "sha": "${{ github.sha }}"}'

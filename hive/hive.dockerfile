@@ -8,10 +8,8 @@ RUN apk add --no-cache git
 
 WORKDIR /app
 
-# Clone the repository and switch to the custom branch
-RUN git clone https://github.com/Z4l3s5i0/hive.git . && \
-    git checkout custom && \
-    git pull
+# Clone the official ethereum/hive repository
+RUN git clone https://github.com/ethereum/hive.git .
 
 # Build the main hive binary
 RUN go build -o hive .
@@ -33,9 +31,14 @@ WORKDIR /hive
 COPY --from=builder /app/hive /hive/hive
 COPY --from=builder /app/hiveview /hive/hiveview
 
-# Copy the config and simulator directories required for HIVE
-COPY --from=builder /app/clients /hive/clients
+# Copy the simulators directory from the official hive repo
 COPY --from=builder /app/simulators /hive/simulators
+
+# Copy the official clients directory from the ethereum/hive repo
+COPY --from=builder /app/clients /hive/clients
+
+# Add our custom clients alongside the official ones
+COPY hive/clients /hive/clients
 
 # Expose the default hiveview port (adjust if hiveview uses a different port)
 EXPOSE 8080
