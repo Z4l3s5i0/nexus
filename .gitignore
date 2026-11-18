@@ -22,6 +22,7 @@ workspace3
 results/
 /results/
 /.venv/
+/venv/
 /experiments/
 /results1/
 /results1_faceted/

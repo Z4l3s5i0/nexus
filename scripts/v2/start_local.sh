@@ -259,7 +259,7 @@ for i in $(seq 0 $((NODES - 1))); do
       - --authrpc.jwtsecret=/app/startup/jwt_$i.hex
       - --port=$P2P_PORT
       - --discovery.port=$DISC_PORT
-      - --nat=extip:$EXT_IP
+      - --nat=extip:el-node-$i
       - --maxpeers=50
       - --metrics
       - --metrics.addr=0.0.0.0
@@ -418,7 +418,7 @@ own_id=sys.argv[3].lower()
 non_geth_only=sys.argv[4] == "true"
 for node in nodes:
     enode=node.get("enode") or ""
-    match=re.fullmatch(r"enode://([0-9a-fA-F]{128})@([0-9.]+):([0-9]{1,5})(?:\?discport=[0-9]{1,5})?", enode)
+    match=re.fullmatch(r"enode://([0-9a-fA-F]{128})@([0-9a-zA-Z._-]+):([0-9]{1,5})(?:\?discport=[0-9]{1,5})?", enode)
     if node.get("status") != "Active" or node.get("network") != str(chain_id) or node.get("chain_id") != chain_id or node.get("id", "").lower() == own_id or (non_geth_only and node.get("client") == "geth") or not match:
         continue
     print(match.group(1).lower()+"\t"+enode)' "$node_data" "$CHAIN_ID" "$own_id" "$non_geth_only"
@@ -461,9 +461,9 @@ register_geth_node() {
         return 1
     fi
 
-    local enode="enode://$node_id@$EXT_IP:$p2p_port?discport=$discovery_port"
+    local enode="enode://$node_id@el-node-$index:$p2p_port?discport=$discovery_port"
     local register_body
-    register_body=$(python3 - "$node_id" "$CHAIN_ID" "$index" "$EXT_IP" "$eth_port" "$metrics_port" "$p2p_port" "$discovery_port" "$enode" <<'PY'
+    register_body=$(python3 - "$node_id" "$CHAIN_ID" "$index" "el-node-$index" "$eth_port" "$metrics_port" "$p2p_port" "$discovery_port" "$enode" <<'PY'
 import json
 import sys
 
@@ -671,6 +671,72 @@ for i in $(seq 0 $((NODES - 1))); do
     fi
 done
 
+ensure_geth_full_mesh() {
+    if [ "$GETH_NODES" -le 1 ]; then
+        return 0
+    fi
+
+    echo "Ensuring full mesh connectivity between all Geth nodes..."
+    local geth_indices=()
+    for ((gi = 0; gi < NODES; gi++)); do
+        if [ "${node_types[$gi]}" = "geth" ]; then
+            geth_indices+=("$gi")
+        fi
+    done
+
+    # Collect all Geth enodes from the metrics-server
+    local all_geth_enodes=""
+    for attempt in $(seq 1 30); do
+        local node_data
+        node_data=$(curl -fsS --max-time 5 "http://127.0.0.1:9100/api/nodes") || true
+        if [ -n "$node_data" ]; then
+            all_geth_enodes=$(python3 -c 'import json,sys
+nodes=json.loads(sys.argv[1])
+chain_id=int(sys.argv[2])
+for node in nodes:
+    if node.get("client") == "geth" and node.get("status") == "Active" and node.get("chain_id") == chain_id:
+        enode = node.get("enode", "")
+        if enode:
+            print(enode)' "$node_data" "$CHAIN_ID" || true)
+            break
+        fi
+        sleep 2
+    done
+
+    if [ -z "$all_geth_enodes" ]; then
+        echo "Warning: Could not collect Geth enodes from metrics-server for full mesh." >&2
+        return 0
+    fi
+
+    # For each Geth node, add all other Geth nodes as peers
+    for idx in "${geth_indices[@]}"; do
+        local service="el-node-$idx"
+        local own_node_id
+        own_node_id=$(geth_attach "$service" 'admin.nodeInfo.enr.nodeId' 2>/dev/null || true)
+        [ -z "$own_node_id" ] && continue
+
+        while IFS= read -r peer_enode; do
+            [ -z "$peer_enode" ] && continue
+            # Skip self
+            local peer_id
+            peer_id=$(python3 -c 'import re,sys; m=re.search(r"enode://([0-9a-fA-F]{128})@", sys.argv[1]); print(m.group(1).lower() if m else "")' "$peer_enode")
+            [ "$peer_id" = "$own_node_id" ] && continue
+            echo "  Adding peer $peer_id to Geth node $idx..."
+            geth_attach "$service" "admin.addPeer(\"$peer_enode\")" >/dev/null || true
+        done <<< "$all_geth_enodes"
+    done
+
+    # Wait and verify connectivity
+    sleep 5
+    for idx in "${geth_indices[@]}"; do
+        local service="el-node-$idx"
+        local peer_count
+        peer_count=$(geth_attach "$service" 'admin.peers.length' 2>/dev/null || echo "0")
+        echo "  Geth node $idx connected peers: $peer_count"
+    done
+}
+
+ensure_geth_full_mesh
 verify_geth_mixed_peers
 
 echo "Network started. Use '$COMPOSE_CMD -f $COMPOSE_FILE logs -f' to see logs."

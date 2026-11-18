@@ -145,7 +145,6 @@ fn export_el(db_path: &str, table_name: &str) -> Result<()> {
             }
         };
     }
-
     try_export!(Headers);
     try_export!(HeaderTD);
     try_export!(BlockBodies);
@@ -160,13 +159,13 @@ fn export_el(db_path: &str, table_name: &str) -> Result<()> {
     try_export!(Bytecodes);
     try_export!(AccountChangeSets);
     try_export!(StorageChangeSets);
-    try_export!(PlainState);
-    try_export!(HashedState);
     try_export!(TrieNodes);
+    try_export!(TrieNodeRefs);
     try_export!(Metadata);
     try_export!(Payloads);
     try_export!(Forkchoice);
     try_export!(ActivePeers);
+    try_export!(StateBranches);
 
     Err(anyhow::anyhow!("Table {} not supported or recognized", table_name))
 }
