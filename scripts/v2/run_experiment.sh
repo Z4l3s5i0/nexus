@@ -95,7 +95,7 @@ bash "$SCRIPT_DIR/manage_logs.sh" start --chain-id "$CHAIN_ID"
 # Calculate wait time based on node count and type
 if [ "$c_geth" -gt 0 ]; then
     # Geth nodes: 120s base + 10s per Geth node
-    STABILIZATION_WAIT=$((120 + c_geth * 10))
+    STABILIZATION_WAIT=$((60 + c_geth * 10))
 else
     # Non-Geth nodes: 60s is sufficient
     STABILIZATION_WAIT=60

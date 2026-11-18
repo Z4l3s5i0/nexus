@@ -243,7 +243,7 @@ for i in $(seq 0 $((NODES - 1))); do
     if [ "$TYPE" = "geth" ]; then
         IMAGE_STR="image: $GETH_IMAGE"
         BUILD_STR="# Pinned upstream Geth image"
-        ENTRYPOINT_STR="entrypoint: [\"sh\", \"-c\", \"cp /app/startup/jwt_$i.hex /app/data/jwt.hex && geth --datadir=/app/data init /app/startup/genesis.json && exec geth --datadir=/app/data --networkid=$CHAIN_ID --syncmode=full --catalyst --http --http.addr=0.0.0.0 --http.port=$ETH_PORT --http.api=eth,net,web3,admin '--http.vhosts=*' --port=$P2P_PORT --nat=extip:$EXT_IP --nodiscover --maxpeers=50 --metrics --metrics.addr=0.0.0.0 --metrics.port=$METRICS_PORT --ipcpath=/app/data/geth.ipc --miner.etherbase=0x0000000000000000000000000000000000000000\"]"
+        ENTRYPOINT_STR="entrypoint: [\"sh\", \"-c\", \"cp /app/startup/jwt_$i.hex /app/data/jwt.hex && geth --datadir=/app/data init /app/startup/genesis.json && exec geth --datadir=/app/data --networkid=$CHAIN_ID --syncmode=full --catalyst --http --http.addr=0.0.0.0 --http.port=$ETH_PORT --http.api=eth,net,web3,admin '--http.vhosts=*' --port=$P2P_PORT --nodiscover --maxpeers=50 --metrics --metrics.addr=0.0.0.0 --metrics.port=$METRICS_PORT --ipcpath=/app/data/geth.ipc --miner.etherbase=0x0000000000000000000000000000000000000000 --authrpc.addr=0.0.0.0 --authrpc.port=$AUTH_PORT --authrpc.jwtsecret=/app/data/jwt.hex\"]"
         COMMAND_STR="# Command is handled by entrypoint for geth"
         PORTS_STR="ports:
       - \"$ETH_PORT:$ETH_PORT\"
@@ -443,9 +443,9 @@ register_geth_node() {
         return 1
     fi
 
-    local enode="enode://$node_id@$EXT_IP:$p2p_port?discport=$discovery_port"
+    local enode="enode://$node_id@el-node-$index:$p2p_port?discport=$discovery_port"
     local register_body
-    register_body=$(python3 - "$node_id" "$CHAIN_ID" "$index" "$EXT_IP" "$eth_port" "$metrics_port" "$p2p_port" "$discovery_port" "$enode" <<'PY'
+    register_body=$(python3 - "$node_id" "$CHAIN_ID" "$index" "el-node-$index" "$eth_port" "$metrics_port" "$p2p_port" "$discovery_port" "$enode" <<'PY'
 import json
 import sys
 
