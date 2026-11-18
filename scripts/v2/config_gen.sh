@@ -36,10 +36,10 @@ ALTAIR_FORK_VERSION=0x20000000
 BELLATRIX_FORK_VERSION=0x30000000
 CAPELLA_FORK_VERSION=0x40000000
 ALTAIR_FORK_EPOCH=0
-BELLATRIX_FORK_EPOCH=0
+BELLATRIX_FORK_EPOCH=99999999
 TERMINAL_TOTAL_DIFFICULTY=0
-CAPELLA_FORK_EPOCH=0
-DENEB_FORK_EPOCH=0
+CAPELLA_FORK_EPOCH=99999999
+DENEB_FORK_EPOCH=99999999
 ELECTRA_FORK_EPOCH=99999999
 FULU_FORK_EPOCH=99999999
 GENESIS_TIMESTAMP=$GENESIS_TIMESTAMP
@@ -67,6 +67,10 @@ if [ -d "$OUTPUT_DIR/metadata" ]; then
     mv -f "$OUTPUT_DIR/metadata"/* "$OUTPUT_DIR/"
     rm -rf "$OUTPUT_DIR/metadata"
 fi
+
+# 2.5. Fix genesis.json for Geth v1.10.14 (Arrow Glacier) compatibility
+echo "Fixing genesis.json for Geth v1.10.14 compatibility..."
+python3 "$(dirname "$0")/fix_genesis_for_geth.py" "$OUTPUT_DIR/genesis.json"
 
 # 3. Generate JWT secrets for each node
 for i in $(seq 0 $((NUM_NODES - 1))); do

@@ -5,18 +5,18 @@ set -e
 # Runs the experiment with different combinations of parameters.
 VARIANTS=(
     "exp/uber 120 4 4"
-    "exp/counter 180 17 17"
-    "exp/dota 280 66 66"
+#    "exp/counter 180 17 17"
+#    "exp/dota 280 66 66"
 )
 WAIT_DURATION=900
 RATIO_VARIANTS=(
-    "10 0 0"
-    "0 10 0"
+#    "10 0 0"
+#    "0 10 0"
     "0 0 10"
-    "5 5 0"
-    "0 5 5"
-    "5 0 5"
-    "3 3 4"
+#    "5 5 0"
+#    "0 5 5"
+#    "5 0 5"
+#    "3 3 4"
 )
 WORKLOAD_NODE_PERCENT=100
 

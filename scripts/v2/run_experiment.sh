@@ -123,13 +123,15 @@ for ((i = 0; i < w_wasix; i++)); do
     TARGET_INDICES+=("$((c_linux + c_geth + i))")
 done
 
-# State readiness check function — uses eth_syncing to detect when Geth snap sync state healing is complete
+# State readiness check function — uses eth_syncing to detect when a node is ready to process transactions
+# For private chains with no peers, Geth may report as syncing even when ready, so we also check
+# if the node is responsive and on the correct chain
 wait_for_node_state_ready() {
     local rpc_url=$1
     local node_index=$2
     
     echo "Checking state readiness for node $node_index at $rpc_url..."
-    local max_attempts=120
+    local max_attempts=60
     for attempt in $(seq 1 $max_attempts); do
         # Check if the node is syncing
         local sync_response
@@ -158,6 +160,26 @@ else:
         
         if [ "$snap_sync_done" = "true" ]; then
             echo "Node $node_index snap sync state healing is done."
+            return 0
+        fi
+        
+        # For private chains with no peers, check if the node is responsive and on the correct chain
+        # If current block matches highest block, the node is not actively syncing and is ready
+        local sync_status
+        sync_status=$(echo "$sync_response" | python3 -c "
+import json, sys
+d = json.load(sys.stdin).get('result')
+if isinstance(d, dict):
+    current_block = int(d.get('currentBlock', 0), 16) if isinstance(d.get('currentBlock'), str) else d.get('currentBlock', 0)
+    highest_block = int(d.get('highestBlock', 0), 16) if isinstance(d.get('highestBlock'), str) else d.get('highestBlock', 0)
+    # If current block equals highest block, the node is not actively syncing
+    print('ready' if current_block >= highest_block else 'syncing')
+else:
+    print('unknown')
+" 2>/dev/null || echo "unknown")
+        
+        if [ "$sync_status" = "ready" ]; then
+            echo "Node $node_index is not actively syncing (current block matches highest block)."
             return 0
         fi
         

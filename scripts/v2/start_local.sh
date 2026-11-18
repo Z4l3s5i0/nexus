@@ -13,7 +13,7 @@ CLEANUP=false
 SETUP=false
 REGISTRY=""
 TAG="latest"
-GETH_IMAGE="ethereum/client-go@sha256:798b7eb1bcef6d4be7576232beea63bf291450f48b025dc8fb5c6e37840e4364"
+GETH_IMAGE="ethereum/client-go:v1.10.14"
 METRICS_IMAGE_OVERRIDE=""
 COMPOSE_FILE="docker-compose.v2.yml"
 
@@ -243,29 +243,11 @@ for i in $(seq 0 $((NODES - 1))); do
     if [ "$TYPE" = "geth" ]; then
         IMAGE_STR="image: $GETH_IMAGE"
         BUILD_STR="# Pinned upstream Geth image"
-        ENTRYPOINT_STR="# Geth uses the pinned image entrypoint"
-        COMMAND_STR="command:
-      - --datadir=/app/data
-      - --networkid=$CHAIN_ID
-      - --syncmode=full
-      - --http
-      - --http.addr=0.0.0.0
-      - --http.port=$ETH_PORT
-      - --http.api=eth,net,web3
-      - '--http.vhosts=*'
-      - --authrpc.addr=0.0.0.0
-      - --authrpc.port=$AUTH_PORT
-      - '--authrpc.vhosts=*'
-      - --authrpc.jwtsecret=/app/startup/jwt_$i.hex
-      - --port=$P2P_PORT
-      - --discovery.port=$DISC_PORT
-      - --nat=extip:$EXT_IP
-      - --maxpeers=50
-      - --metrics
-      - --metrics.addr=0.0.0.0
-      - --metrics.port=$METRICS_PORT"
+        ENTRYPOINT_STR="entrypoint: [\"sh\", \"-c\", \"cp /app/startup/jwt_$i.hex /app/data/jwt.hex && geth --datadir=/app/data init /app/startup/genesis.json && exec geth --datadir=/app/data --networkid=$CHAIN_ID --syncmode=full --catalyst --http --http.addr=0.0.0.0 --http.port=$ETH_PORT --http.api=eth,net,web3,admin '--http.vhosts=*' --port=$P2P_PORT --nat=extip:$EXT_IP --nodiscover --maxpeers=50 --metrics --metrics.addr=0.0.0.0 --metrics.port=$METRICS_PORT --ipcpath=/app/data/geth.ipc --miner.etherbase=0x0000000000000000000000000000000000000000\"]"
+        COMMAND_STR="# Command is handled by entrypoint for geth"
         PORTS_STR="ports:
       - \"$ETH_PORT:$ETH_PORT\"
+      - \"$AUTH_PORT:$AUTH_PORT\"
       - \"$P2P_PORT:$P2P_PORT/tcp\"
       - \"$DISC_PORT:$DISC_PORT/udp\""
         DEPENDS_ON="depends_on:
@@ -628,8 +610,6 @@ for i in $(seq 0 $((NODES - 1))); do
     fi
 
     if [ "$TYPE" = "geth" ]; then
-        echo "Initializing Geth node $i from the generated genesis..."
-        $COMPOSE_CMD -f "$COMPOSE_FILE" run --rm --no-deps --entrypoint geth "el-node-$i" --datadir=/app/data init /app/startup/genesis.json
         $COMPOSE_CMD -f "$COMPOSE_FILE" up -d "el-node-$i"
         register_geth_node "$i" "$ETH_PORT" "$P2P_PORT" "$DISC_PORT" "$METRICS_PORT"
         CL_SERVICES="cl-node-$i"
