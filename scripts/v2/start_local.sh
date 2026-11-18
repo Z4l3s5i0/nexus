@@ -259,7 +259,6 @@ for i in $(seq 0 $((NODES - 1))); do
       - --authrpc.jwtsecret=/app/startup/jwt_$i.hex
       - --port=$P2P_PORT
       - --discovery.port=$DISC_PORT
-      - --nat=extip:el-node-$i
       - --maxpeers=50
       - --metrics
       - --metrics.addr=0.0.0.0
@@ -424,6 +423,12 @@ for node in nodes:
     print(match.group(1).lower()+"\t"+enode)' "$node_data" "$CHAIN_ID" "$own_id" "$non_geth_only"
 }
 
+# Get the actual Docker-internal IP address of a container on the blockchain-net network
+get_container_ip() {
+    local container_name=$1
+    docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_name" 2>/dev/null || true
+}
+
 register_geth_node() {
     local index=$1
     local eth_port=$2
@@ -461,9 +466,20 @@ register_geth_node() {
         return 1
     fi
 
-    local enode="enode://$node_id@el-node-$index:$p2p_port?discport=$discovery_port"
+    # Get the container's actual Docker-internal IP address
+    local container_name
+    container_name=$($COMPOSE_CMD -f "$COMPOSE_FILE" ps -q "$service" 2>/dev/null | head -1)
+    local container_ip
+    container_ip=$(get_container_ip "$container_name")
+    if [ -z "$container_ip" ]; then
+        echo "Error: Could not obtain container IP for $service." >&2
+        return 1
+    fi
+    echo "Geth node $index container IP: $container_ip"
+
+    local enode="enode://$node_id@$container_ip:$p2p_port?discport=$discovery_port"
     local register_body
-    register_body=$(python3 - "$node_id" "$CHAIN_ID" "$index" "el-node-$index" "$eth_port" "$metrics_port" "$p2p_port" "$discovery_port" "$enode" <<'PY'
+    register_body=$(python3 - "$node_id" "$CHAIN_ID" "$index" "$container_ip" "$eth_port" "$metrics_port" "$p2p_port" "$discovery_port" "$enode" <<'PY'
 import json
 import sys
 
@@ -684,7 +700,8 @@ ensure_geth_full_mesh() {
         fi
     done
 
-    # Collect all Geth enodes from the metrics-server
+    # Build enode map: index -> (node_id, container_ip, p2p_port, discovery_port)
+    # Collect from metrics-server which now stores container IPs
     local all_geth_enodes=""
     for attempt in $(seq 1 30); do
         local node_data
@@ -708,7 +725,7 @@ for node in nodes:
         return 0
     fi
 
-    # For each Geth node, add all other Geth nodes as peers
+    # For each Geth node, add all other Geth nodes as peers using container IPs
     for idx in "${geth_indices[@]}"; do
         local service="el-node-$idx"
         local own_node_id
