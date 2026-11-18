@@ -189,7 +189,7 @@ for i in "${TARGET_INDICES[@]}"; do
     fi
 
     # Wait for this node's state to be ready before launching workload
-    wait_for_node_state_ready "$RPC_URL" "$i"
+#    wait_for_node_state_ready "$RPC_URL" "$i"
 
     echo "Launching workload for node $i at $RPC_URL with seed node$i"
     # We derive a deterministic seed based on the node index

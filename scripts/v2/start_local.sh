@@ -700,8 +700,10 @@ ensure_geth_full_mesh() {
         fi
     done
 
-    # Build enode map: index -> (node_id, container_ip, p2p_port, discovery_port)
-    # Collect from metrics-server which now stores container IPs
+    local expected_peers=$((GETH_NODES - 1))
+
+    # Build enode map from container IPs: collect node_id, container_ip, p2p_port, discovery_port for each Geth node
+    # Use metrics-server as the source of truth (enodes were registered with container IPs)
     local all_geth_enodes=""
     for attempt in $(seq 1 30); do
         local node_data
@@ -715,7 +717,9 @@ for node in nodes:
         enode = node.get("enode", "")
         if enode:
             print(enode)' "$node_data" "$CHAIN_ID" || true)
-            break
+            if [ -n "$all_geth_enodes" ]; then
+                break
+            fi
         fi
         sleep 2
     done
@@ -725,35 +729,164 @@ for node in nodes:
         return 0
     fi
 
-    # For each Geth node, add all other Geth nodes as peers using container IPs
-    for idx in "${geth_indices[@]}"; do
-        local service="el-node-$idx"
-        local own_node_id
-        own_node_id=$(geth_attach "$service" 'admin.nodeInfo.enr.nodeId' 2>/dev/null || true)
-        [ -z "$own_node_id" ] && continue
+    # Retry loop: keep adding peers until every node reaches the expected peer count
+    local max_rounds=10
+    local round=0
+    while [ "$round" -lt "$max_rounds" ]; do
+        round=$((round + 1))
+        echo "  Full mesh round $round/$max_rounds..."
 
-        while IFS= read -r peer_enode; do
-            [ -z "$peer_enode" ] && continue
-            # Skip self
-            local peer_id
-            peer_id=$(python3 -c 'import re,sys; m=re.search(r"enode://([0-9a-fA-F]{128})@", sys.argv[1]); print(m.group(1).lower() if m else "")' "$peer_enode")
-            [ "$peer_id" = "$own_node_id" ] && continue
-            echo "  Adding peer $peer_id to Geth node $idx..."
-            geth_attach "$service" "admin.addPeer(\"$peer_enode\")" >/dev/null || true
-        done <<< "$all_geth_enodes"
+        local all_connected=true
+        for idx in "${geth_indices[@]}"; do
+            local service="el-node-$idx"
+            local peer_count
+            peer_count=$(geth_attach "$service" 'admin.peers.length' 2>/dev/null || echo "0")
+
+            if [ "$peer_count" -lt "$expected_peers" ]; then
+                all_connected=false
+                local own_node_id
+                own_node_id=$(geth_attach "$service" 'admin.nodeInfo.enr.nodeId' 2>/dev/null || true)
+                [ -z "$own_node_id" ] && continue
+
+                # Get currently connected peer IDs
+                local connected_ids
+                connected_ids=$(geth_peer_ids "$service" || true)
+
+                # Add any missing peers
+                while IFS= read -r peer_enode; do
+                    [ -z "$peer_enode" ] && continue
+                    local peer_id
+                    peer_id=$(python3 -c 'import re,sys; m=re.search(r"enode://([0-9a-fA-F]{128})@", sys.argv[1]); print(m.group(1).lower() if m else "")' "$peer_enode")
+                    [ "$peer_id" = "$own_node_id" ] && continue
+                    # Skip already connected peers
+                    if echo "$connected_ids" | grep -q "^${peer_id}$"; then
+                        continue
+                    fi
+                    echo "    Adding missing peer $peer_id to Geth node $idx..."
+                    geth_attach "$service" "admin.addPeer(\"$peer_enode\")" >/dev/null || true
+                done <<< "$all_geth_enodes"
+            fi
+        done
+
+        if [ "$all_connected" = true ]; then
+            echo "  All Geth nodes reached full mesh connectivity ($expected_peers peers each)."
+            break
+        fi
+
+        # Wait for connections to establish before the next round
+        sleep 3
     done
 
-    # Wait and verify connectivity
-    sleep 5
+    # Final verification
+    echo ""
+    echo "  Final Geth peer counts (expected: $expected_peers each):"
+    local all_ok=true
     for idx in "${geth_indices[@]}"; do
         local service="el-node-$idx"
         local peer_count
         peer_count=$(geth_attach "$service" 'admin.peers.length' 2>/dev/null || echo "0")
-        echo "  Geth node $idx connected peers: $peer_count"
+        local status="✓"
+        if [ "$peer_count" -lt "$expected_peers" ]; then
+            status="✗"
+            all_ok=false
+        fi
+        echo "    $status Geth node $idx: $peer_count/$expected_peers peers"
     done
+
+    if [ "$all_ok" = false ]; then
+        echo "  Warning: Not all Geth nodes reached full mesh after $round rounds." >&2
+    fi
+}
+
+# Start a background watchdog that periodically ensures Geth full mesh connectivity
+# This handles the case where admin.addPeer() connections drop and Geth can't reconnect without --bootnodes
+start_geth_peer_watchdog() {
+    if [ "$GETH_NODES" -le 1 ]; then
+        return 0
+    fi
+
+    echo "Starting Geth peer watchdog in background..."
+
+    # Export variables needed by the background watchdog
+    export COMPOSE_CMD COMPOSE_FILE CHAIN_ID NODES GETH_NODES
+    local geth_indices_str=""
+    for ((gi = 0; gi < NODES; gi++)); do
+        if [ "${node_types[$gi]}" = "geth" ]; then
+            geth_indices_str+="$gi "
+        fi
+    done
+    export GETH_INDICES_STR="$geth_indices_str"
+
+    (
+        # Unset set -e for the background process
+        set +e
+
+        # Run every 30 seconds
+        while true; do
+            # Re-parse geth indices from the exported string
+            local geth_indices=()
+            for gi in $GETH_INDICES_STR; do
+                geth_indices+=("$gi")
+            done
+
+            local expected_peers=$((GETH_NODES - 1))
+
+            # Collect all Geth enodes from metrics-server
+            local node_data
+            node_data=$(curl -fsS --max-time 5 "http://127.0.0.1:9100/api/nodes" 2>/dev/null) || { sleep 30; continue; }
+            local all_geth_enodes
+            all_geth_enodes=$(python3 -c 'import json,sys
+nodes=json.loads(sys.argv[1])
+chain_id=int(sys.argv[2])
+for node in nodes:
+    if node.get("client") == "geth" and node.get("status") == "Active" and node.get("chain_id") == chain_id:
+        enode = node.get("enode", "")
+        if enode:
+            print(enode)' "$node_data" "$CHAIN_ID" 2>/dev/null) || { sleep 30; continue; }
+
+            if [ -z "$all_geth_enodes" ]; then
+                sleep 30
+                continue
+            fi
+
+            # Check each node and re-add missing peers
+            for idx in "${geth_indices[@]}"; do
+                local service="el-node-$idx"
+                local peer_count
+                peer_count=$($COMPOSE_CMD -f "$COMPOSE_FILE" exec -T "$service" geth attach --exec 'admin.peers.length' ipc:/app/data/geth.ipc 2>/dev/null || echo "0")
+
+                if [ "$peer_count" -lt "$expected_peers" ]; then
+                    local own_node_id
+                    own_node_id=$($COMPOSE_CMD -f "$COMPOSE_FILE" exec -T "$service" geth attach --exec 'admin.nodeInfo.enr.nodeId' ipc:/app/data/geth.ipc 2>/dev/null || true)
+                    [ -z "$own_node_id" ] && continue
+
+                    local connected_ids
+                    local peer_output
+                    peer_output=$($COMPOSE_CMD -f "$COMPOSE_FILE" exec -T "$service" geth attach --exec 'admin.peers.map(function(peer) { return peer.enode; }).join(",")' ipc:/app/data/geth.ipc 2>/dev/null || true)
+                    connected_ids=$(python3 -c 'import re,sys; print("\n".join(sorted(set(x.lower() for x in re.findall(r"(?:0x)?([0-9a-f]{128})", sys.argv[1], re.I)))))' "$peer_output" 2>/dev/null || true)
+
+                    while IFS= read -r peer_enode; do
+                        [ -z "$peer_enode" ] && continue
+                        local peer_id
+                        peer_id=$(python3 -c 'import re,sys; m=re.search(r"enode://([0-9a-fA-F]{128})@", sys.argv[1]); print(m.group(1).lower() if m else "")' "$peer_enode" 2>/dev/null)
+                        [ "$peer_id" = "$own_node_id" ] && continue
+                        if echo "$connected_ids" | grep -q "^${peer_id}$"; then
+                            continue
+                        fi
+                        $COMPOSE_CMD -f "$COMPOSE_FILE" exec -T "$service" geth attach --exec "admin.addPeer(\"$peer_enode\")" ipc:/app/data/geth.ipc >/dev/null 2>&1 || true
+                    done <<< "$all_geth_enodes"
+                fi
+            done
+
+            sleep 30
+        done
+    ) &
+    local watchdog_pid=$!
+    echo "  Peer watchdog started (PID: $watchdog_pid)"
 }
 
 ensure_geth_full_mesh
+start_geth_peer_watchdog
 verify_geth_mixed_peers
 
 echo "Network started. Use '$COMPOSE_CMD -f $COMPOSE_FILE logs -f' to see logs."
