@@ -67,7 +67,7 @@ Orchestrates the full lifecycle of one experiment run: deploys the network, star
 1. **Deploys network** — Calls `start_local.sh` internally with the given node configuration
 2. **Starts log processor** — Launches `manage_logs.sh` to stream container logs to `logs_dump/`
 3. **Waits for stabilization** — 60s for non-Geth networks, 120s+ per Geth node for state trie initialization
-4. **Starts workloads** — Launches `run_workload.sh` for each target node, waiting for state readiness before each
+4. **Starts workloads** — Launches `run_workload.sh` for each target node
 5. **Waits for completion** — Sleeps for `duration` + `wait-duration` seconds
 6. **Stops workloads** — Terminates workload processes and Contender containers
 7. **Stops log processor** — Flushes and stops the background log stream
