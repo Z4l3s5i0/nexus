@@ -3,6 +3,11 @@ set -e
 
 # Experiment Loop Script
 # Runs the experiment with different combinations of parameters.
+
+# Log file: all console output goes here as well
+LOG_FILE="${LOG_FILE:-experiments.log}"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
 VARIANTS=(
     "exp/uber 120 4 4"
     "exp/counter 180 17 17"

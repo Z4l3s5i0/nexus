@@ -13,159 +13,164 @@ The project includes a comprehensive experimentation pipeline for benchmarking N
 - **Database export** — `db_exporter` tool for extracting node state for post-hoc analysis
 - **HIVE integration** — Docker-based Ethereum engine client test suite
 
-## Experimental Workflow
+## Scripts Overview
 
-A typical experiment follows these steps:
+All experiment scripts live in `scripts/v2/`. They fall into four categories:
 
-```
-1. Setup → 2. Deploy Network → 3. Run Workload → 4. Collect Logs → 5. Analyze Results
-```
+| Category | Scripts |
+|---|---|
+| **Orchestration** | `run_experiment.sh`, `run_experiments_loop.sh` |
+| **Infrastructure** | `setup.sh`, `start_local.sh`, `cleanup.sh`, `config_gen.sh` |
+| **Workload & Collection** | `run_workload.sh`, `collect_results.sh`, `aggregate_logs.sh`, `manage_logs.sh`, `log_processor.sh` |
+| **Analysis** | `analyze_experiment.sh`, `analyze_all_experiments.sh`, `evaluate_logs.py`, `evaluate.sh`, `plot_metrics.py`, `write_experiment_metadata.py`, `workload_allocation.py` |
+| **Image Push** | `push_contender.sh`, `push_linux.sh`, `push_wasix.sh`, `push_metrics.sh` |
+| **Utilities** | `common.sh`, `db_exporter/` (Rust tool) |
 
-### 1. Setup
+### Orchestration Scripts
 
-Run `scripts/v2/setup.sh` to build all required Docker images and prepare the environment:
+These are the main entry points for running experiments.
+
+#### `run_experiment.sh` — Single Experiment Runner
+
+Orchestrates the full lifecycle of one experiment run: deploys the network, starts the workload, waits for completion, collects results, and cleans up.
 
 ```bash
-./scripts/v2/setup.sh
-```
-
-This builds the NEXUS WASIX and native images, the metrics server image, and verifies dependencies.
-
-### 2. Deploy Network
-
-Use `scripts/v2/start_local.sh` to deploy a multi-node Docker Compose network:
-
-```bash
-./scripts/v2/start_local.sh \
-  --linux-nodes 2 \
-  --wasix-nodes 2 \
+./scripts/v2/run_experiment.sh \
+  --linux-nodes 3 \
+  --wasix-nodes 3 \
   --geth-nodes 0 \
-  --chain-id 12345 \
-  --cleanup
+  --workload-type exp/uber \
+  --tps 4 \
+  --spammer-accounts 4 \
+  --duration 120 \
+  --wait-duration 900 \
+  --chain-id 1000
 ```
 
 **Options:**
 
 | Flag | Description | Default |
 |---|---|---|
-| `--linux-nodes N` | Number of native Rust nodes | 2 |
-| `--wasix-nodes N` | Number of WASIX nodes | 2 |
+| `--linux-nodes N` | Number of native Rust nodes | 5 |
+| `--wasix-nodes N` | Number of WASIX nodes | 5 |
 | `--geth-nodes N` | Number of Geth nodes | 0 |
-| `--chain-id ID` | Unique chain ID | 12345 |
-| `--cleanup` | Remove existing data before starting | false |
-| `--setup` | Run setup.sh before starting | false |
-| `--registry URL` | Docker registry for images | — |
-| `--tag TAG` | Image tag | latest |
+| `--workload-type TYPE` | Workload scenario (e.g., `exp/uber`, `exp/counter`, `exp/dota`) | exp/uber |
+| `--tps N` | Transactions per second | 4 |
+| `--spammer-accounts N` | Accounts per spammer | 4 |
+| `--duration N` | Workload duration in seconds | 300 |
+| `--wait-duration N` | Additional wait after workload | 1800 |
+| `--workload-percent N` | Percent of nodes receiving workload | 100 |
+| `--chain-id ID` | Unique chain ID | 10 |
 | `--metrics-image IMAGE` | Pre-built metrics image | — |
 
-The script:
-1. Generates network configuration via `config_gen.sh`
-2. Copies monitoring configuration (Prometheus + Grafana)
-3. Builds or pulls Docker images
-4. Creates a `docker-compose.v2.yml` file
-5. Starts all containers on a shared Docker network
+**What it does (full lifecycle):**
+1. **Deploys network** — Calls `start_local.sh` internally with the given node configuration
+2. **Starts log processor** — Launches `manage_logs.sh` to stream container logs to `logs_dump/`
+3. **Waits for stabilization** — 60s for non-Geth networks, 120s+ per Geth node for state trie initialization
+4. **Starts workloads** — Launches `run_workload.sh` for each target node, waiting for state readiness before each
+5. **Waits for completion** — Sleeps for `duration` + `wait-duration` seconds
+6. **Stops workloads** — Terminates workload processes and Contender containers
+7. **Stops log processor** — Flushes and stops the background log stream
+8. **Collects results** — Runs `collect_results.sh` to archive all data to `experiments/exp_YYYYMMDD_HHMMSS/`
+9. **Cleans up** — Calls `cleanup.sh` to stop and remove all containers
 
-Container naming convention: `el-node-0`, `el-node-1`, etc. Each node gets incrementing RPC ports (8545, 8546, ...) and P2P ports (9000, 9001, ...).
+The workload node allocation uses largest-remainder rounding via `workload_allocation.py` to distribute the workload percentage proportionally across node types.
 
-### 3. Run Workload
+#### `run_experiments_loop.sh` — Batch Experiment Runner
 
-Use `scripts/v2/run_workload.sh` to generate transaction load using the Contender tool:
-
-```bash
-./scripts/v2/run_workload.sh \
-  --rpc http://host.docker.internal:8545 \
-  --pk "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" \
-  --scenario simple \
-  --tps 10 \
-  --duration 60 \
-  --accounts 10 \
-  --network wasm
-```
-
-**Options:**
-
-| Flag | Description | Default |
-|---|---|---|
-| `--rpc URL` | Target node RPC URL | `http://host.docker.internal:8545` |
-| `--pk KEY` | Private key for signing | Dev account key |
-| `--scenario NAME` | Scenario: `simple`, `stress`, `uniV2`, etc. | simple |
-| `--campaign NAME` | Campaign TOML file (overrides --scenario) | — |
-| `--tps N` | Transactions per second | 10 |
-| `--duration N` | Duration in seconds | 60 |
-| `--accounts N` | Accounts per agent | 10 |
-| `--min-balance B` | Minimum account balance | 100eth |
-| `--gas-limit N` | Gas limit override | — |
-| `--network NAME` | Docker network name | — |
-| `--state-dir DIR` | Contender state directory | `.contender_state` |
-| `--skip-funding` | Skip account funding | false |
-| `--run-id ID` | Label containers for experiment | — |
-
-The script runs two phases:
-1. **Setup** — Deploys contracts and funds accounts via Contender
-2. **Execution** — Spams transactions at the specified TPS for the given duration
-
-### 4. Collect Logs
-
-Use `scripts/v2/collect_results.sh` or `scripts/v2/aggregate_logs.sh` to gather logs from all nodes:
+Runs `run_experiment.sh` repeatedly across a matrix of workload types and node ratio combinations.
 
 ```bash
-./scripts/v2/aggregate_logs.sh
+./scripts/v2/run_experiments_loop.sh
 ```
 
-This collects container logs into a centralized directory for analysis.
+By default it iterates over three workload types (`exp/uber`, `exp/counter`, `exp/dota`) and seven node ratio configurations (pure Linux, pure WASIX, pure Geth, and various mixes), producing 21 total experiment combinations.
 
-### 5. Analyze Results
-
-Use `scripts/v2/analyze_experiment.sh` to process logs and export database state:
+**Custom ratios:**
 
 ```bash
-./scripts/v2/analyze_experiment.sh /path/to/experiment_dir [chain_id]
+./scripts/v2/run_experiments_loop.sh --ratios '3 4 3; 0 5 5'
 ```
 
-The analysis pipeline:
-1. **Metrics server data** — Exports `experiments`, `nodes`, `metric_samples`, `rpc_observations` tables from the metrics database
-2. **EL node data** — Exports `headers`, `block_bodies`, `transactions`, `metadata` from each node's `redb` database using `db_exporter`
-3. **Log evaluation** — Parses `[EXP]` tagged log lines to compute:
-   - Transaction propagation latency (peer-to-peer)
-   - Block propagation latency
-   - Execution times per node
-   - Gas usage statistics
-4. **Plots** — Generates visualizations from metrics data (currently commented out)
+Each ratio entry is `LINUX WASIX [GETH]` (Geth defaults to 0). Entries are separated by semicolons.
 
-## Script Reference
+**Logging output:**
 
-### Core Scripts
+All console output is automatically logged to a file (default: `experiments.log`). The log file also shows live output on the terminal via `tee`. To use a custom log file name:
+
+```bash
+LOG_FILE=my_run.log ./scripts/v2/run_experiments_loop.sh
+```
+
+**Running on a remote server:**
+
+To keep the script running after disconnecting from the server, use `nohup`:
+
+```bash
+nohup ./scripts/v2/run_experiments_loop.sh > /dev/null 2>&1 &
+```
+
+- `nohup` prevents the process from being killed when you log out.
+- `> /dev/null 2>&1` discards the direct output (it is already going to the log file via `tee`).
+- `&` runs it in the background.
+
+To check progress after reconnecting:
+
+```bash
+tail -f experiments.log
+```
+
+To check if the process is still running:
+
+```bash
+ps aux | grep run_experiments_loop
+```
+
+### Infrastructure Scripts
 
 | Script | Purpose |
 |---|---|
-| `start_local.sh` | Deploy local Docker Compose network |
-| `run_workload.sh` | Run Contender-based workload |
-| `analyze_experiment.sh` | Analyze experiment logs and databases |
-| `aggregate_logs.sh` | Collect logs from all containers |
-| `collect_results.sh` | Gather experiment results |
-| `cleanup.sh` | Stop and remove containers, clean data |
-| `setup.sh` | Build images and prepare environment |
-| `config_gen.sh` | Generate node configuration files |
-| `evaluate.sh` | Shell-based log evaluation |
-| `evaluate_logs.py` | Python-based log evaluation with metadata support |
-| `run_experiment.sh` | Single experiment runner |
-| `run_experiments_loop.sh` | Batch experiment runner |
-| `push_contender.sh` | Push Contender Docker image |
-| `push_linux.sh` | Push native node Docker image |
-| `push_wasix.sh` | Push WASIX node Docker image |
-| `push_metrics.sh` | Push metrics server Docker image |
+| `setup.sh` | Build all Docker images (NEXUS native, WASIX, metrics server) |
+| `start_local.sh` | Deploy a Docker Compose network with mixed node types |
+| `cleanup.sh` | Stop and remove all containers, clean up data directories |
+| `config_gen.sh` | Generate node TOML configuration files for a given chain ID and node count |
+
+`start_local.sh` accepts `--linux-nodes`, `--wasix-nodes`, `--geth-nodes`, `--chain-id`, `--cleanup`, `--setup`, `--registry`, `--tag`, and `--metrics-image`. It generates config, copies monitoring files, creates `docker-compose.v2.yml`, and starts all containers. Nodes are named `el-node-0`, `el-node-1`, … with incrementing RPC (8545+) and P2P (9000+) ports.
+
+### Workload & Collection Scripts
+
+| Script | Purpose |
+|---|---|
+| `run_workload.sh` | Run Contender-based transaction workload against a target RPC endpoint |
+| `collect_results.sh` | Archive all experiment data (logs, databases, state) to a timestamped directory |
+| `aggregate_logs.sh` | Consolidate split log files into per-service aggregated logs |
+| `manage_logs.sh` | Start/stop the background log processor |
+| `log_processor.sh` | Continuously stream Docker container logs to `logs_dump/` |
+
+`run_workload.sh` runs two phases: **Setup** (deploys contracts, funds accounts) and **Execution** (spams transactions at the specified TPS). Key options: `--rpc`, `--pk`, `--scenario`, `--tps`, `--duration`, `--accounts`, `--network`.
 
 ### Analysis Scripts
 
 | Script | Purpose |
 |---|---|
-| `evaluate_logs.py` | Parse `[EXP]` log events, compute latencies and throughput |
-| `plot_metrics.py` | Generate plots from exported metrics JSON |
-| `workload_allocation.py` | Calculate workload distribution across nodes |
-| `write_experiment_metadata.py` | Write experiment metadata JSON |
-| `db_exporter/` | Rust tool for exporting `redb` database tables to JSON |
+| `analyze_experiment.sh` | Analyze one experiment directory: export databases, evaluate logs, generate plots |
+| `analyze_all_experiments.sh` | Run `analyze_experiment.sh` on every experiment directory in a given path |
+| `evaluate_logs.py` | Parse `[EXP]` log events; compute tx/block propagation latency, execution times, gas stats |
+| `evaluate.sh` | Shell-based fallback for log evaluation |
+| `plot_metrics.py` | Generate PNG plots from exported metrics JSON (transactions, mempool, blocks, peers, etc.) |
+| `write_experiment_metadata.py` | Write `experiment_metadata.json` with node types, workload params, and targets |
+| `workload_allocation.py` | Calculate workload node distribution across types using largest-remainder rounding |
+| `db_exporter/` | Rust tool to export `redb` database tables (metrics server and EL node data) to JSON |
 
-### Monitoring
+`analyze_experiment.sh <experiment_dir> [chain_id]` performs:
+1. **Metrics server export** — `experiments`, `nodes`, `metric_samples`, `rpc_observations` tables to JSON
+2. **EL node export** — `headers`, `block_bodies`, `transactions`, `metadata` per node via `db_exporter`
+3. **Log evaluation** — Parses `[EXP]` tagged lines for propagation latency and execution stats
+4. **Plots** — Generates visualizations (currently commented out)
+
+`analyze_all_experiments.sh <base_dir> [chain_id]` iterates over all subdirectories and runs the single-experiment analyzer on each one.
+
+## Monitoring
 
 | File | Purpose |
 |---|---|
@@ -348,19 +353,41 @@ The `thesis_results/` directory contains benchmark result PDFs and failure repor
 
 - **wasix** — NEXUS running in WASIX WebAssembly environment
 - **rust** — NEXUS running as native Rust binary
-- **wasm** — NEXUS running in alternative WASM runtime
+- **mix** — NEXUS as a mix of both above-mentioned runtimes
 
 These results document performance characteristics including transaction throughput, block propagation latency, and resource usage across the different execution environments.
 
 ## Running a New Experiment
 
-### Quick Start
+### Single Experiment
+
+The easiest way to run an experiment end-to-end is `run_experiment.sh`:
 
 ```bash
-# 1. Setup and deploy a 4-node network
+./scripts/v2/run_experiment.sh \
+  --linux-nodes 3 \
+  --wasix-nodes 3 \
+  --workload-type exp/uber \
+  --tps 4 \
+  --duration 120 \
+  --wait-duration 900
+```
+
+This handles the entire lifecycle: network deployment, workload execution, result collection, and cleanup.
+
+### Batch Experiments
+
+For running many parameter combinations, use `run_experiments_loop.sh` (see the **Orchestration Scripts** section above for details on custom ratios, logging, and remote server execution).
+
+### Manual Workflow
+
+For fine-grained control, run the steps individually:
+
+```bash
+# 1. Setup and deploy
 ./scripts/v2/start_local.sh --linux-nodes 2 --wasix-nodes 2 --cleanup
 
-# 2. Run a workload against node 0
+# 2. Run a workload
 ./scripts/v2/run_workload.sh \
   --rpc http://host.docker.internal:8545 \
   --scenario simple \
@@ -368,21 +395,11 @@ These results document performance characteristics including transaction through
   --duration 120 \
   --network wasm
 
-# 3. Collect and analyze results
-./scripts/v2/aggregate_logs.sh
-./scripts/v2/analyze_experiment.sh ./experiment_output
+# 3. Collect and analyze
+./scripts/v2/collect_results.sh
+./scripts/v2/analyze_experiment.sh ./experiments/exp_YYYYMMDD_HHMMSS
 ```
-
-### Batch Experiments
-
-Use `run_experiments_loop.sh` to run multiple experiments with different parameters:
-
-```bash
-./scripts/v2/run_experiments_loop.sh
-```
-
-This script iterates over predefined configurations, running each experiment sequentially and collecting results.
 
 ### Remote Deployment
 
-For remote cluster deployment, use the push scripts to upload images to a registry, then deploy using the remote deployment scripts (following the same pattern as `start_local.sh` but targeting remote hosts).
+For remote cluster deployment, use the push scripts (`push_linux.sh`, `push_wasix.sh`, `push_metrics.sh`) to upload images to a registry, then deploy using the same pattern as `start_local.sh` but targeting remote hosts.
