@@ -27,12 +27,12 @@ WORKLOAD_NODE_PERCENT=100
 
 usage() {
     cat <<EOF
-Usage: $0 [--ratios 'LINUX WASIX [GETH]; ...'] [--help]
+Usage: $0 [--ratios 'LINUX WASIX [GETH [RETH]]; ...'] [--help]
 
   --ratios  Semicolon-separated list of whitespace-separated node counts.
-            Each entry must have two or three nonnegative integers in Linux,
-            WASIX, Geth order, with a positive total. Geth defaults to zero.
-            Example: --ratios '3 4 3; 0 5 5'
+            Each entry must have two to four nonnegative integers in Linux,
+            WASIX, Geth, Reth order. Geth and Reth default to zero.
+            Example: --ratios '3 4 3 2; 0 5 5 0'
   --help    Show this help message.
 EOF
 }
@@ -67,15 +67,15 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-ratio_pattern='^[[:space:]]*([0-9]+)[[:space:]]+([0-9]+)([[:space:]]+([0-9]+))?[[:space:]]*$'
+ratio_pattern='^[[:space:]]*([0-9]+)[[:space:]]+([0-9]+)([[:space:]]+([0-9]+))?[[:space:]]*(\[[:space:]]+([0-9]+))?[[:space:]]*$'
 max_count=9223372036854775807
 NORMALIZED_RATIOS=()
 for ratio_var in "${RATIO_VARIANTS[@]}"; do
     if [[ ! "$ratio_var" =~ $ratio_pattern ]]; then
-        echo "Error: invalid ratio '$ratio_var': expected two or three nonnegative integer counts." >&2
+        echo "Error: invalid ratio '$ratio_var': expected two to four nonnegative integer counts." >&2
         exit 1
     fi
-    counts=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[4]:-0}")
+    counts=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[4]:-0}" "${BASH_REMATCH[6]:-0}")
     normalized_counts=()
     node_count=0
     for count in "${counts[@]}"; do
@@ -114,13 +114,14 @@ echo ""
 for variant in "${VARIANTS[@]}"; do
     read wl_type duration spammer_accounts tps <<< "$variant"
     for ratio_var in "${RATIO_VARIANTS[@]}"; do
-        read linux_nodes wasix_nodes geth_nodes <<< "$ratio_var"
-        NODE_COUNT=$((linux_nodes + wasix_nodes + geth_nodes))
+        read linux_nodes wasix_nodes geth_nodes reth_nodes <<< "$ratio_var"
+        reth_nodes=${reth_nodes:-0}
+        NODE_COUNT=$((linux_nodes + wasix_nodes + geth_nodes + reth_nodes))
         COUNTER=$((COUNTER + 1))
         
         echo "--- Running Experiment $COUNTER/$TOTAL_COMBINATIONS ---"
         echo "Workload Type: $wl_type"
-        echo "Nodes: $NODE_COUNT (Linux: $linux_nodes, WASM: $wasix_nodes, Geth: $geth_nodes)"
+        echo "Nodes: $NODE_COUNT (Linux: $linux_nodes, WASM: $wasix_nodes, Geth: $geth_nodes, Reth: $reth_nodes)"
         echo "Workload Percent: $WORKLOAD_NODE_PERCENT%"
         echo "Workload Duration: $duration s"
         echo "Wait Duration: $WAIT_DURATION s"
@@ -136,6 +137,7 @@ for variant in "${VARIANTS[@]}"; do
             --linux-nodes "$linux_nodes" \
             --wasix-nodes "$wasix_nodes" \
             --geth-nodes "$geth_nodes" \
+            --reth-nodes "$reth_nodes" \
             --workload-percent "$WORKLOAD_NODE_PERCENT" \
             --duration "$duration" \
             --wait-duration "$WAIT_DURATION" \
@@ -150,7 +152,7 @@ for variant in "${VARIANTS[@]}"; do
         # Let's find the latest directory in experiments/
         LATEST_EXP=$(ls -td experiments/exp_* 2>/dev/null | head -1)
         if [ -f "$LATEST_EXP/analysis/PLOTS_SKIPPED" ]; then
-            PARAM_INFO="Type: $wl_type, Nodes: $NODE_COUNT (L:$linux_nodes, W:$wasix_nodes, G:$geth_nodes), WL%: $WORKLOAD_NODE_PERCENT, Dur: $duration, Wait: $WAIT_DURATION, Spammers: $spammer_accounts, TPS: $tps"
+            PARAM_INFO="Type: $wl_type, Nodes: $NODE_COUNT (L:$linux_nodes, W:$wasix_nodes, G:$geth_nodes, R:$reth_nodes), WL%: $WORKLOAD_NODE_PERCENT, Dur: $duration, Wait: $WAIT_DURATION, Spammers: $spammer_accounts, TPS: $tps"
             FAILED_PLOTS+=("$LATEST_EXP ($PARAM_INFO)")
         fi
 

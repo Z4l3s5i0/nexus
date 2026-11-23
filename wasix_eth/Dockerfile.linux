@@ -2,13 +2,15 @@
 # Assuming binary is already built at wasix_eth/target/x86_64-unknown-linux-gnu/release/wasix_eth
 FROM debian:bookworm-slim
 
+ARG INCLUDE_NODE_EXPORTER=true
+
 WORKDIR /app
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     libssl3 \
     ca-certificates \
-    prometheus-node-exporter \
+    && if [ "$INCLUDE_NODE_EXPORTER" = "true" ]; then apt-get install -y prometheus-node-exporter; fi \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the pre-built binary

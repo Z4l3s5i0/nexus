@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--chain-id", type=int, required=True)
     parser.add_argument("--linux", type=int, required=True)
     parser.add_argument("--geth", type=int, required=True)
+    parser.add_argument("--reth", type=int, required=True)
     parser.add_argument("--wasix", type=int, required=True)
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--duration", required=True)
@@ -57,13 +58,13 @@ def main():
             continue
         if port is not None and node.get("chain_id") == args.chain_id:
             registry_by_port[port] = node
-    types = ["native"] * args.linux + ["geth"] * args.geth + ["wasix"] * args.wasix
+    types = ["native"] * args.linux + ["geth"] * args.geth + ["reth"] * args.reth + ["wasix"] * args.wasix
     nodes = []
     for index, kind in enumerate(types):
         registered = registry_by_port.get(8545 + index, {})
         nodes.append({
             "index": index, "type": kind,
-            "client": "geth" if kind == "geth" else "wasix-eth",
+            "client": "geth" if kind == "geth" else "reth" if kind == "reth" else "wasix-eth",
             "node_id": registered.get("id"), "rpc_port": 8545 + index,
             "registered_rpc_url": registered.get("rpc_url"),
             "metrics_url": registered.get("metrics_url"),
@@ -73,7 +74,7 @@ def main():
     metadata = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "chain_id": args.chain_id,
-        "counts": {"native": args.linux, "geth": args.geth, "wasix": args.wasix},
+        "counts": {"native": args.linux, "geth": args.geth, "reth": args.reth, "wasix": args.wasix},
         "workload": {"scenario": args.scenario, "duration_seconds": args.duration,
                      "wait_seconds": args.wait_duration, "tps": args.tps,
                      "accounts_per_spammer": args.accounts, "node_percent": args.percent,

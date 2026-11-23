@@ -8,12 +8,14 @@ source "$(dirname "$0")/common.sh"
 LINUX_NODES=2
 WASIX_NODES=2
 GETH_NODES=0
+RETH_NODES=0
 CHAIN_ID=12345
 CLEANUP=false
 SETUP=false
 REGISTRY=""
 TAG="latest"
 GETH_IMAGE="ethereum/client-go@sha256:798b7eb1bcef6d4be7576232beea63bf291450f48b025dc8fb5c6e37840e4364"
+RETH_IMAGE="ghcr.io/paradigmxyz/reth:latest"
 METRICS_IMAGE_OVERRIDE=""
 COMPOSE_FILE="docker-compose.v2.yml"
 
@@ -23,6 +25,7 @@ usage() {
     echo "  --linux-nodes N   Number of Linux nodes (default: 2)"
     echo "  --wasix-nodes N   Number of Wasix nodes (default: 2)"
     echo "  --geth-nodes N    Number of Geth nodes (default: 0)"
+    echo "  --reth-nodes N    Number of Reth nodes (default: 0)"
     echo "  --chain-id ID     Unique chain ID (default: 12345)"
     echo "  --cleanup         Remove existing data before starting"
     echo "  --setup           Run setup.sh locally before starting"
@@ -37,6 +40,7 @@ while [[ "$#" -gt 0 ]]; do
         --linux-nodes) LINUX_NODES="$2"; shift ;;
         --wasix-nodes) WASIX_NODES="$2"; shift ;;
         --geth-nodes) GETH_NODES="$2"; shift ;;
+        --reth-nodes) RETH_NODES="$2"; shift ;;
         --chain-id) CHAIN_ID="$2"; shift ;;
         --cleanup) CLEANUP=true ;;
         --setup) SETUP=true ;;
@@ -48,7 +52,7 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
-for count_name in LINUX_NODES WASIX_NODES GETH_NODES; do
+for count_name in LINUX_NODES WASIX_NODES GETH_NODES RETH_NODES; do
     count_value=${!count_name}
     if ! [[ "$count_value" =~ ^[0-9]+$ ]]; then
         echo "Error: $count_name must be a nonnegative integer (got '$count_value')." >&2
@@ -63,7 +67,7 @@ if ! [[ "$CHAIN_ID" =~ ^[0-9]+$ ]] || [ "$CHAIN_ID" -eq 0 ]; then
 fi
 CHAIN_ID=$((10#$CHAIN_ID))
 
-NODES=$((LINUX_NODES + GETH_NODES + WASIX_NODES))
+NODES=$((LINUX_NODES + GETH_NODES + RETH_NODES + WASIX_NODES))
 if [ "$NODES" -le 0 ]; then
     echo "Error: at least one execution node is required." >&2
     exit 1
@@ -153,8 +157,9 @@ echo "Using external IP: $EXT_IP"
 # 3. Node counts and deterministic type assignment
 c_linux=$LINUX_NODES
 c_geth=$GETH_NODES
+c_reth=$RETH_NODES
 c_wasix=$WASIX_NODES
-echo "Node counts: Linux=$c_linux, Geth=$c_geth, Wasix=$c_wasix"
+echo "Node counts: Linux=$c_linux, Geth=$c_geth, Reth=$c_reth, Wasix=$c_wasix"
 
 # 3. Generate docker-compose.yml
 # Prepare variables for template replacement
@@ -218,6 +223,7 @@ EOF_PY
 node_types=()
 for ((i = 0; i < c_linux; i++)); do node_types+=("linux"); done
 for ((i = 0; i < c_geth; i++)); do node_types+=("geth"); done
+for ((i = 0; i < c_reth; i++)); do node_types+=("reth"); done
 for ((i = 0; i < c_wasix; i++)); do node_types+=("wasix"); done
 
 for i in $(seq 0 $((NODES - 1))); do
@@ -271,6 +277,35 @@ for i in $(seq 0 $((NODES - 1))); do
         DEPENDS_ON="depends_on:
       metrics-server:
         condition: service_started"
+    elif [ "$TYPE" = "reth" ]; then
+        IMAGE_STR="image: $RETH_IMAGE"
+        BUILD_STR="# Pinned upstream Reth image"
+        ENTRYPOINT_STR="# Reth uses the pinned image entrypoint"
+        COMMAND_STR="command:
+      - node
+      - --datadir=/app/data
+      - --chain=/app/startup/genesis.json
+      - --http
+      - --http.addr=0.0.0.0
+      - --http.port=$ETH_PORT
+      - --authrpc.addr=0.0.0.0
+      - --authrpc.port=$AUTH_PORT
+      - --authrpc.jwtsecret=/app/startup/jwt_$i.hex
+      - --discovery.addr=0.0.0.0
+      - --discovery.port=$P2P_PORT
+      - --discovery.quic-port=$((P2P_PORT + 1))
+      - --nat=extip:$EXT_IP
+      - --max-outbound-peers=50
+      - --max-inbound-peers=50
+      - --metrics=$METRICS_PORT"
+        PORTS_STR="ports:
+      - \"$ETH_PORT:$ETH_PORT\"
+      - \"$P2P_PORT:$P2P_PORT/tcp\"
+      - \"$((P2P_PORT + 1)):$((P2P_PORT + 1))/udp\"
+      - \"$METRICS_PORT:$METRICS_PORT\""
+        DEPENDS_ON="depends_on:
+      metrics-server:
+        condition: service_started"
     elif [ "$TYPE" = "wasix" ]; then
         # Wasix nodes need init before run. Start node-exporter in background.
         ENTRYPOINT_STR="entrypoint: [\"sh\", \"-c\", \"prometheus-node-exporter --web.listen-address=:9100 & sleep 2 && wasmer run /app/wasix_eth.wasm --enable-async-threads --net --volume /app/data:/app/data --volume /app/startup:/app/startup -- init $FLAGS && wasmer run /app/wasix_eth.wasm --enable-async-threads --net --volume /app/data:/app/data --volume /app/startup:/app/startup -- run $FLAGS\"]"
@@ -281,7 +316,7 @@ for i in $(seq 0 $((NODES - 1))); do
         COMMAND_STR="# Command is handled by entrypoint for linux"
     fi
 
-    if [ "$TYPE" != "geth" ]; then
+    if [ "$TYPE" != "geth" ] && [ "$TYPE" != "reth" ]; then
         DEPENDS_ON="depends_on:
       metrics-server:
         condition: service_started"
@@ -408,20 +443,20 @@ geth_peer_ids() {
 
 geth_active_bootstrap_nodes() {
     local own_id=$1
-    local non_geth_only=${2:-false}
+    local non_external_only=${2:-false}
     local node_data
     node_data=$(curl -fsS --max-time 5 "http://127.0.0.1:9100/api/nodes") || return 1
     python3 -c 'import json,re,sys
 nodes=json.loads(sys.argv[1])
 chain_id=int(sys.argv[2])
 own_id=sys.argv[3].lower()
-non_geth_only=sys.argv[4] == "true"
+non_external_only=sys.argv[4] == "true"
 for node in nodes:
     enode=node.get("enode") or ""
     match=re.fullmatch(r"enode://([0-9a-fA-F]{128})@([0-9.]+):([0-9]{1,5})(?:\?discport=[0-9]{1,5})?", enode)
-    if node.get("status") != "Active" or node.get("network") != str(chain_id) or node.get("chain_id") != chain_id or node.get("id", "").lower() == own_id or (non_geth_only and node.get("client") == "geth") or not match:
+    if node.get("status") != "Active" or node.get("network") != str(chain_id) or node.get("chain_id") != chain_id or node.get("id", "").lower() == own_id or (non_external_only and node.get("client") in ("geth", "reth")) or not match:
         continue
-    print(match.group(1).lower()+"\t"+enode)' "$node_data" "$CHAIN_ID" "$own_id" "$non_geth_only"
+    print(match.group(1).lower()+"\t"+enode)' "$node_data" "$CHAIN_ID" "$own_id" "$non_external_only"
 }
 
 register_geth_node() {
@@ -536,21 +571,99 @@ PY
     fi
 }
 
+register_reth_node() {
+    local index=$1
+    local eth_port=$2
+    local p2p_port=$3
+    local metrics_port=$4
+    local service="el-node-$index"
+    local expected_chain_id
+
+    echo "Waiting for Reth RPC and verifying chain ID on node $index..."
+    for attempt in $(seq 1 60); do
+        local rpc_response
+        rpc_response=$(curl -fsS --max-time 3 -H 'Content-Type: application/json' \
+            --data-binary '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}' \
+            "http://127.0.0.1:$eth_port" 2>/dev/null || true)
+        expected_chain_id=$(python3 -c 'import json,sys; print(int(json.loads(sys.argv[1])["result"],16))' "$rpc_response" 2>/dev/null || true)
+        if [ "$expected_chain_id" = "$CHAIN_ID" ]; then
+            break
+        fi
+        if [ "$attempt" -eq 60 ]; then
+            echo "Error: Reth node $index did not expose expected chain ID $CHAIN_ID at RPC port $eth_port." >&2
+            $COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail=100 "$service" >&2 || true
+            return 1
+        fi
+        sleep 2
+    done
+
+    # Reth exposes its node record via admin_nodeInfo RPC
+    local node_info
+    node_info=$(curl -fsS --max-time 5 -H 'Content-Type: application/json' \
+        --data-binary '{"jsonrpc":"2.0","method":"admin_nodeInfo","params":[],"id":1}' \
+        "http://127.0.0.1:$eth_port" 2>/dev/null || true)
+    local node_id
+    local enr
+    node_id=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1])["result"]; print(d.get("enr","").split("id=")[1].split(",")[0] if "id=" in d.get("enr","") else "")' "$node_info" 2>/dev/null || true)
+    # If we can't extract from ENR, try admin_node record
+    if [ -z "$node_id" ]; then
+        node_id=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1])["result"]; print(d.get("enode","").split("@")[0].split("//")[1] if "enode" in d else "")' "$node_info" 2>/dev/null || true)
+    fi
+    if [ -z "$node_id" ]; then
+        echo "Error: Could not obtain a valid Reth node identity from $service." >&2
+        $COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail=100 "$service" >&2 || true
+        return 1
+    fi
+
+    # Build an enode string for Reth (using TCP port for discovery)
+    local enode="enode://$node_id@$EXT_IP:$p2p_port?discport=$p2p_port"
+    local register_body
+    register_body=$(python3 - "$node_id" "$CHAIN_ID" "$index" "$EXT_IP" "$eth_port" "$metrics_port" "$p2p_port" "$p2p_port" "$enode" <<'PY'
+import json
+import sys
+
+node_id, chain_id, index, external_ip, eth_port, metrics_port, p2p_port, discovery_port, enode = sys.argv[1:]
+chain_id = int(chain_id)
+print(json.dumps({
+    "id": node_id,
+    "network": str(chain_id),
+    "chain_id": chain_id,
+    "client": "reth",
+    "rpc_url": f"http://el-node-{index}:{eth_port}",
+    "metrics_url": f"http://el-node-{index}:{metrics_port}/metrics",
+    "p2p_addr": f"{external_ip}:{p2p_port}",
+    "discovery_addr": f"{external_ip}:{discovery_port}",
+    "enode": enode,
+}))
+PY
+    )
+    echo "Registering Reth node $index with the metrics-server..."
+    if ! curl -fsS --max-time 12 -H 'Content-Type: application/json' \
+        --data-binary "$register_body" http://127.0.0.1:9100/api/nodes/register; then
+        echo "Error: Reth node $index registration failed." >&2
+        return 1
+    fi
+
+    echo "Verified Reth node $index."
+}
+
 verify_geth_mixed_peers() {
-    if [ "$GETH_NODES" -eq 0 ] || [ $((LINUX_NODES + WASIX_NODES)) -eq 0 ]; then
+    local external_nodes=$((GETH_NODES + RETH_NODES))
+    local non_external_nodes=$((LINUX_NODES + WASIX_NODES))
+    if [ "$external_nodes" -eq 0 ] || [ "$non_external_nodes" -eq 0 ]; then
         return 0
     fi
 
-    local non_geth_bootstrap_nodes=""
+    local non_external_bootstrap_nodes=""
     for attempt in $(seq 1 30); do
-        non_geth_bootstrap_nodes=$(geth_active_bootstrap_nodes "" true || true)
-        if [ -n "$non_geth_bootstrap_nodes" ]; then
+        non_external_bootstrap_nodes=$(geth_active_bootstrap_nodes "" true || true)
+        if [ -n "$non_external_bootstrap_nodes" ]; then
             break
         fi
         sleep 2
     done
-    if [ -z "$non_geth_bootstrap_nodes" ]; then
-        echo "Error: No active non-Geth execution nodes are available to verify the mixed network." >&2
+    if [ -z "$non_external_bootstrap_nodes" ]; then
+        echo "Error: No active non-external execution nodes are available to verify the mixed network." >&2
         return 1
     fi
 
@@ -562,7 +675,7 @@ verify_geth_mixed_peers() {
             [ -n "$peer_id" ] || continue
             expected_peer_ids+="$peer_id"$'\n'
             geth_attach "$service" "admin.addPeer(\"$peer_enode\")" >/dev/null || true
-        done <<< "$non_geth_bootstrap_nodes"
+        done <<< "$non_external_bootstrap_nodes"
 
         local connected_peer_id=""
         for attempt in $(seq 1 30); do
@@ -581,6 +694,26 @@ verify_geth_mixed_peers() {
         fi
         echo "Verified mixed-client execution peer $connected_peer_id on Geth node $index."
     done
+
+    for ((reth_offset = 0; reth_offset < RETH_NODES; reth_offset++)); do
+        local index=$((LINUX_NODES + GETH_NODES + reth_offset))
+        local service="el-node-$index"
+        local eth_port
+        eth_port=$(get_eth_rpc_port "$index")
+        echo "Verifying Reth node $index has peers..."
+        for attempt in $(seq 1 30); do
+            local peer_count
+            peer_count=$(curl -fsS --max-time 5 -H 'Content-Type: application/json' \
+                --data-binary '{"jsonrpc":"2.0","method":"admin_nodeInfo","params":[],"id":1}' \
+                "http://127.0.0.1:$eth_port" 2>/dev/null | \
+                python3 -c 'import json,sys; d=json.loads(sys.argv[1])["result"]; print(d.get("peers",0))' 2>/dev/null || echo 0)
+            if [ "$peer_count" -gt 0 ] 2>/dev/null; then
+                echo "Verified Reth node $index has $peer_count peer(s)."
+                break
+            fi
+            sleep 2
+        done
+    done
 }
 
 # Start metrics server and monitoring first
@@ -591,13 +724,13 @@ if [ -z "$METRICS_IMAGE_OVERRIDE" ]; then
 fi
 $COMPOSE_CMD -f "$COMPOSE_FILE" up -d metrics-server prometheus grafana node-exporter
 
-if [ "$GETH_NODES" -gt 0 ]; then
+if [ "$GETH_NODES" -gt 0 ] || [ "$RETH_NODES" -gt 0 ]; then
     for attempt in $(seq 1 60); do
         if curl -fsS --max-time 2 http://127.0.0.1:9100/health >/dev/null; then
             break
         fi
         if [ "$attempt" -eq 60 ]; then
-            echo "Error: metrics-server did not become ready for Geth registration." >&2
+            echo "Error: metrics-server did not become ready for Geth/Reth registration." >&2
             $COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail=100 metrics-server >&2 || true
             exit 1
         fi
@@ -632,6 +765,16 @@ for i in $(seq 0 $((NODES - 1))); do
         $COMPOSE_CMD -f "$COMPOSE_FILE" run --rm --no-deps --entrypoint geth "el-node-$i" --datadir=/app/data init /app/startup/genesis.json
         $COMPOSE_CMD -f "$COMPOSE_FILE" up -d "el-node-$i"
         register_geth_node "$i" "$ETH_PORT" "$P2P_PORT" "$DISC_PORT" "$METRICS_PORT"
+        CL_SERVICES="cl-node-$i"
+        if [ "$IS_VAL" = "true" ]; then
+            CL_SERVICES="$CL_SERVICES vc-node-$i"
+        fi
+        $COMPOSE_CMD -f "$COMPOSE_FILE" up -d $CL_SERVICES
+    elif [ "$TYPE" = "reth" ]; then
+        echo "Initializing Reth node $i from the generated genesis..."
+        $COMPOSE_CMD -f "$COMPOSE_FILE" run --rm --no-deps "el-node-$i" db init --datadir /app/data --chain /app/startup/genesis.json 2>/dev/null || true
+        $COMPOSE_CMD -f "$COMPOSE_FILE" up -d "el-node-$i"
+        register_reth_node "$i" "$ETH_PORT" "$P2P_PORT" "$METRICS_PORT"
         CL_SERVICES="cl-node-$i"
         if [ "$IS_VAL" = "true" ]; then
             CL_SERVICES="$CL_SERVICES vc-node-$i"

@@ -2,12 +2,14 @@
 # Assuming binary is already built at wasix_eth/target/wasm32-wasmer-wasi/release/wasix_eth.wasi.wasm
 FROM ubuntu:24.04
 
+ARG INCLUDE_NODE_EXPORTER=true
+
 WORKDIR /app
 
 # Install Wasmer and dependencies
 RUN apt-get update && apt-get install -y \
     curl \
-    prometheus-node-exporter \
+    && if [ "$INCLUDE_NODE_EXPORTER" = "true" ]; then apt-get install -y prometheus-node-exporter; fi \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl https://get.wasmer.io -sSfL | sh -s "v7.4.2"

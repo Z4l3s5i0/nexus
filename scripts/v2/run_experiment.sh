@@ -10,6 +10,7 @@ WAIT_DURATION=1800 # Default wait duration after workload
 LINUX_NODES=5
 WASIX_NODES=5
 GETH_NODES=0
+RETH_NODES=0
 METRICS_IMAGE=""
 WORKLOAD_PERCENT=""
 WORKLOAD_TYPE="exp/uber"
@@ -22,9 +23,10 @@ usage() {
     echo "  --duration N     Duration to run the workload in seconds (default: $WORKLOAD_DURATION)"
     echo "  --wait-duration N Wait duration after workload in seconds (default: $WAIT_DURATION)"
     echo "  --chain-id ID    Chain ID to use (default: $CHAIN_ID)"
-    echo "  --linux-nodes N  Number of rustcompiled nodes (default: $LINUX_NODES)"
+    echo "  --linux-nodes N  Number of rust-compiled nodes (default: $LINUX_NODES)"
     echo "  --wasix-nodes N  Number of WASM-compiled nodes (default: $WASIX_NODES)"
     echo "  --geth-nodes N   Number of Geth nodes (default: $GETH_NODES)"
+    echo "  --reth-nodes N   Number of Reth nodes (default: $RETH_NODES)"
     echo "  --metrics-image IMAGE Use an existing metrics image instead of building locally"
     echo "  --workload-percent N Percent of nodes to receive workload (default: 100)"
     echo "  --workload-type TYPE Workload type/scenario (default: $WORKLOAD_TYPE)"
@@ -41,6 +43,7 @@ while [[ "$#" -gt 0 ]]; do
         --linux-nodes) LINUX_NODES="$2"; shift ;;
         --wasix-nodes) WASIX_NODES="$2"; shift ;;
         --geth-nodes) GETH_NODES="$2"; shift ;;
+        --reth-nodes) RETH_NODES="$2"; shift ;;
         --metrics-image) METRICS_IMAGE="$2"; shift ;;
         --workload-percent) WORKLOAD_PERCENT="$2"; shift ;;
         --workload-type) WORKLOAD_TYPE="$2"; shift ;;
@@ -60,22 +63,23 @@ if [ -z "$WORKLOAD_PERCENT" ]; then
 fi
 
 # Validate counts and allocate targets with largest-remainder rounding.
-ALLOCATION=$(python3 "$SCRIPT_DIR/workload_allocation.py" "$LINUX_NODES" "$GETH_NODES" "$WASIX_NODES" "$WORKLOAD_PERCENT")
-read -r NODES WORKLOAD_NODES w_linux w_geth w_wasix <<< "$ALLOCATION"
+ALLOCATION=$(python3 "$SCRIPT_DIR/workload_allocation.py" "$LINUX_NODES" "$GETH_NODES" "$RETH_NODES" "$WASIX_NODES" "$WORKLOAD_PERCENT")
+read -r NODES WORKLOAD_NODES w_linux w_geth w_reth w_wasix <<< "$ALLOCATION"
 c_linux=$((10#$LINUX_NODES))
 c_geth=$((10#$GETH_NODES))
+c_reth=$((10#$RETH_NODES))
 c_wasix=$((10#$WASIX_NODES))
 
 echo "=== Starting Experiment Workflow ==="
 echo "Chain ID: $CHAIN_ID"
 echo "Workload Duration: $WORKLOAD_DURATION seconds"
 echo "Wait Duration: $WAIT_DURATION seconds"
-echo "Nodes: $NODES (Linux: $c_linux, Geth: $c_geth, WASM: $c_wasix)"
-echo "Workload Nodes: $WORKLOAD_NODES (Linux: $w_linux, Geth: $w_geth, WASM: $w_wasix)"
+echo "Nodes: $NODES (Linux: $c_linux, Geth: $c_geth, Reth: $c_reth, WASM: $c_wasix)"
+echo "Workload Nodes: $WORKLOAD_NODES (Linux: $w_linux, Geth: $w_geth, Reth: $w_reth, WASM: $w_wasix)"
 
 # 1. Start the local network
 echo "Step 1: Starting local network..."
-START_OPTIONS=(--chain-id "$CHAIN_ID" --linux-nodes "$c_linux" --geth-nodes "$c_geth" --wasix-nodes "$c_wasix" --setup --cleanup --registry docker.io/z4l3s5i0)
+START_OPTIONS=(--chain-id "$CHAIN_ID" --linux-nodes "$c_linux" --geth-nodes "$c_geth" --reth-nodes "$c_reth" --wasix-nodes "$c_wasix" --setup --cleanup --registry docker.io/z4l3s5i0)
 if [ -n "$METRICS_IMAGE" ]; then START_OPTIONS+=(--metrics-image "$METRICS_IMAGE"); fi
 bash "$SCRIPT_DIR/start_local.sh" "${START_OPTIONS[@]}"
 COMPOSE_CMD=$(get_compose_cmd)
@@ -91,20 +95,20 @@ echo "Step 2: Starting background log processor..."
 bash "$SCRIPT_DIR/manage_logs.sh" start --chain-id "$CHAIN_ID"
 
 # 3. Wait for network stabilization
-# Geth nodes need more time for state trie initialization, especially with Path-based state scheme
+# Geth and Reth nodes need more time for state trie initialization
 # Calculate wait time based on node count and type
-if [ "$c_geth" -gt 0 ]; then
-    # Geth nodes: 120s base + 10s per Geth node
-    STABILIZATION_WAIT=$((120 + c_geth * 10))
+if [ "$c_geth" -gt 0 ] || [ "$c_reth" -gt 0 ]; then
+    # Geth/Reth nodes: 120s base + 10s per external node
+    STABILIZATION_WAIT=$((120 + (c_geth + c_reth) * 10))
 else
-    # Non-Geth nodes: 60s is sufficient
+    # Non-Geth/Reth nodes: 60s is sufficient
     STABILIZATION_WAIT=60
 fi
 echo "Step 3: Waiting $STABILIZATION_WAIT seconds for network stabilization..."
 sleep "$STABILIZATION_WAIT"
 
 # 4. Start run_workload for each node in background
-echo "Step 4: Starting workload for $WORKLOAD_NODES node(s) in background ($w_linux Linux, $w_geth Geth, $w_wasix WASM)..."
+echo "Step 4: Starting workload for $WORKLOAD_NODES node(s) in background ($w_linux Linux, $w_geth Geth, $w_reth Reth, $w_wasix WASM)..."
 MNEMONIC="sleep moment list remain like wall lake industry canvas wonder ecology elite duck salad naive syrup frame brass utility club odor country obey pudding"
 WORKLOAD_PIDS=()
 BASE_PORT=8545
@@ -112,15 +116,18 @@ RUN_ID="${CHAIN_ID}-$(date +%s)-$$"
 
 # Target indices
 TARGET_INDICES=()
-# Node indices follow native, Geth, WASIX order.
+# Node indices follow native, Geth, Reth, WASIX order.
 for ((i = 0; i < w_linux; i++)); do
     TARGET_INDICES+=("$i")
 done
 for ((i = 0; i < w_geth; i++)); do
     TARGET_INDICES+=("$((c_linux + i))")
 done
-for ((i = 0; i < w_wasix; i++)); do
+for ((i = 0; i < w_reth; i++)); do
     TARGET_INDICES+=("$((c_linux + c_geth + i))")
+done
+for ((i = 0; i < w_wasix; i++)); do
+    TARGET_INDICES+=("$((c_linux + c_geth + c_reth + i))")
 done
 
 for i in "${TARGET_INDICES[@]}"; do
@@ -201,7 +208,7 @@ sleep 5
 echo "Step 9: Collecting experiment results..."
 TARGETS_CSV=$(IFS=,; echo "${TARGET_INDICES[*]}")
 python3 "$SCRIPT_DIR/write_experiment_metadata.py" \
-    --chain-id "$CHAIN_ID" --linux "$c_linux" --geth "$c_geth" --wasix "$c_wasix" \
+    --chain-id "$CHAIN_ID" --linux "$c_linux" --geth "$c_geth" --reth "$c_reth" --wasix "$c_wasix" \
     --scenario "$WORKLOAD_TYPE" --duration "$WORKLOAD_DURATION" --wait-duration "$WAIT_DURATION" \
     --tps "$TPS" --accounts "$SPAMMER_ACCOUNTS" --percent "$WORKLOAD_PERCENT" \
     --targets "$TARGETS_CSV" --output data_v2/experiment_metadata.json

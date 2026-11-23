@@ -5,10 +5,15 @@ set -e
 
 REGISTRY=""
 TAG="latest"
+INCLUDE_NODE_EXPORTER="true"
 
 usage() {
-    echo "Usage: $0 --registry <registry_url> [--tag <tag>]"
+    echo "Usage: $0 --registry <registry_url> [--tag <tag>] [--no-node-exporter]"
     echo "Example: $0 --registry myuser"
+    echo ""
+    echo "  --registry           Docker registry to push to (required)"
+    echo "  --tag                Image tag (default: latest)"
+    echo "  --no-node-exporter   Build without prometheus-node-exporter"
     exit 1
 }
 
@@ -16,6 +21,7 @@ while [[ "$#" -gt 0 ]]; do
     case $1 in
         --registry) REGISTRY="$2"; shift ;;
         --tag) TAG="$2"; shift ;;
+        --no-node-exporter) INCLUDE_NODE_EXPORTER="false" ;;
         *) usage ;;
     esac
     shift
@@ -41,7 +47,8 @@ build_push_node() {
 
     echo "Building and pushing wasix-eth-${TYPE} image..."
     IMAGE="${REGISTRY}/wasix-eth-${TYPE}:${TAG}"
-    if ! docker build -t "$IMAGE" -f "$ROOT_DIR/wasix_eth/Dockerfile.${TYPE}" "$ROOT_DIR/wasix_eth"; then
+    BUILD_ARGS=(--build-arg "INCLUDE_NODE_EXPORTER=${INCLUDE_NODE_EXPORTER}")
+    if ! docker build "${BUILD_ARGS[@]}" -t "$IMAGE" -f "$ROOT_DIR/wasix_eth/Dockerfile.${TYPE}" "$ROOT_DIR/wasix_eth"; then
         echo -e "\e[31mERROR: Failed to build $IMAGE. Skipping push.\e[0m"
         return
     fi

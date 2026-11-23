@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Allocate workload targets in native, Geth, WASIX index order."""
+"""Allocate workload targets in native, Geth, Reth, WASIX index order."""
 
 import sys
 from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 
 
 def allocate(counts, percent):
-    if len(counts) != 3 or any(not isinstance(n, int) or n < 0 for n in counts):
+    if len(counts) != 4 or any(not isinstance(n, int) or n < 0 for n in counts):
         raise ValueError("node counts must be nonnegative integers")
     total = sum(counts)
     if total == 0:
@@ -22,16 +22,16 @@ def allocate(counts, percent):
         targets = 1
     allocations = [targets * count // total for count in counts]
     remainders = [targets * count % total for count in counts]
-    order = sorted(range(3), key=lambda i: (-remainders[i], i))
+    order = sorted(range(4), key=lambda i: (-remainders[i], i))
     for i in order[:targets - sum(allocations)]:
         allocations[i] += 1
     return total, targets, *allocations
 
 
 def main(args):
-    if len(args) != 4 or any(not n.isascii() or not n.isdecimal() for n in args[:3]):
+    if len(args) != 5 or any(not n.isascii() or not n.isdecimal() for n in args[:4]):
         raise ValueError("node counts must be nonnegative integers")
-    result = allocate([int(n) for n in args[:3]], args[3])
+    result = allocate([int(n) for n in args[:4]], args[4])
     print(*result)
 
 
