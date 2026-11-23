@@ -1,0 +1,73 @@
+{
+  "inclusion_latency": {
+    "avg": null,
+    "min": null,
+    "max": null,
+    "count": 0,
+    "timeseries": []
+  },
+  "propagation_latency": {
+    "avg": null,
+    "max": null,
+    "count": 0,
+    "timeseries": []
+  },
+  "execution_times": {
+    "avg_tx_exec_ms": null,
+    "avg_block_exec_ms": null
+  },
+  "total_stats": {
+    "transactions_executed": null,
+    "blocks_executed": null,
+    "total_tx_exec_ms": null,
+    "total_block_exec_ms": null
+  },
+  "node_breakdown": {},
+  "coverage": {
+    "status": "partial",
+    "note": "Only observed wasix_eth EXP events are included; counts and gas per block are partial and log latencies are approximate (file order and execution fallback).",
+    "nodes": {
+      "el-node-0": {
+        "type": "native",
+        "status": "unavailable: no EXP events observed"
+      },
+      "el-node-1": {
+        "type": "native",
+        "status": "unavailable: no EXP events observed"
+      },
+      "el-node-2": {
+        "type": "native",
+        "status": "unavailable: no EXP events observed"
+      },
+      "el-node-3": {
+        "type": "geth",
+        "status": "unavailable: Geth EXP events are not supported"
+      },
+      "el-node-4": {
+        "type": "geth",
+        "status": "unavailable: Geth EXP events are not supported"
+      },
+      "el-node-5": {
+        "type": "geth",
+        "status": "unavailable: Geth EXP events are not supported"
+      },
+      "el-node-6": {
+        "type": "geth",
+        "status": "unavailable: Geth EXP events are not supported"
+      },
+      "el-node-7": {
+        "type": "wasix",
+        "status": "unavailable: no EXP events observed"
+      },
+      "el-node-8": {
+        "type": "wasix",
+        "status": "unavailable: no EXP events observed"
+      },
+      "el-node-9": {
+        "type": "wasix",
+        "status": "unavailable: no EXP events observed"
+      }
+    },
+    "unknown_nodes": []
+  }
+}
