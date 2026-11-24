@@ -51,6 +51,7 @@ def submit_burst(
     first_nonce,
     count,
     timeout,
+    gas_price,
 ):
     def arguments(nonce):
         return [
@@ -60,6 +61,9 @@ def submit_burst(
                 "0",
                 "--gas-limit",
                 "21000",
+                "--legacy",
+                "--gas-price",
+                str(gas_price),
                 "--nonce",
                 str(nonce),
                 "--async",

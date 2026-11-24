@@ -183,6 +183,7 @@ def run(args):
                     nonce = block_number(
                         rpc_call(args.rpc_url, "eth_getTransactionCount", [sender, "pending"], 15)
                     )
+                    gas_price = int(rpc_call(args.rpc_url, "eth_gasPrice", [], 15), 16)
                     submitted_hashes = submit_burst(
                         cast_bin,
                         args.cast_network,
@@ -193,6 +194,7 @@ def run(args):
                         nonce,
                         target,
                         args.receipt_timeout,
+                        gas_price,
                     )
                     receipts = wait_for_receipts(
                         args.rpc_url, submitted_hashes, args.receipt_timeout, args.poll_interval

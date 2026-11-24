@@ -76,10 +76,15 @@ class EmptyBlockExperimentTests(unittest.TestCase):
         self.assertEqual(transaction_submission.transaction_hash(f"sent {tx_hashes[0]}"), tx_hashes[0])
         with patch.object(transaction_submission, "run_cast", side_effect=[f"sent {tx_hashes[0]}", f"sent {tx_hashes[1]}"]) as cast:
             submitted = transaction_submission.submit_burst(
-                "cast", "network", "image", "http://localhost:8545", "0xsender", "0xkey", 10, 2, 30
+                "cast", "network", "image", "http://localhost:8545", "0xsender", "0xkey", 10, 2, 30,
+                "2500000000",
             )
         self.assertEqual(submitted, tx_hashes)
         self.assertEqual(cast.call_count, 2)
+        cast_arguments = cast.call_args_list[0].args[1]
+        self.assertIn("--legacy", cast_arguments)
+        gas_price_index = cast_arguments.index("--gas-price")
+        self.assertEqual(cast_arguments[gas_price_index + 1], "2500000000")
 
     def test_docker_cast_uses_one_container_for_a_burst(self):
         tx_hashes = ["0x" + "a" * 64, "0x" + "b" * 64]
@@ -88,11 +93,13 @@ class EmptyBlockExperimentTests(unittest.TestCase):
             with patch.object(transaction_submission.subprocess, "run", return_value=result) as docker_run:
                 submitted = transaction_submission.submit_burst(
                     None, "suite-net", "foundry:test", "http://el-node-0:8545",
-                    "0xsender", "0x" + "1" * 64, 5, 2, 30,
+                    "0xsender", "0x" + "1" * 64, 5, 2, 30, "2500000000",
                 )
         self.assertEqual(submitted, tx_hashes)
         self.assertEqual(docker_run.call_count, 1)
         self.assertIn("--network", docker_run.call_args.args[0])
+        self.assertIn("--legacy", docker_run.call_args.args[0][-1])
+        self.assertIn("--gas-price 2500000000", docker_run.call_args.args[0][-1])
 
     def test_rpc_derived_block_metrics_keep_zero_observations_and_identity(self):
         metadata = {"chain_id": 100, "client": "wasix-eth", "node_id": "node-a"}
