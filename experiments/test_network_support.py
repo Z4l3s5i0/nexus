@@ -81,6 +81,11 @@ class NetworkSupportTests(unittest.TestCase):
         self.assertIn("scope: host", prometheus)
         self.assertIn("replacement: container", prometheus)
 
+    def test_node_exporter_disables_systemd_collector_in_node_containers(self):
+        launcher = (NETWORK_SUPPORT / "start.sh").read_text(encoding="utf-8")
+
+        self.assertEqual(launcher.count("prometheus-node-exporter --no-collector.systemd"), 2)
+
     def test_target_generator_labels_per_node_exporter_and_execution_metrics(self):
         with tempfile.TemporaryDirectory(prefix="node-exporter-targets-test-") as temp:
             node_exporter_output = pathlib.Path(temp) / "node-exporter-targets.json"

@@ -11,7 +11,7 @@ export PATH="$CARGO_HOME/bin:$WASMER_DIR/bin:$PATH"
 
 usage() {
     cat <<EOF
-Usage: bash experiments/run.sh
+Usage: bash experiments/run.sh [--detach]
 
 Choose experiments by entering their numbers separated by commas, in the order
 they should run. Enter 6 to run all five in the standard order, or 7 to
@@ -27,6 +27,10 @@ reevaluate reports from saved results without rerunning experiments.
 
 For each selected run, press Enter to use the module's defaults or choose
 custom values before the shared setup starts.
+
+  --detach                 Continue the selected suite in a persistent session
+  --attach SESSION_ID      Reattach to a session's console log
+  --stop SESSION_ID        Stop a detached session and its child processes
 EOF
 }
 
@@ -106,6 +110,57 @@ run_logged() {
     fi
     printf '[%s] Exit status: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$status" | tee -a "$log_file"
     return "$status"
+}
+
+valid_session_id() {
+    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]
+}
+
+attach_session() {
+    local session_id="$1" session_dir="$EXPERIMENTS_OUTPUT_ROOT/logs/$1"
+    if ! valid_session_id "$session_id" || [[ ! -f "$session_dir/runner.log" ]]; then
+        echo "Error: no experiment console log found for session '$session_id' at '$session_dir/runner.log'." >&2
+        return 2
+    fi
+    if [[ -f "$session_dir/runner.status" ]]; then
+        cat "$session_dir/runner.log"
+    else
+        tail -n +1 -f "$session_dir/runner.log"
+    fi
+}
+
+stop_session() {
+    local session_id="$1" session_dir="$EXPERIMENTS_OUTPUT_ROOT/logs/$1" pid command_line process_session
+    if ! valid_session_id "$session_id" || [[ ! -f "$session_dir/runner.pid" ]]; then
+        echo "Error: no detached session found for '$session_id'." >&2
+        return 2
+    fi
+    if [[ -f "$session_dir/runner.status" ]]; then
+        echo "Session $session_id has already finished."
+        return 0
+    fi
+    pid="$(<"$session_dir/runner.pid")"
+    if ! [[ "$pid" =~ ^[0-9]+$ ]] || ! kill -0 "$pid" 2>/dev/null; then
+        echo "Error: session $session_id is not running (stale PID file)." >&2
+        return 1
+    fi
+    if [[ -r "/proc/$pid/cmdline" ]]; then
+        command_line="$(tr '\0' ' ' < "/proc/$pid/cmdline")"
+        if [[ "$command_line" != *"--resume $session_id"* ]]; then
+            echo "Error: PID $pid does not belong to session $session_id." >&2
+            return 1
+        fi
+    fi
+    process_session="$(ps -o sid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+    if [[ "$process_session" != "$pid" ]]; then
+        echo "Error: PID $pid is not the detached session leader for $session_id." >&2
+        return 1
+    fi
+    if ! kill -TERM -- "-$pid" 2>/dev/null; then
+        echo "Error: could not stop detached session $session_id." >&2
+        return 1
+    fi
+    echo "Sent stop signal to session $session_id."
 }
 
 validate_csv_choices() {
@@ -335,24 +390,43 @@ configure_module() {
     return 0
 }
 
-if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-    usage
-    exit 0
-fi
-if [[ "$#" -gt 0 ]]; then
-    echo "Error: this runner is interactive and does not accept arguments." >&2
-    usage >&2
-    exit 2
-fi
-
 EXPERIMENTS_OUTPUT_ROOT="${EXPERIMENTS_OUTPUT_ROOT:-$REPO_ROOT/experiment-results}"
 export EXPERIMENTS_OUTPUT_ROOT
-LOG_SESSION_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-RUN_LOG_DIR="$EXPERIMENTS_OUTPUT_ROOT/logs/$LOG_SESSION_ID"
-mkdir -p "$RUN_LOG_DIR"
-exec > >(tee -a "$RUN_LOG_DIR/runner.log")
-exec 2> >(tee -a "$RUN_LOG_DIR/runner.log" >&2)
-echo "Suite log directory: $RUN_LOG_DIR"
+
+DETACH_MODE=false
+RESUME_SESSION=""
+case "${1:-}" in
+    "") ;;
+    --help|-h) usage; exit 0 ;;
+    --detach)
+        [[ "$#" -eq 1 ]] || { usage >&2; exit 2; }
+        DETACH_MODE=true
+        ;;
+    --attach)
+        [[ "$#" -eq 2 ]] || { echo "Usage: bash experiments/run.sh --attach SESSION_ID" >&2; exit 2; }
+        attach_session "$2"
+        exit $?
+        ;;
+    --stop)
+        [[ "$#" -eq 2 ]] || { echo "Usage: bash experiments/run.sh --stop SESSION_ID" >&2; exit 2; }
+        stop_session "$2"
+        exit $?
+        ;;
+    --resume)
+        [[ "$#" -eq 2 ]] && valid_session_id "$2" || { echo "Error: invalid detached session ID." >&2; exit 2; }
+        RESUME_SESSION="$2"
+        ;;
+    *)
+        echo "Error: this runner accepts only --detach, --attach, or --stop." >&2
+        usage >&2
+        exit 2
+        ;;
+esac
+
+if [[ "$DETACH_MODE" == true ]] && { ! command -v setsid >/dev/null 2>&1 || ! command -v nohup >/dev/null 2>&1; }; then
+    echo "Error: detached sessions require the setsid and nohup commands." >&2
+    exit 1
+fi
 
 declare -a labels=(runtime empty-block startup compliance size)
 declare -a selected=()
@@ -361,6 +435,44 @@ declare -a runtime_workloads=(exp/uber)
 runtime_iterations=1
 mode=run
 
+if [[ -n "$RESUME_SESSION" ]]; then
+    RUN_LOG_DIR="$EXPERIMENTS_OUTPUT_ROOT/logs/$RESUME_SESSION"
+    STATE_FILE="$RUN_LOG_DIR/runner-state.sh"
+    if [[ ! -f "$STATE_FILE" ]]; then
+        echo "Error: detached session state was not found for '$RESUME_SESSION'." >&2
+        exit 1
+    fi
+    exec >> "$RUN_LOG_DIR/runner.log" 2>&1
+    record_session_status() {
+        local status=$?
+        printf '%s\n' "$status" > "$RUN_LOG_DIR/runner.status"
+        rm -f "$STATE_FILE"
+    }
+    trap record_session_status EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    source "$STATE_FILE"
+    export EXPERIMENTS_SELECTED EXPERIMENT_RUN_ID BASE_EXPERIMENT_RUN_ID
+else
+    LOG_SESSION_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    RUN_LOG_DIR="$EXPERIMENTS_OUTPUT_ROOT/logs/$LOG_SESSION_ID"
+    mkdir -p "$RUN_LOG_DIR"
+    exec > >(tee -a "$RUN_LOG_DIR/runner.log")
+    OUTPUT_TEE_PID=$!
+    exec 2> >(tee -a "$RUN_LOG_DIR/runner.log" >&2)
+    ERROR_TEE_PID=$!
+    flush_console_tees() {
+        local status=$?
+        trap - EXIT
+        exec 1>&- 2>&-
+        wait "$OUTPUT_TEE_PID" "$ERROR_TEE_PID" 2>/dev/null || true
+        return "$status"
+    }
+    trap flush_console_tees EXIT
+    echo "Suite log directory: $RUN_LOG_DIR"
+fi
+
+if [[ -z "$RESUME_SESSION" ]]; then
 usage
 while true; do
     if [[ "$mode" == evaluate ]]; then
@@ -489,15 +601,43 @@ for experiment in "${selected[@]}"; do
         exit "$status"
     fi
 done
+fi
 
 if [[ ! -f "$SETUP_SCRIPT" ]]; then
     echo "Error: setup script not found: $SETUP_SCRIPT" >&2
     exit 1
 fi
 
+if [[ -z "$RESUME_SESSION" ]]; then
+    export EXPERIMENT_RUN_ID="${EXPERIMENT_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+    BASE_EXPERIMENT_RUN_ID="$EXPERIMENT_RUN_ID"
+    export BASE_EXPERIMENT_RUN_ID
+    if [[ "$DETACH_MODE" == true ]]; then
+        STATE_FILE="$RUN_LOG_DIR/runner-state.sh"
+        (
+            umask 077
+            {
+                declare -p selected runtime_args empty_block_args startup_args compliance_args size_args runtime_workloads
+                printf 'runtime_iterations=%q\n' "$runtime_iterations"
+                printf 'mode=%q\n' "$mode"
+                printf 'EXPERIMENTS_SELECTED=%q\n' "$EXPERIMENTS_SELECTED"
+                printf 'EXPERIMENT_RUN_ID=%q\n' "$EXPERIMENT_RUN_ID"
+                printf 'BASE_EXPERIMENT_RUN_ID=%q\n' "$BASE_EXPERIMENT_RUN_ID"
+            } > "$STATE_FILE"
+        )
+        if [[ -v EB_PRIVATE_KEY ]]; then export EB_PRIVATE_KEY; fi
+        nohup setsid bash "$SCRIPT_DIR/run.sh" --resume "$LOG_SESSION_ID" \
+            </dev/null >> "$RUN_LOG_DIR/runner.log" 2>&1 &
+        RUNNER_PID=$!
+        printf '%s\n' "$RUNNER_PID" > "$RUN_LOG_DIR/runner.pid"
+        echo "Detached experiment session: $LOG_SESSION_ID (PID $RUNNER_PID)."
+        echo "Reattach: bash experiments/run.sh --attach $LOG_SESSION_ID"
+        echo "Stop: bash experiments/run.sh --stop $LOG_SESSION_ID"
+        exit 0
+    fi
+fi
+
 if [[ -v EB_PRIVATE_KEY ]]; then export -n EB_PRIVATE_KEY; fi
-export EXPERIMENT_RUN_ID="${EXPERIMENT_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
-BASE_EXPERIMENT_RUN_ID="$EXPERIMENT_RUN_ID"
 echo "Run ID: $EXPERIMENT_RUN_ID"
 echo "Output root: $EXPERIMENTS_OUTPUT_ROOT"
 echo "Running shared setup once..."

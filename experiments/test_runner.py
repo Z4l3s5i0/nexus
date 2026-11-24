@@ -1,13 +1,42 @@
 import os
 import pathlib
+import re
+import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 RUNNER = ROOT / "experiments" / "run.sh"
+
+
+def bash_compatible_path(path):
+    path = pathlib.Path(path)
+    if os.name == "nt":
+        return f"/mnt/{path.drive[0].lower()}/{path.as_posix()[3:]}"
+    return str(path)
+
+
+def forward_wsl_environment(env, names):
+    if os.name == "nt":
+        forwarded = [entry for entry in env.get("WSLENV", "").split(":") if entry]
+        forwarded_names = {entry.split("/", 1)[0] for entry in forwarded}
+        forwarded.extend(f"{name}/u" for name in names if name not in forwarded_names)
+        env["WSLENV"] = ":".join(forwarded)
+
+
+def bash_has_command(command):
+    if shutil.which(command):
+        return True
+    if os.name == "nt" and shutil.which("bash"):
+        return subprocess.run(
+            ["bash", "-c", f"command -v {shlex.quote(command)} >/dev/null 2>&1"],
+            check=False,
+        ).returncode == 0
+    return False
 
 
 @unittest.skipUnless(shutil.which("bash"), "bash is required")
@@ -26,7 +55,7 @@ class ExperimentRunnerTests(unittest.TestCase):
                     result.stderr.decode("utf-8", errors="replace"),
                 )
 
-    def run_with_stubs(self, selection, fail_module=None, config_answers=None, fail_setup_status=None):
+    def run_with_stubs(self, selection, fail_module=None, config_answers=None, fail_setup_status=None, runner_args=None):
         with tempfile.TemporaryDirectory(prefix="experiment-runner-test-", dir=ROOT) as temp:
             temp_root = pathlib.Path(temp)
             module_root = temp_root / "modules"
@@ -34,26 +63,24 @@ class ExperimentRunnerTests(unittest.TestCase):
             log_path = temp_root / "calls.log"
 
             setup_script = temp_root / "setup.sh"
-            setup_script.write_text(
+            setup_script.write_bytes((
                 'printf "setup-output\\n"\n'
                 'printf "setup:%s\\n" "$EXPERIMENTS_SELECTED" >> "$TEST_LOG"\n'
                 'if [[ -n "${EB_PRIVATE_KEY:-}" ]]; then printf "setup-key-leaked\\n" >> "$TEST_LOG"; fi\n'
-                + (f"exit {fail_setup_status}\n" if fail_setup_status is not None else ""),
-                encoding="utf-8",
-            )
+                + (f"exit {fail_setup_status}\n" if fail_setup_status is not None else "")
+            ).encode("utf-8"))
             for name in ("runtime", "empty-block", "startup", "compliance", "size"):
                 module_dir = module_root / name
                 module_dir.mkdir()
                 exit_status = 1 if name == fail_module else 0
-                (module_dir / "run.sh").write_text(
+                (module_dir / "run.sh").write_bytes((
                     f'printf "{name}-output\\n"\n'
                     f'printf "{name}\\n" >> "$TEST_LOG"\n'
                     f'if [[ "$#" -gt 0 ]]; then printf "args:{name}:%s\\n" "$*" >> "$TEST_LOG"; fi\n'
                     'if [[ "${EXPERIMENT_RUN_ID:-}" == *-runtime-* ]]; then printf "run-id:%s\\n" "$EXPERIMENT_RUN_ID" >> "$TEST_LOG"; fi\n'
                     f'if [[ "{name}" == empty-block && -n "${{EB_PRIVATE_KEY:-}}" ]]; then printf "private-key-present\\n" >> "$TEST_LOG"; fi\n'
-                    f'exit {exit_status}\n',
-                    encoding="utf-8",
-                )
+                    f'exit {exit_status}\n'
+                ).encode("utf-8"))
                 (module_dir / "report.py").write_text(
                     "import os, pathlib, sys\n"
                     "output_dir = pathlib.Path(sys.argv[sys.argv.index('--output-dir') + 1])\n"
@@ -78,13 +105,24 @@ class ExperimentRunnerTests(unittest.TestCase):
                     (run_dir / artifact).write_text("{}\n", encoding="utf-8")
             env.update(
                 {
-                    "EXPERIMENTS_MODULE_ROOT": str(module_root),
-                    "EXPERIMENTS_SETUP_SCRIPT": str(setup_script),
-                    "EXPERIMENTS_OUTPUT_ROOT": str(output_root),
+                    "EXPERIMENTS_MODULE_ROOT": bash_compatible_path(module_root),
+                    "EXPERIMENTS_SETUP_SCRIPT": bash_compatible_path(setup_script),
+                    "EXPERIMENTS_OUTPUT_ROOT": bash_compatible_path(output_root),
                     "EXPERIMENT_RUN_ID": "test-run",
-                    "TEST_LOG": str(log_path),
+                    "TEST_LOG": bash_compatible_path(log_path),
                     "EB_PRIVATE_KEY": "0" * 64,
                 }
+            )
+            forward_wsl_environment(
+                env,
+                (
+                    "EXPERIMENTS_MODULE_ROOT",
+                    "EXPERIMENTS_SETUP_SCRIPT",
+                    "EXPERIMENTS_OUTPUT_ROOT",
+                    "EXPERIMENT_RUN_ID",
+                    "TEST_LOG",
+                    "EB_PRIVATE_KEY",
+                ),
             )
             input_text = selection if selection.endswith("\n") else f"{selection}\n"
             if config_answers is not None:
@@ -92,23 +130,37 @@ class ExperimentRunnerTests(unittest.TestCase):
             elif not selection.startswith("7\n"):
                 valid_selection = selection.strip().splitlines()[-1].strip()
                 configured_count = 5 if valid_selection in ("6", "all") else len(valid_selection.split(","))
-                input_text += "\n" * configured_count
+                input_text += "n\n" * configured_count
+            runner_copy = temp_root / "run.sh"
+            runner_copy.write_bytes(RUNNER.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8"))
+            input_path = temp_root / "runner-input.txt"
+            input_path.write_bytes(input_text.encode("utf-8"))
+            runner_arguments = [runner_copy.relative_to(ROOT).as_posix(), *(runner_args or [])]
+            command = "exec bash " + " ".join(shlex.quote(argument) for argument in runner_arguments)
+            command += " < " + shlex.quote(bash_compatible_path(input_path))
             result = subprocess.run(
-                ["bash", str(RUNNER)],
-                input=input_text,
+                ["bash", "-c", command],
                 text=True,
                 capture_output=True,
                 env=env,
+                cwd=ROOT,
                 check=False,
             )
-            calls = log_path.read_text(encoding="utf-8").splitlines()
+            if "--detach" in (runner_args or []):
+                sessions = list((output_root / "logs").iterdir())
+                if sessions:
+                    status_file = sessions[0] / "runner.status"
+                    deadline = time.monotonic() + 10
+                    while not status_file.exists() and time.monotonic() < deadline:
+                        time.sleep(0.05)
+            calls = log_path.read_text(encoding="utf-8").splitlines() if log_path.exists() else []
             logs_root = output_root / "logs"
             log_sessions = list(logs_root.iterdir()) if logs_root.exists() else []
             self.last_logs = {}
             if log_sessions:
                 session_dir = log_sessions[0]
                 self.last_logs = {
-                    str(path.relative_to(session_dir)): path.read_text(encoding="utf-8")
+                    path.relative_to(session_dir).as_posix(): path.read_text(encoding="utf-8")
                     for path in session_dir.rglob("*")
                     if path.is_file()
                 }
@@ -117,7 +169,7 @@ class ExperimentRunnerTests(unittest.TestCase):
     def test_selected_experiments_run_in_entered_order_after_one_setup(self):
         result, calls = self.run_with_stubs("3,1,5")
 
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 0, f"{result.stderr}\n{result.stdout}")
         self.assertEqual(
             calls,
             ["setup:startup,runtime,size", "startup", "runtime", "args:runtime:--workload-type exp/uber", "size"],
@@ -125,7 +177,7 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertIn("runner.log", self.last_logs, self.last_logs)
         self.assertIn("Choose experiments by entering their numbers", self.last_logs["runner.log"])
         self.assertIn("setup-output", self.last_logs["setup.log"])
-        self.assertIn("startup-output", self.last_logs["startup/run-test-run.log"])
+        self.assertIn("startup-output", self.last_logs["startup/run-test-run.log"], self.last_logs)
         self.assertIn("runtime-output", self.last_logs["runtime/run-test-run.log"])
         self.assertIn("size-output", self.last_logs["size/run-test-run.log"])
         self.assertEqual(
@@ -250,13 +302,164 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(any("--source custom=/tmp/source tree --binary custom=/tmp/client binary" in call for call in calls))
 
+    @unittest.skipUnless(
+        os.name != "nt" and bash_has_command("setsid") and bash_has_command("nohup"),
+        "detached child processes cannot be validated from a Windows WSL host",
+    )
+    def test_detached_run_finishes_and_writes_reattachable_console_log(self):
+        result, calls = self.run_with_stubs("5", config_answers="\n", runner_args=["--detach"])
+
+        self.assertEqual(result.returncode, 0, f"{result.stderr}\n{result.stdout}")
+        self.assertIn("size", calls, {"stdout": result.stdout, "logs": self.last_logs})
+        self.assertIn("--attach", result.stdout)
+        self.assertIn("--stop", result.stdout)
+        self.assertIn("runner.status", self.last_logs)
+        self.assertIn("size-output", self.last_logs["runner.log"])
+
+    @unittest.skipUnless(
+        os.name != "nt" and bash_has_command("setsid") and bash_has_command("nohup"),
+        "detached child processes cannot be validated from a Windows WSL host",
+    )
+    def test_stop_terminates_a_running_detached_session(self):
+        with tempfile.TemporaryDirectory(prefix="experiment-runner-stop-", dir=ROOT) as temp:
+            temp_root = pathlib.Path(temp)
+            module_root = temp_root / "modules"
+            size_module = module_root / "size"
+            size_module.mkdir(parents=True)
+            (size_module / "run.sh").write_bytes(b"printf 'size-started\\n'\nsleep 30\n")
+            setup_script = temp_root / "setup.sh"
+            setup_script.write_bytes(b"printf 'setup-started\\n'\n")
+            output_root = temp_root / "results"
+            runner_copy = temp_root / "run.sh"
+            runner_copy.write_bytes(RUNNER.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8"))
+            input_path = temp_root / "runner-input.txt"
+            input_path.write_bytes(b"5\nn\n")
+            env = os.environ.copy()
+            env.update(
+                {
+                    "EXPERIMENTS_MODULE_ROOT": bash_compatible_path(module_root),
+                    "EXPERIMENTS_SETUP_SCRIPT": bash_compatible_path(setup_script),
+                    "EXPERIMENTS_OUTPUT_ROOT": bash_compatible_path(output_root),
+                }
+            )
+            forward_wsl_environment(
+                env,
+                ("EXPERIMENTS_MODULE_ROOT", "EXPERIMENTS_SETUP_SCRIPT", "EXPERIMENTS_OUTPUT_ROOT"),
+            )
+            runner_argument = runner_copy.relative_to(ROOT).as_posix()
+            launch_command = f"exec bash {shlex.quote(runner_argument)} --detach"
+            launch_command += " < " + shlex.quote(bash_compatible_path(input_path))
+            session_id = None
+            try:
+                launched = subprocess.run(
+                    ["bash", "-c", launch_command],
+                    text=True,
+                    capture_output=True,
+                    env=env,
+                    cwd=ROOT,
+                    check=False,
+                )
+                self.assertEqual(launched.returncode, 0, launched.stderr)
+                match = re.search(r"Detached experiment session: ([A-Za-z0-9._-]+)", launched.stdout)
+                self.assertIsNotNone(match, launched.stdout)
+                session_id = match.group(1)
+                session_dir = output_root / "logs" / session_id
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    log_path = session_dir / "runner.log"
+                    if log_path.is_file() and "size-started" in log_path.read_text(encoding="utf-8"):
+                        break
+                    time.sleep(0.05)
+                self.assertTrue(log_path.is_file() and "size-started" in log_path.read_text(encoding="utf-8"))
+
+                stop_command = f"exec bash {shlex.quote(runner_argument)} --stop {shlex.quote(session_id)}"
+                stopped = subprocess.run(
+                    ["bash", "-c", stop_command],
+                    text=True,
+                    capture_output=True,
+                    env=env,
+                    cwd=ROOT,
+                    check=False,
+                )
+                self.assertEqual(stopped.returncode, 0, stopped.stderr)
+                deadline = time.monotonic() + 10
+                while not (session_dir / "runner.status").exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertTrue((session_dir / "runner.status").is_file())
+            finally:
+                if session_id is not None:
+                    session_dir = output_root / "logs" / session_id
+                    if (session_dir / "runner.pid").is_file() and not (session_dir / "runner.status").exists():
+                        stop_command = f"exec bash {shlex.quote(runner_argument)} --stop {shlex.quote(session_id)}"
+                        subprocess.run(
+                            ["bash", "-c", stop_command],
+                            text=True,
+                            capture_output=True,
+                            env=env,
+                            cwd=ROOT,
+                            check=False,
+                        )
+
+    def test_attach_replays_an_existing_session_log(self):
+        with tempfile.TemporaryDirectory(prefix="experiment-runner-attach-") as temp:
+            temp_root = pathlib.Path(temp)
+            output_root = temp_root / "results"
+            session_dir = output_root / "logs" / "test-session"
+            session_dir.mkdir(parents=True)
+            (session_dir / "runner.log").write_text("saved console output\n", encoding="utf-8")
+            (session_dir / "runner.status").write_text("0\n", encoding="utf-8")
+            runner_copy = temp_root / "run.sh"
+            runner_copy.write_bytes(RUNNER.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8"))
+            env = os.environ.copy()
+            env["EXPERIMENTS_OUTPUT_ROOT"] = bash_compatible_path(output_root)
+            forward_wsl_environment(env, ("EXPERIMENTS_OUTPUT_ROOT",))
+
+            command = f"exec bash {shlex.quote(bash_compatible_path(runner_copy))} --attach test-session"
+            result = subprocess.run(
+                ["bash", "-c", command],
+                text=True,
+                capture_output=True,
+                env=env,
+                cwd=ROOT,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("saved console output", result.stdout)
+
+    def test_stop_reports_a_completed_session_without_signaling_its_pid(self):
+        with tempfile.TemporaryDirectory(prefix="experiment-runner-stop-", dir=ROOT) as temp:
+            temp_root = pathlib.Path(temp)
+            output_root = temp_root / "results"
+            session_dir = output_root / "logs" / "completed-session"
+            session_dir.mkdir(parents=True)
+            (session_dir / "runner.pid").write_text("1\n", encoding="utf-8")
+            (session_dir / "runner.status").write_text("0\n", encoding="utf-8")
+            runner_copy = temp_root / "run.sh"
+            runner_copy.write_bytes(RUNNER.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8"))
+            env = os.environ.copy()
+            env["EXPERIMENTS_OUTPUT_ROOT"] = bash_compatible_path(output_root)
+            forward_wsl_environment(env, ("EXPERIMENTS_OUTPUT_ROOT",))
+
+            result = subprocess.run(
+                ["bash", runner_copy.relative_to(ROOT).as_posix(), "--stop", "completed-session"],
+                text=True,
+                capture_output=True,
+                env=env,
+                cwd=ROOT,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("has already finished", result.stdout)
+
     def test_evaluation_regenerates_only_selected_reports_without_setup_or_runs(self):
         result, calls = self.run_with_stubs("7\n2,5")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(calls, ["empty-block:saved-run", "size:saved-run"])
         self.assertIn("Evaluation mode", result.stdout)
-        self.assertIn("All selected saved results were evaluated successfully", result.stdout)
+        self.assertIn("All selected saved results were evaluated successfully", self.last_logs["runner.log"])
         self.assertIn("empty-block-report-output", self.last_logs["empty-block/evaluation-1.log"])
         self.assertIn("size-report-output", self.last_logs["size/evaluation-1.log"])
         self.assertNotIn("setup.log", self.last_logs)
@@ -274,13 +477,23 @@ class ExperimentRunnerTests(unittest.TestCase):
             env = os.environ.copy()
             env.update(
                 {
-                    "EXPERIMENTS_MODULE_ROOT": str(module_root),
-                    "EXPERIMENTS_SETUP_SCRIPT": str(setup_script),
-                    "EXPERIMENTS_OUTPUT_ROOT": str(temp_root / "results"),
+                    "EXPERIMENTS_MODULE_ROOT": bash_compatible_path(module_root),
+                    "EXPERIMENTS_SETUP_SCRIPT": bash_compatible_path(setup_script),
+                    "EXPERIMENTS_OUTPUT_ROOT": bash_compatible_path(temp_root / "results"),
                 }
             )
+            forward_wsl_environment(
+                env,
+                ("EXPERIMENTS_MODULE_ROOT", "EXPERIMENTS_SETUP_SCRIPT", "EXPERIMENTS_OUTPUT_ROOT"),
+            )
+            runner_copy = temp_root / "run.sh"
+            runner_copy.write_bytes(RUNNER.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8"))
+            input_path = temp_root / "runner-input.txt"
+            input_path.write_bytes(b"7\n1\n")
+            command = "exec bash " + shlex.quote(runner_copy.relative_to(ROOT).as_posix())
+            command += " < " + shlex.quote(bash_compatible_path(input_path))
             result = subprocess.run(
-                ["bash", str(RUNNER)], input="7\n1\n", text=True, capture_output=True, env=env, check=False
+                ["bash", "-c", command], text=True, capture_output=True, env=env, cwd=ROOT, check=False
             )
 
         self.assertEqual(result.returncode, 1)
@@ -299,13 +512,23 @@ class ExperimentRunnerTests(unittest.TestCase):
             env = os.environ.copy()
             env.update(
                 {
-                    "EXPERIMENTS_MODULE_ROOT": str(module_root),
-                    "EXPERIMENTS_SETUP_SCRIPT": str(temp_root / "missing-setup.sh"),
-                    "EXPERIMENTS_OUTPUT_ROOT": str(output_root),
+                    "EXPERIMENTS_MODULE_ROOT": bash_compatible_path(module_root),
+                    "EXPERIMENTS_SETUP_SCRIPT": bash_compatible_path(temp_root / "missing-setup.sh"),
+                    "EXPERIMENTS_OUTPUT_ROOT": bash_compatible_path(output_root),
                 }
             )
+            forward_wsl_environment(
+                env,
+                ("EXPERIMENTS_MODULE_ROOT", "EXPERIMENTS_SETUP_SCRIPT", "EXPERIMENTS_OUTPUT_ROOT"),
+            )
+            runner_copy = temp_root / "run.sh"
+            runner_copy.write_bytes(RUNNER.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8"))
+            input_path = temp_root / "runner-input.txt"
+            input_path.write_bytes(b"7\n1\n")
+            command = "exec bash " + shlex.quote(runner_copy.relative_to(ROOT).as_posix())
+            command += " < " + shlex.quote(bash_compatible_path(input_path))
             result = subprocess.run(
-                ["bash", str(RUNNER)], input="7\n1\n", text=True, capture_output=True, env=env, check=False
+                ["bash", "-c", command], text=True, capture_output=True, env=env, cwd=ROOT, check=False
             )
 
         self.assertEqual(result.returncode, 1)

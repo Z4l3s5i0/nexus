@@ -12,6 +12,14 @@ Each experiment run writes result artifacts to `experiment-results/<module>/<run
 
 Every invocation of `experiments/run.sh` also creates `experiment-results/logs/<session-id>/`. `runner.log` records the menu, selected modules, configuration messages, dispatch messages, and terminal output. A run invocation records shared setup output and its exit status in the single `setup.log`; each selected experiment has its own subfolder and `run-<run-id>.log`, so one module's output cannot be mistaken for another's. Evaluation-only runs write each report invocation to that experiment's `evaluation-<number>.log` and do not create a setup log. Standard output and errors remain visible in the terminal while being captured; command arguments are intentionally omitted from log headers to avoid recording secrets such as the empty-block private key. Detailed client, workload, Hive, and collector logs remain in their experiment result folders.
 
+To keep a suite running after an SSH or terminal connection is lost, choose detached execution when starting it:
+
+```bash
+bash experiments/run.sh --detach
+```
+
+The runner still collects the experiment selection and configuration interactively, then starts the suite in its own session before shared setup begins. It prints a session ID and commands to follow or stop that session; the same commands can be run later with `bash experiments/run.sh --attach <session-id>` to reattach to its console log or `bash experiments/run.sh --stop <session-id>` to stop the suite and its child processes. Without `--detach`, execution remains attached to the current terminal as before.
+
 ## Interactive run configuration
 
 After selecting experiments, the runner displays each selected module's proposed defaults in the same order. Press Enter (or answer `n`) to accept that module's defaults, or answer `y` to customize its settings; every custom field also accepts Enter to keep its displayed default. The prompts and validation finish before the shared setup runs, and evaluation mode (`7`) does not ask for run configuration.
