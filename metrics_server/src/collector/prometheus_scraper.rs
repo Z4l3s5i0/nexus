@@ -329,6 +329,10 @@ mod tests {
             assert_eq!(samples.len(), 1);
             assert_eq!(samples[0].name, "geth_chain_head_block");
             assert_eq!(samples[0].value, 42.0);
+            assert_eq!(samples[0].experiment_id.as_deref(), Some("experiment-1"));
+            assert_eq!(samples[0].node_id, "geth-1");
+            assert_eq!(samples[0].network, "testnet");
+            assert_eq!(samples[0].client, "geth");
             assert!(store.errors.lock().unwrap().is_empty());
         }
     }

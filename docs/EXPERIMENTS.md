@@ -13,11 +13,21 @@ The project includes a comprehensive experimentation pipeline for benchmarking N
 - **Database export** — `db_exporter` tool for extracting node state for post-hoc analysis
 - **HIVE integration** — Docker-based Ethereum engine client test suite
 
-## Scripts Overview
+## Primary workflow: modular suite
 
-All experiment scripts live in `scripts/v2/`. They fall into four categories:
+The supported entry point is now [`experiments/run.sh`](../experiments/run.sh). It prompts for one or more experiments, preserves the selected order, runs [`experiments/setup.sh`](../experiments/setup.sh) once, and stops dispatching if a module fails. Choose `6` to run runtime, empty-block, startup, Hive compliance, and size comparison in that order.
 
-| Category | Scripts |
+```bash
+bash experiments/run.sh
+```
+
+The module structure, setup behavior, output layout, metric coverage matrix, implementation status, and known gaps are documented in [`experiments/README.md`](../experiments/README.md). Each module owns its run lifecycle and measurements; the old paths below are a historical implementation reference and low-level utilities, not compatibility wrappers or the current suite entry point.
+
+## Legacy script reference
+
+The following sections describe `scripts/v2/` behavior retained for context and for infrastructure utilities still used by the new modules. Start new experiment runs through `experiments/run.sh` rather than invoking the legacy batch/experiment runners.
+
+| Category | Legacy scripts |
 |---|---|
 | **Orchestration** | `run_experiment.sh`, `run_experiments_loop.sh` |
 | **Infrastructure** | `setup.sh`, `start_local.sh`, `cleanup.sh`, `config_gen.sh` |

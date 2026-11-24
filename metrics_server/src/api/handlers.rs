@@ -1,13 +1,13 @@
 use std::time::Duration;
 use axum::{
     extract::{Query, State, rejection::JsonRejection},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode, header::AUTHORIZATION},
     response::IntoResponse,
     Json,
 };
 use tracing::info;
 use crate::api::ApiState;
-use crate::model::{MetricRangeQuery, MetricRangeResponse, MetricPoint, RegisterNodeRequest, Node, NodeStatus, BootstrapNodesQuery, BootstrapNode, BootstrapNodesResponse};
+use crate::model::{MetricIngestionRequest, MetricRangeQuery, MetricRangeResponse, MetricPoint, MetricSample, MetricSource, RegisterNodeRequest, Node, NodeStatus, BootstrapNodesQuery, BootstrapNode, BootstrapNodesResponse};
 use serde_json::json;
 use crate::time::now_ms;
 
@@ -351,5 +351,166 @@ pub async fn range_metrics_handler(
             }).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to query metric range: {}", e)).into_response(),
+    }
+}
+
+fn is_ingestion_authorized(headers: &HeaderMap, expected_token: &str) -> bool {
+    let supplied = headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    supplied == Some(expected_token)
+}
+
+fn sample_belongs_to_experiment(sample: &MetricSample, experiment_id: &str) -> bool {
+    sample.experiment_id.as_deref() == Some(experiment_id)
+}
+
+fn validate_ingested_sample(sample: &MetricSample) -> Result<(), &'static str> {
+    if !matches!(
+        &sample.source,
+        MetricSource::System | MetricSource::Log | MetricSource::Derived
+    ) {
+        return Err("only derived, system, and log metric samples may be ingested");
+    }
+    if sample.experiment_id.as_deref().is_none_or(str::is_empty) {
+        return Err("experiment_id is required");
+    }
+    if sample.timestamp_ms <= 0 {
+        return Err("timestamp_ms must be positive");
+    }
+    if sample.node_id.is_empty() || sample.node_id.len() > 256 {
+        return Err("node_id must contain 1-256 characters");
+    }
+    if sample.network.is_empty() || sample.network.len() > 256 {
+        return Err("network must contain 1-256 characters");
+    }
+    if sample.client.is_empty() || sample.client.len() > 128 {
+        return Err("client must contain 1-128 characters");
+    }
+    if sample.name.is_empty()
+        || sample.name.len() > 128
+        || !sample.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
+    {
+        return Err("metric name must contain only ASCII letters, digits, underscores, or colons");
+    }
+    if !sample.value.is_finite() {
+        return Err("metric value must be finite");
+    }
+    if let Some(labels) = &sample.labels_json {
+        if labels.len() > 16 * 1024 {
+            return Err("metric labels exceed the 16 KiB limit");
+        }
+        if !serde_json::from_str::<serde_json::Value>(labels)
+            .is_ok_and(|value| value.is_object())
+        {
+            return Err("metric labels must be a JSON object");
+        }
+    }
+    Ok(())
+}
+
+pub async fn ingest_metrics_handler(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    payload: Result<Json<MetricIngestionRequest>, JsonRejection>,
+) -> impl IntoResponse {
+    let expected_token = match std::env::var("METRICS_INGEST_TOKEN") {
+        Ok(token) if !token.is_empty() => token,
+        _ => return (StatusCode::SERVICE_UNAVAILABLE, "Metric ingestion is not configured").into_response(),
+    };
+    if !is_ingestion_authorized(&headers, &expected_token) {
+        return (StatusCode::UNAUTHORIZED, "Invalid metric ingestion token").into_response();
+    }
+
+    let Json(request) = match payload {
+        Ok(payload) => payload,
+        Err(rejection) => return (rejection.status(), rejection.body_text()).into_response(),
+    };
+    if request.samples.is_empty() || request.samples.len() > 512 {
+        return (StatusCode::BAD_REQUEST, "samples must contain 1-512 entries").into_response();
+    }
+    let active_experiment_id = match state.config.experiment.as_ref() {
+        Some(experiment) => experiment.id.as_str(),
+        None => return (StatusCode::SERVICE_UNAVAILABLE, "No active experiment is configured").into_response(),
+    };
+    for sample in &request.samples {
+        if let Err(message) = validate_ingested_sample(sample) {
+            return (StatusCode::BAD_REQUEST, message).into_response();
+        }
+        if !sample_belongs_to_experiment(sample, active_experiment_id) {
+            return (StatusCode::BAD_REQUEST, "sample experiment_id does not match the active run").into_response();
+        }
+    }
+
+    let accepted = request.samples.len();
+    for sample in &request.samples {
+        if let Err(error) = state.store.insert_metric_sample(sample) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to store metric sample: {error}"),
+            ).into_response();
+        }
+    }
+    Json(serde_json::json!({"accepted": accepted})).into_response()
+}
+
+#[cfg(test)]
+mod ingestion_tests {
+    use super::*;
+
+    fn sample(source: MetricSource) -> MetricSample {
+        MetricSample {
+            timestamp_ms: 1,
+            experiment_id: Some("run-1".into()),
+            node_id: "node-1".into(),
+            network: "12345".into(),
+            client: "wasix_eth".into(),
+            source,
+            name: "system_cpu_percent".into(),
+            value: 12.5,
+            labels_json: Some(r#"{"scope":"container"}"#.into()),
+        }
+    }
+
+    #[test]
+    fn accepts_derived_system_and_log_samples_with_provenance() {
+        assert!(validate_ingested_sample(&sample(MetricSource::System)).is_ok());
+        assert!(validate_ingested_sample(&sample(MetricSource::Log)).is_ok());
+        assert!(validate_ingested_sample(&sample(MetricSource::Derived)).is_ok());
+    }
+
+    #[test]
+    fn rejects_other_sources_and_non_finite_values() {
+        assert!(validate_ingested_sample(&sample(MetricSource::JsonRpc)).is_err());
+        let mut invalid = sample(MetricSource::System);
+        invalid.value = f64::NAN;
+        assert!(validate_ingested_sample(&invalid).is_err());
+    }
+
+    #[test]
+    fn requires_labels_to_be_a_json_object() {
+        let mut invalid = sample(MetricSource::Log);
+        invalid.labels_json = Some("[]".into());
+        assert!(validate_ingested_sample(&invalid).is_err());
+    }
+
+    #[test]
+    fn ingestion_requires_the_bearer_token() {
+        let mut headers = HeaderMap::new();
+        assert!(!is_ingestion_authorized(&headers, "secret"));
+        headers.insert(AUTHORIZATION, "Bearer secret".parse().unwrap());
+        assert!(is_ingestion_authorized(&headers, "secret"));
+        assert!(!is_ingestion_authorized(&headers, "different"));
+    }
+
+    #[test]
+    fn ingestion_rejects_samples_from_another_run() {
+        let current = sample(MetricSource::Log);
+        let mut stale = sample(MetricSource::Log);
+        stale.experiment_id = Some("old-run".into());
+
+        assert!(sample_belongs_to_experiment(&current, "run-1"));
+        assert!(!sample_belongs_to_experiment(&stale, "run-1"));
     }
 }

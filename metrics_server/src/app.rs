@@ -3,7 +3,7 @@ use crate::storage::{memory::MemoryStore, redb_store::RedbStore, SharedStore};
 use crate::telemetry::registry::TelemetryRegistry;
 use crate::api::{ApiState, routes};
 use crate::collector::scheduler::CollectorScheduler;
-use crate::model::{Experiment, Node};
+use crate::model::{Experiment, ExperimentConfig, Node};
 use crate::time::now_ms;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,7 +15,21 @@ pub async fn run(config_path: PathBuf) -> anyhow::Result<()> {
         eprintln!("Failed to initialize tracing: {}", e);
     }
 
-    let config = config::load_config(&config_path)?;
+    let mut config = config::load_config(&config_path)?;
+    if let Ok(experiment_id) = std::env::var("EXPERIMENT_RUN_ID") {
+        if !experiment_id.trim().is_empty() {
+            if let Some(experiment) = config.experiment.as_mut() {
+                experiment.id = experiment_id;
+            } else {
+                config.experiment = Some(ExperimentConfig {
+                    id: experiment_id.clone(),
+                    name: format!("Experiment run {experiment_id}"),
+                    description: None,
+                    tags: vec!["experiment-suite".to_string()],
+                });
+            }
+        }
+    }
     config::validate_config(&config)?;
 
     info!("Starting metrics_server with config: {:?}", config_path);

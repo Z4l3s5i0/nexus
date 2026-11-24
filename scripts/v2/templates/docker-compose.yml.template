@@ -11,7 +11,10 @@ services:
     # Fallback to build if image not found or requested
     ${METRICS_BUILD_SECTION:-# No build section}
     ports:
-      - "9100:9100"
+      - "${METRICS_SERVER_BIND:-0.0.0.0}:9100:9100"
+    environment:
+      METRICS_INGEST_TOKEN: ${METRICS_INGEST_TOKEN:-}
+      EXPERIMENT_RUN_ID: ${EXPERIMENT_RUN_ID:-}
     volumes:
       - ./data_v2/metrics-server:/app/data
     networks:
@@ -24,7 +27,7 @@ services:
 
   # Prometheus
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.53.1
     volumes:
       - ./startup_v2/prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus-data:/prometheus
@@ -40,7 +43,7 @@ services:
 
   # Grafana
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.1.0
     volumes:
       - grafana-data:/var/lib/grafana
       - ./startup_v2/grafana/provisioning:/etc/grafana/provisioning
@@ -57,7 +60,7 @@ services:
 
   # Node Exporter
   node-exporter:
-    image: prom/node-exporter:latest
+    image: prom/node-exporter:v1.8.1
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro

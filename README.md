@@ -98,7 +98,8 @@ CLI (wasix_eth_app)
 | Directory | Purpose |
 |---|---|
 | `metrics_server/` | Standalone Rust service for Prometheus metrics collection, node registration, and bootstrap peer discovery |
-| `scripts/v2/` | Experiment automation: local/remote multi-node deployment, workload pushing, log aggregation, result analysis |
+| `experiments/` | Modular runtime, empty-block, startup, Hive compliance, and size experiments; start with `bash experiments/run.sh` |
+| `scripts/v2/` | Legacy low-level deployment, workload, and analysis utilities referenced by the modular experiment suite |
 | `hive/` | Custom HIVE test suite Docker setup for Ethereum engine client testing |
 | `diablo_workloads/` | Solidity contracts (counter, dota, uber) and workload YAML configs for benchmarking |
 | `thesis_results/` | Benchmark result PDFs and failure reports (comparing wasix, rust, and wasm builds) |
@@ -135,7 +136,8 @@ All workflows upload test logs as artifacts for inspection.
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Internal design: crate dependencies, data flows, Engine API, sync, reorg handling |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Developer guide: prerequisites, building, running, testing, debugging |
 | [NETWORKING.md](docs/NETWORKING.md) | P2P stack: Discv4, RLPx transport, peer management, gossip |
-| [EXPERIMENTS.md](docs/EXPERIMENTS.md) | Experiment and benchmarking guide: scripts, workloads, metrics |
+| [experiments/README.md](experiments/README.md) | Primary modular experiment workflow, metric matrix, implementation status, and known gaps |
+| [EXPERIMENTS.md](docs/EXPERIMENTS.md) | Legacy script reference and link to the current modular workflow |
 | [RPC_API.md](docs/RPC_API.md) | JSON-RPC API reference: all supported endpoints |
 | [STORAGE.md](docs/STORAGE.md) | Storage layer: `redb` schema, codecs, providers, trie |
 

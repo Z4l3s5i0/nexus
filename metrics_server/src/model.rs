@@ -167,10 +167,17 @@ pub struct MetricSample {
     pub labels_json: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricIngestionRequest {
+    pub samples: Vec<MetricSample>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum MetricSource {
     JsonRpc,
     PrometheusScrape,
+    System,
+    Log,
     Derived,
     Internal,
 }

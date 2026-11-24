@@ -361,7 +361,7 @@ EOF
 
     cat <<EOF >> "$COMPOSE_FILE"
   cl-node-$i:
-    image: sigp/lighthouse
+    image: sigp/lighthouse:v8.2.1
     volumes:
       - $DATA_DIR/cl:/root/.lighthouse
       - ./startup_v2:/app/startup
@@ -400,7 +400,7 @@ EOF
     if [ "$IS_VAL" = "true" ]; then
         cat <<EOF >> "$COMPOSE_FILE"
   vc-node-$i:
-    image: sigp/lighthouse
+    image: sigp/lighthouse:v8.2.1
     volumes:
       - $DATA_DIR/cl:/root/.lighthouse
       - ./startup_v2:/app/startup

@@ -23,16 +23,25 @@ RATIO_VARIANTS=(
     "5 0 5"
     "3 3 4"
 )
+NETWORK_SIZES_ARG=""
+WORKLOADS_ARG=""
 WORKLOAD_NODE_PERCENT=100
 
 usage() {
     cat <<EOF
-Usage: $0 [--ratios 'LINUX WASIX [GETH [RETH]]; ...'] [--help]
+Usage: $0 [--ratios 'LINUX WASIX [GETH [RETH]]; ...'] [--network-sizes 4,8,16,32,64]
+          [--workloads 'SCENARIO DURATION SPAMMER_ACCOUNTS TPS; ...'] [--help]
 
   --ratios  Semicolon-separated list of whitespace-separated node counts.
             Each entry must have two to four nonnegative integers in Linux,
             WASIX, Geth, Reth order. Geth and Reth default to zero.
             Example: --ratios '3 4 3 2; 0 5 5 0'
+  --network-sizes  Scale each ratio mix proportionally to these total node counts.
+                  May be combined with --ratios to scale custom mixes.
+                  Example: --network-sizes 4,8,16,32,64
+  --workloads  Optional semicolon-separated workload variants; defaults to Uber,
+               Counter, and Dota. Each entry has scenario, duration, accounts, TPS.
+               Example: --workloads 'exp/uber 120 4 4; exp/fifa 180 17 17.415; exp/dota 280 66 66'
   --help    Show this help message.
 EOF
 }
@@ -55,6 +64,22 @@ while [ "$#" -gt 0 ]; do
             done
             shift 2
             ;;
+        --network-sizes)
+            if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+                echo "Error: --network-sizes requires a comma-separated list." >&2
+                exit 1
+            fi
+            NETWORK_SIZES_ARG=$2
+            shift 2
+            ;;
+        --workloads)
+            if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+                echo "Error: --workloads requires a semicolon-separated list." >&2
+                exit 1
+            fi
+            WORKLOADS_ARG=$2
+            shift 2
+            ;;
         --help)
             usage
             exit 0
@@ -67,7 +92,23 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-ratio_pattern='^[[:space:]]*([0-9]+)[[:space:]]+([0-9]+)([[:space:]]+([0-9]+))?[[:space:]]*(\[[:space:]]+([0-9]+))?[[:space:]]*$'
+if [ -n "$WORKLOADS_ARG" ]; then
+    IFS=';' read -ra WORKLOAD_VARIANTS <<< "$WORKLOADS_ARG"
+    VARIANTS=()
+    for variant in "${WORKLOAD_VARIANTS[@]}"; do
+        read -r -a fields <<< "$variant"
+        if [ "${#fields[@]}" -ne 4 ] || [[ ! "${fields[0]}" =~ ^[^[:space:]]+$ ]] || \
+           [[ ! "${fields[1]}" =~ ^[0-9]+$ ]] || [[ ! "${fields[2]}" =~ ^[0-9]+$ ]] || \
+           [[ ! "${fields[3]}" =~ ^[0-9]+([.][0-9]+)?$ ]] || [ "${fields[1]}" -eq 0 ] || \
+           [ "${fields[2]}" -eq 0 ]; then
+            echo "Error: invalid workload '$variant'; expected SCENARIO DURATION SPAMMER_ACCOUNTS TPS." >&2
+            exit 1
+        fi
+        VARIANTS+=("${fields[*]}")
+    done
+fi
+
+ratio_pattern='^[[:space:]]*([0-9]+)[[:space:]]+([0-9]+)([[:space:]]+([0-9]+))?([[:space:]]+([0-9]+))?[[:space:]]*$'
 max_count=9223372036854775807
 NORMALIZED_RATIOS=()
 for ratio_var in "${RATIO_VARIANTS[@]}"; do
@@ -99,6 +140,69 @@ for ratio_var in "${RATIO_VARIANTS[@]}"; do
     NORMALIZED_RATIOS+=("${normalized_counts[*]}")
 done
 RATIO_VARIANTS=("${NORMALIZED_RATIOS[@]}")
+
+if [ -n "$NETWORK_SIZES_ARG" ]; then
+    IFS=',' read -ra NETWORK_SIZES <<< "$NETWORK_SIZES_ARG"
+    declare -A SEEN_SIZES=()
+    NORMALIZED_SIZES=()
+    for size in "${NETWORK_SIZES[@]}"; do
+        if [[ ! "$size" =~ ^[0-9]+$ ]]; then
+            echo "Error: invalid network size '$size': expected a positive integer." >&2
+            exit 1
+        fi
+        size=${size#"${size%%[!0]*}"}
+        size=${size:-0}
+        if [ "${#size}" -gt 6 ] || { [ "${#size}" -eq 6 ] && [ "$size" -gt 100000 ]; } || [ "$size" -eq 0 ]; then
+            echo "Error: network sizes must be between 1 and 100000." >&2
+            exit 1
+        fi
+        if [ -n "${SEEN_SIZES[$size]:-}" ]; then
+            echo "Error: duplicate network size '$size'." >&2
+            exit 1
+        fi
+        SEEN_SIZES[$size]=1
+        NORMALIZED_SIZES+=("$size")
+    done
+
+    BASE_RATIOS=("${RATIO_VARIANTS[@]}")
+    SCALED_RATIOS=()
+    for size in "${NORMALIZED_SIZES[@]}"; do
+        for ratio_var in "${BASE_RATIOS[@]}"; do
+            read -r -a counts <<< "$ratio_var"
+            base_total=0
+            for count in "${counts[@]}"; do
+                base_total=$((base_total + count))
+            done
+            scaled_counts=()
+            remainders=()
+            scaled_total=0
+            for count in "${counts[@]}"; do
+                if (( count > max_count / size )); then
+                    echo "Error: ratio '$ratio_var' is too large to scale safely." >&2
+                    exit 1
+                fi
+                product=$((count * size))
+                scaled=$((product / base_total))
+                scaled_counts+=("$scaled")
+                remainders+=("$((product % base_total))")
+                scaled_total=$((scaled_total + scaled))
+            done
+            remaining=$((size - scaled_total))
+            for ((allocation = 0; allocation < remaining; allocation++)); do
+                best_index=0
+                for ((index = 1; index < ${#remainders[@]}; index++)); do
+                    if (( remainders[index] > remainders[best_index] )); then
+                        best_index=$index
+                    fi
+                done
+                scaled_counts[$best_index]=$((scaled_counts[best_index] + 1))
+                remainders[$best_index]=-1
+            done
+            SCALED_RATIOS+=("${scaled_counts[*]}")
+        done
+    done
+    RATIO_VARIANTS=("${SCALED_RATIOS[@]}")
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_EXPERIMENT="$SCRIPT_DIR/run_experiment.sh"

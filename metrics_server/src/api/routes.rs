@@ -13,7 +13,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/experiments", get(handlers::experiments_handler))
         .route("/api/metrics/latest", get(handlers::latest_metrics_handler))
         .route("/api/metrics/range", get(handlers::range_metrics_handler))
-        .layer(DefaultBodyLimit::max(1024 * 64)) // 64KB limit for all requests
+        .route("/api/metrics/ingest", post(handlers::ingest_metrics_handler))
+        .layer(DefaultBodyLimit::max(1024 * 512))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

@@ -104,6 +104,12 @@ impl RpcCollector {
 
         let up = if success_count > 0 { 1.0 } else { 0.0 };
         self.telemetry.ethereum_rpc_up.with_label_values(&[node.id.as_str(), node.network.as_str(), node.client.as_str()]).set(up);
+        self.store.insert_metric_sample(&rpc_status_sample(
+            &node,
+            self.experiment_id.clone(),
+            now_ms(),
+            up,
+        ))?;
 
         Ok(())
     }
@@ -148,5 +154,58 @@ impl RpcCollector {
         self.store.insert_metric_sample(&sample)?;
 
         Ok(())
+    }
+}
+
+fn rpc_status_sample(
+    node: &Node,
+    experiment_id: Option<String>,
+    timestamp_ms: i64,
+    value: f64,
+) -> MetricSample {
+    MetricSample {
+        timestamp_ms,
+        experiment_id,
+        node_id: node.id.clone(),
+        network: node.network.clone(),
+        client: node.client.clone(),
+        source: MetricSource::Derived,
+        name: "ethereum_rpc_up".to_string(),
+        value,
+        labels_json: Some(r#"{"semantics":"at_least_one_rpc_method_succeeded"}"#.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::NodeStatus;
+
+    #[test]
+    fn rpc_status_sample_preserves_run_node_and_client_identity() {
+        let node = Node {
+            id: "node-a".into(),
+            network: "12345".into(),
+            chain_id: Some(12345),
+            client: "wasix_eth".into(),
+            rpc_url: "http://localhost:8545".into(),
+            metrics_url: None,
+            p2p_addr: None,
+            discovery_addr: None,
+            enode: None,
+            status: NodeStatus::Active,
+            last_seen_ms: None,
+            last_successful_probe_ms: None,
+            consecutive_failures: 0,
+        };
+
+        let sample = rpc_status_sample(&node, Some("run-1".into()), 123, 1.0);
+
+        assert_eq!(sample.experiment_id.as_deref(), Some("run-1"));
+        assert_eq!(sample.node_id, "node-a");
+        assert_eq!(sample.client, "wasix_eth");
+        assert_eq!(sample.source, MetricSource::Derived);
+        assert_eq!(sample.name, "ethereum_rpc_up");
+        assert_eq!(sample.value, 1.0);
     }
 }

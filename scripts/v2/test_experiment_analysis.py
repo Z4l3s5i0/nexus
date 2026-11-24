@@ -7,9 +7,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 import plot_metrics
 
-HERE = Path(__file__).resolve().parent
 EVALUATOR = HERE / 'evaluate_logs.py'
 
 
@@ -81,6 +82,7 @@ class AnalysisTests(unittest.TestCase):
         script_dir.mkdir()
         shutil.copy(HERE / 'analyze_experiment.sh', script_dir)
         shutil.copy(EVALUATOR, script_dir)
+        (script_dir / 'plot_metrics.py').write_text('import sys\nsys.exit(2)\n', encoding='utf-8')
         bin_dir = self.root / 'bin'
         bin_dir.mkdir()
         exporter = script_dir / 'db_exporter' / 'target' / 'release' / 'db_exporter'
@@ -116,6 +118,8 @@ class AnalysisTests(unittest.TestCase):
         evaluation = (self.root / 'analysis' / 'log_evaluation.txt').read_text()
         self.assertIn('Total Blocks Executed: 1', evaluation)
         self.assertIn('unavailable: Geth', evaluation)
+        self.assertTrue((self.root / 'analysis' / 'SUMMARY.md').exists())
+        self.assertTrue((self.root / 'analysis' / 'PLOTS_SKIPPED').exists())
 
     def test_plot_series_use_rpc_and_unambiguous_registration(self):
         nodes = {node['index']: node for node in json.loads(self.metadata.read_text())['nodes']}

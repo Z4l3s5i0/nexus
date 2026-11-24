@@ -1,0 +1,93 @@
+# Modular experiment suite
+
+`experiments/run.sh` is the primary entry point for the five experiment modules. It prompts for a selection, runs the shared setup once, then dispatches modules sequentially in the order entered. Select `6` (or `all`) for the standard order: runtime, empty-block, startup, compliance, and size comparison.
+
+```bash
+bash experiments/run.sh
+```
+
+Enter a comma-separated selection such as `3,1,5` to run startup, runtime, then size comparison. `bash experiments/run.sh --help` displays the menu. `experiments/setup.sh` can also be run directly; without the runner’s selection it prepares dependencies for all five modules.
+
+Each run writes to `experiment-results/<module>/<run-id>/`. The runner exports a common `EXPERIMENT_RUN_ID` and output root to all selected modules. Generated result directories are ignored by Git; source scripts under `experiments/` are tracked.
+
+## Modules
+
+| Module | Entry point | Purpose and outputs |
+|---|---|---|
+| Runtime | `experiments/runtime/run.sh` | Starts a local mixed-client network, runs Contender workloads, records RPC/Prometheus samples, host/container metrics, structured logs, and reports availability by node/client. |
+| Empty block | `experiments/empty-block/run.sh` | Runs an exact transaction-count sweep, records actual block transaction counts and execution times, and writes `samples.csv`, raw events, derived samples, and coverage reports. |
+| Startup | `experiments/startup/run.sh` | Repeats isolated client starts, measures time to the first successful `eth_chainId` response, samples system resources, and reports per-configuration statistics. |
+| Compliance | `experiments/compliance/run.sh` | Builds the custom Hive image and runs `ethereum/engine` for the selected `wasix-r-eth` and/or `wasix-w-eth` client. Workspaces, command lines, and per-client logs are retained. |
+| Size | `experiments/size/run.sh` | Measures source-code lines and compiled binary bytes. Missing source trees or binaries are reported as unavailable. |
+
+Modules own their run lifecycle and experiment-specific collection/reporting scripts. Shared transport and system-collection helpers are used where the measurement semantics are the same; modules do not delegate to old user-facing experiment entry points.
+
+### Runtime
+
+The runtime module accepts `--linux-nodes`, `--wasix-nodes`, `--geth-nodes`, `--reth-nodes`, workload duration/TPS, and other local-run options; see `bash experiments/runtime/run.sh --help`. Its default network is two native and two WASIX NEXUS nodes. It builds from the local source tree and uses the metrics-server image prepared by the one-time setup.
+
+### Empty block
+
+The empty-block module defaults to the `wasix` client and transaction counts `0,1,5,10,20,50,100`. Nonzero counts require a funded local test key supplied with `EB_PRIVATE_KEY` or `--private-key`; use a disposable account. `--reset-network` explicitly permits removal of pre-existing generated `data_v2/` and `startup_v2/` state. On successful archival, the module removes only its generated network state so the next selected module can start cleanly; failed runs retain state for diagnosis.
+
+### Startup
+
+The default startup configurations are Geth, Reth, NEXUS native, and NEXUS in Docker/WASIX. A host Wasmer configuration is included only when `NEXUS_WASIX_WASM` points to a module and Wasmer is available, or when selected explicitly with `--configs nexus-wasmer`. `--timeout`, `--iterations`, `--configs`, image paths, and other options are listed by `bash experiments/startup/run.sh --help`.
+
+The measured endpoint is the first successful `eth_chainId` response. Geth, Reth, and host-Wasmer data initialization is outside the timed interval; initialization for the WASIX-in-Docker configuration remains part of its timed launch, matching the prior benchmark behavior. Image references and IDs are recorded for reproducibility.
+
+### Compliance
+
+The compliance module builds `z4l3s5i0/wasix-eth-linux:latest` and/or `z4l3s5i0/wasix-eth-wasix:latest`, then builds `hive-custom:latest` from `hive/hive.dockerfile`. The Hive command uses `--sim ethereum/engine`, the selected client, `--sim.parallelism`, and `--docker.pull=false`, following `hive/README.md`. Per-client results and logs are kept separately; any client failure makes the compliance stage fail.
+
+### Size comparison
+
+The default source measurement covers `wasix_eth/`; default binary candidates are `wasix_eth/target/release/wasix_eth` and `wasix_eth/target/wasm32-wasmer-wasi/release/wasix_eth.wasi.wasm`. Setup builds these NEXUS binaries once when needed for a selected module. Provide additional or different paths with repeated `--source LABEL=DIR` and `--binary LABEL=FILE` options, or use `GETH_SOURCE_DIR`, `RETH_SOURCE_DIR`, `WASIX_ETH_NATIVE_BINARY`, `WASIX_ETH_WASIX_BINARY`, `GETH_BINARY`, and `RETH_BINARY` environment variables. The report lists missing inputs as unavailable, never as size zero. Docker image size is intentionally omitted because image layers include runtime dependencies and are not comparable to compiled client size.
+
+## Dependency and setup notes
+
+`experiments/setup.sh` supports Ubuntu/Debian Linux. It installs or verifies the shared command-line tools (`curl`, `wget`, `git`, `jq`, `openssl`, Python 3, and `cloc`). Docker and Compose v2 are installed/verified only when a selected stage needs them; the Docker daemon must be usable by the current user. For runtime, empty-block, and startup selections, setup pulls shared images and builds `wasix-eth-metrics:latest` once. Startup-specific NEXUS images are prepared only when startup is selected. When native/WASIX target binaries are absent, setup builds them once using the existing Cargo toolchains. Hive client and Hive runner images are prepared by the compliance module.
+
+Rust/WASIX toolchains are not installed by this script. Install Rust, `cargo-wasix`, the WASIX SDK/target, and Wasmer as required by [DEVELOPMENT.md](../docs/DEVELOPMENT.md); setup reports a clear error if a required binary is missing and its toolchain is unavailable. Host Wasmer startup measurements and external binary comparisons also require their respective files/tools. Network access is required for Docker image pulls and Hive’s upstream source build.
+
+## Metric coverage
+
+| Source | Metrics | Experiments |
+|---|---|---|
+| Node-level Prometheus | Sync status, head block, peers, blocks imported, transactions committed, mempool size, rejected transactions, gossip messages, P2P bytes, RPC requests | Runtime, empty block |
+| RPC-derived | Node status/RPC availability, latest block, chain ID, peer count, gas price, syncing status | Runtime, empty block |
+| System-level | CPU utilization, memory usage, disk I/O, network throughput, load averages, context switches | Runtime, empty block, startup |
+| Log-based | Transaction hash, sender, gas used, elapsed time, block number, transaction count, peer ID, download type, TPS, commit-to-submit ratio | Runtime, empty block |
+
+System values are labeled `host`, `container`, or `process` according to attribution. Load averages and context switches stay host-scoped rather than being copied to each client. Missing values are omitted and shown as unavailable/partial in reports, never substituted with zero. A real observed zero (for example, an empty block’s transaction count) remains a valid measurement.
+
+Prometheus exposition names are retained raw and are not normalized unless client semantics are verified. The current Geth inventory and equivalence mappings are explicitly unverified in `scripts/v2/GETH_METRICS.md`; raw-series presence does not claim metric equivalence. Structured `[EXP]` log fields are currently available from the custom NEXUS clients; clients without those events show the corresponding log fields as unavailable. Empty-block TPS is derived from block transactions and block timestamp intervals; its commit-to-submit ratio uses receipt-confirmed test hashes.
+
+## Implementation status and remaining gaps
+
+### Implemented
+
+- Interactive ordered dispatch, one-time selection-aware setup, shared run IDs, and isolated output folders.
+- Runtime lifecycle, RPC status samples, raw Prometheus retention, secure metric ingestion for derived/system/log samples, host/container system collection, structured log parsing, and per-node availability reports.
+- Empty-block transaction submission, receipt polling, actual block counts, millisecond execution-time log parsing, and labeled block/log/system outputs.
+- Repeated startup benchmarks, readiness timing, per-process/container and host-scoped metrics, image identity, and summary statistics.
+- One-shot Hive `ethereum/engine` execution for custom clients with per-client logs and exit statuses.
+- Separate source-line and compiled-binary size measurement scripts with unavailable-input reporting.
+
+### Remaining limitations
+
+- Docker-backed network, Hive, and startup end-to-end runs have not been performed as part of this code change; validate them on a Linux host with Docker available.
+- Prometheus metric equivalence across all clients is not verified. Geth mappings and semantics remain raw/unverified, and some client-specific counters are unavailable.
+- Structured log coverage varies by client; peer/download events, transaction senders, and gas/timing fields are not guaranteed for non-NEXUS clients.
+- Per-client network throughput is available from Docker stats for containers; for host Wasmer, host throughput is measured but process-level network attribution is unavailable.
+- External Geth/Reth source trees and compiled binaries are not vendored. Supply paths to compare them; the report will preserve missing values explicitly.
+- Host-scoped load averages/context switches and telemetry collection overhead are not equivalent to client-attributed measurements.
+
+## Validation
+
+```bash
+python3 -m unittest discover -s experiments -p 'test*.py'
+python3 scripts/v2/test_empty_block_experiment.py
+python3 scripts/v2/test_shell_syntax.py
+cargo +nightly test --manifest-path metrics_server/Cargo.toml
+```

@@ -9,6 +9,10 @@ target/
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
 
+# Python bytecode caches
+__pycache__/
+*.py[cod]
+
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
@@ -22,7 +26,8 @@ workspace3
 results/
 /results/
 /.venv/
-/experiments/
+/experiments/exp_*/
+/experiment-results/
 /results1/
 /results1_faceted/
 /MA/

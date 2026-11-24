@@ -86,7 +86,7 @@ echo "password12345" > "$OUTPUT_DIR/password.txt"
 # We provide a withdrawal address to avoid interactive prompts.
 #WITHDRAWAL_ADDRESS="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 printf "%s\n%s\n%s\n\n\n" "0" "password12345" "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" | \
-docker run --rm -i -u "$(id -u):$(id -g)" -v "$(pwd)/$OUTPUT_DIR:/data" ghcr.io/ethstaker/ethstaker-deposit-cli:latest --language English existing-mnemonic \
+docker run --rm -i -u "$(id -u):$(id -g)" -v "$(pwd)/$OUTPUT_DIR:/data" ghcr.io/ethstaker/ethstaker-deposit-cli:v1.3.0 --language English existing-mnemonic \
   --mnemonic="$MNEMONIC" \
   --num_validators="$NUM_NODES" \
   --validator_start_index=0 \
