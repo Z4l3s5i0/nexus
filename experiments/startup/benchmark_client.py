@@ -182,7 +182,8 @@ def launch_config(args, work_dir, log_file, container_name):
         return launch_docker(
             args, work_dir, args.reth_image, 8545,
             [
-                "node", "--datadir", "/data/data/reth", "--http", "--http.addr", "0.0.0.0",
+                "node", "--chain", "/data/genesis.json", "--datadir", "/data/data/reth",
+                "--http", "--http.addr", "0.0.0.0",
                 "--http.port", "8545", "--authrpc.addr", "0.0.0.0", "--authrpc.port", "8551",
                 "--authrpc.jwtsecret", "/data/jwt.hex", "--max-outbound-peers", "0", "--max-inbound-peers", "0",
             ],

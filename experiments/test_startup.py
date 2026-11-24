@@ -98,6 +98,17 @@ class StartupBenchmarkTests(unittest.TestCase):
 
         self.assertNotIn("--rm", run_command.call_args_list[0].args[0])
 
+    def test_reth_launch_uses_the_custom_genesis_chainspec(self):
+        args = SimpleNamespace(config="reth", rpc_port=8545, reth_image="reth")
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(benchmark_client, "launch_docker") as launch_docker:
+                benchmark_client.launch_config(args, temp, "client.log", "startup-test")
+
+        docker_args = launch_docker.call_args.args[4]
+        self.assertIn("--chain", docker_args)
+        chain_index = docker_args.index("--chain")
+        self.assertEqual(docker_args[chain_index + 1], "/data/genesis.json")
+
     def test_failed_docker_container_can_be_kept_for_rpc_debugging(self):
         with tempfile.TemporaryDirectory() as temp:
             state_file = pathlib.Path(temp) / "state.json"
