@@ -64,6 +64,8 @@ The default startup configurations are Geth, Reth, NEXUS native, and NEXUS in Do
 
 The measured endpoint is the first successful `eth_chainId` response. Geth, Reth, and host-Wasmer data initialization is outside the timed interval; initialization for the WASIX-in-Docker configuration remains part of its timed launch, matching the prior benchmark behavior. Image references and IDs are recorded for reproducibility.
 
+For diagnosing an RPC readiness failure, run a single configuration with `--keep-failed-containers`, for example `bash experiments/startup/run.sh --configs reth --iterations 1 --keep-failed-containers`. A failed Docker client is left running (or retained if it exited) after its logs are collected; the runner prints the host RPC URL and a `curl` probe. The port and container name are also recorded in `iterations/reth/1/state.json` and `result.json`. Remove a retained container when done with `docker rm -f <container-name>`. This option is intended for focused debugging, because a retained running client can affect later measurements.
+
 ### Compliance
 
 The compliance module builds `z4l3s5i0/wasix-eth-linux:latest` and/or `z4l3s5i0/wasix-eth-wasix:latest`, then builds `hive-custom:latest` from `hive/hive.dockerfile`. The Hive command uses `--sim ethereum/engine`, the selected client, `--sim.parallelism`, and `--docker.pull=false`, following `hive/README.md`. Per-client results and logs are kept separately; any client failure makes the compliance stage fail.

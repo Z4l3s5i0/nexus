@@ -5,6 +5,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -17,6 +18,7 @@ import collect_system_metrics
 import collect_startup_metrics
 import generate_genesis
 import metadata
+import stop_client
 
 
 def load_report_module():
@@ -83,6 +85,84 @@ class StartupBenchmarkTests(unittest.TestCase):
         response = io.BytesIO(json.dumps({"jsonrpc": "2.0", "id": 1, "error": {"message": "not ready"}}).encode())
         with patch.object(benchmark_client, "urlopen", return_value=response):
             self.assertFalse(benchmark_client.rpc_ready(8545))
+
+    def test_docker_launch_keeps_container_available_for_log_collection(self):
+        args = SimpleNamespace(rpc_port=8545)
+        responses = [
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+            SimpleNamespace(returncode=0, stdout="123 sha256:test\n", stderr=""),
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(benchmark_client.subprocess, "run", side_effect=responses) as run_command:
+                benchmark_client.launch_docker(args, temp, "reth", 8545, ["node"], "startup-test")
+
+        self.assertNotIn("--rm", run_command.call_args_list[0].args[0])
+
+    def test_failed_docker_container_can_be_kept_for_rpc_debugging(self):
+        with tempfile.TemporaryDirectory() as temp:
+            state_file = pathlib.Path(temp) / "state.json"
+            state_file.write_text(
+                json.dumps({"container_name": "startup-test", "rpc_port": 45678, "ready": False}),
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with patch.object(
+                stop_client.subprocess,
+                "run",
+                return_value=SimpleNamespace(returncode=0, stdout="running\n"),
+            ) as run_command:
+                with redirect_stdout(output):
+                    stop_client.stop_client(state_file, keep_failed=True)
+
+        self.assertEqual(len(run_command.call_args_list), 1)
+        self.assertEqual(run_command.call_args_list[0].args[0][:2], ["docker", "inspect"])
+        self.assertIn("Container state: running", output.getvalue())
+        self.assertIn("http://127.0.0.1:45678", output.getvalue())
+        self.assertIn("docker rm -f startup-test", output.getvalue())
+
+    def test_startup_fails_immediately_when_container_exits(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            genesis_path = root / "genesis.json"
+            genesis_path.write_text("{}", encoding="utf-8")
+            args = SimpleNamespace(
+                config="reth",
+                iteration=1,
+                run_id="run-1",
+                chain_id=12345,
+                work_dir=str(root / "work"),
+                genesis=str(genesis_path),
+                state_file=str(root / "state.json"),
+                result_file=str(root / "result.json"),
+                log_file=str(root / "client.log"),
+                rpc_port=8545,
+                timeout=60,
+                poll_interval=0.01,
+                geth_image="geth",
+                reth_image="reth",
+                nexus_linux_image="nexus-linux",
+                nexus_wasix_image="nexus-wasix",
+                nexus_wasix_wasm="",
+                wasmer_bin="wasmer",
+                prepare_only=False,
+                skip_preparation=False,
+            )
+            launched = {"container_name": "startup-run-1", "pid": 10, "image": "reth", "image_id": "sha256:test"}
+
+            with patch.object(benchmark_client, "prepare_config"):
+                with patch.object(benchmark_client, "launch_config", return_value=launched):
+                    with patch.object(benchmark_client, "rpc_ready", return_value=False):
+                        with patch.object(
+                            benchmark_client,
+                            "container_state",
+                            return_value={"running": False, "status": "exited", "exit_code": 1},
+                        ):
+                            status = benchmark_client.run(args)
+            result = json.loads((root / "result.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(status, 2)
+        self.assertIn("container exited", result["error"])
+        self.assertIn("exit code 1", result["error"])
 
     def test_startup_timer_begins_after_client_preparation(self):
         with tempfile.TemporaryDirectory() as temp:

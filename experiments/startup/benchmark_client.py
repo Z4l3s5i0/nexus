@@ -119,7 +119,7 @@ def prepare_config(args, work_dir, log_file):
 def launch_docker(args, work_dir, image, internal_port, docker_args, container_name):
     work_dir = str(Path(work_dir).resolve())
     command = [
-        "docker", "run", "--rm", "-d", "--name", container_name,
+        "docker", "run", "-d", "--name", container_name,
         "-v", f"{work_dir}:/data", "-p", f"{args.rpc_port}:{internal_port}",
         image, *docker_args,
     ]
@@ -136,6 +136,28 @@ def launch_docker(args, work_dir, image, internal_port, docker_args, container_n
     pid = int(values[0]) if values and values[0].isdigit() else None
     image_id = values[1] if len(values) > 1 else None
     return {"container_name": container_name, "pid": pid, "image": image, "image_id": image_id}
+
+
+def container_state(container_name):
+    result = subprocess.run(
+        [
+            "docker", "inspect", "--format",
+            "{{.State.Running}}|{{.State.Status}}|{{.State.ExitCode}}", container_name,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        return None
+    values = result.stdout.strip().split("|", 2)
+    if len(values) != 3:
+        return None
+    try:
+        exit_code = int(values[2])
+    except ValueError:
+        return None
+    return {"running": values[0].lower() == "true", "status": values[1], "exit_code": exit_code}
 
 
 def launch_config(args, work_dir, log_file, container_name):
@@ -271,6 +293,14 @@ def run(args):
             if rpc_ready(args.rpc_port, min(2, args.poll_interval + 1)):
                 ready = True
                 break
+            if launched.get("container_name"):
+                client_state = container_state(launched["container_name"])
+                if client_state is not None and not client_state["running"]:
+                    result["error"] = (
+                        "Client container exited before RPC became ready "
+                        f"(status {client_state['status']}, exit code {client_state['exit_code']})"
+                    )
+                    break
             time.sleep(min(args.poll_interval, max(0, deadline - time.monotonic())))
         finished = time.perf_counter_ns()
         if ready:
@@ -278,7 +308,8 @@ def run(args):
             result["ready_at"] = datetime.now(timezone.utc).isoformat()
             result["startup_time_ms"] = (finished - started) / 1_000_000
         else:
-            result["error"] = f"RPC did not become ready within {args.timeout} seconds"
+            if result["error"] is None:
+                result["error"] = f"RPC did not become ready within {args.timeout} seconds"
             result["timeout_elapsed_ms"] = (finished - started) / 1_000_000
         result["image"] = launched["image"]
         result["image_id"] = launched.get("image_id")

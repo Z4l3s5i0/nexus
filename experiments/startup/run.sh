@@ -25,6 +25,7 @@ TIMEOUT=60
 METRICS_INTERVAL=0.2
 CONFIGS=""
 OUTPUT_DIR=""
+KEEP_FAILED_CONTAINERS=false
 METRICS_STARTED=false
 SYSTEM_COLLECTOR_PID=""
 CURRENT_STATE_FILE=""
@@ -52,6 +53,7 @@ Options:
   --metrics-interval SEC  System metric sample interval (default: $METRICS_INTERVAL)
   --results-dir DIR       Parent output directory (default: $RESULTS_PARENT)
   --configs LIST          Comma-separated client configs; default selects available Docker configs
+  --keep-failed-containers Preserve failed Docker clients for manual RPC/log inspection
   --help                  Show this help
 
 Available configs: geth, reth, nexus-linux, nexus-wasix-docker, nexus-wasmer
@@ -77,6 +79,7 @@ while [[ "$#" -gt 0 ]]; do
         --metrics-interval) METRICS_INTERVAL="$2"; shift 2 ;;
         --results-dir) RESULTS_PARENT="$2"; shift 2 ;;
         --configs) CONFIGS="$2"; shift 2 ;;
+        --keep-failed-containers) KEEP_FAILED_CONTAINERS=true; shift ;;
         --help|-h) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -240,9 +243,19 @@ for config in "${CONFIG_LIST[@]}"; do
 
         CONTAINER_NAME="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("container_name") or "")' "$state_file")"
         if [[ -n "$CONTAINER_NAME" ]]; then
-            docker logs "$CONTAINER_NAME" > "$logs_dir/client.log" 2>&1 || true
+            docker logs "$CONTAINER_NAME" >> "$logs_dir/client.log" 2>&1 || true
         fi
-        python3 "$SCRIPT_DIR/stop_client.py" --state "$state_file" || RUN_STATUS=1
+        STOP_CLIENT_ARGS=(--state "$state_file")
+        if [[ "$KEEP_FAILED_CONTAINERS" == true ]]; then
+            STOP_CLIENT_ARGS+=(--keep-failed)
+        fi
+        STOP_STATUS=0
+        python3 "$SCRIPT_DIR/stop_client.py" "${STOP_CLIENT_ARGS[@]}" || STOP_STATUS=$?
+        if (( STOP_STATUS != 0 )); then
+            RUN_STATUS=1
+        else
+            CURRENT_STATE_FILE=""
+        fi
         if [[ -n "$SYSTEM_COLLECTOR_PID" ]]; then
             if kill -0 "$SYSTEM_COLLECTOR_PID" 2>/dev/null; then
                 kill "$SYSTEM_COLLECTOR_PID" 2>/dev/null || true
@@ -255,7 +268,6 @@ for config in "${CONFIG_LIST[@]}"; do
         python3 "$SCRIPT_DIR/collect_startup_metrics.py" \
             --result "$result_file" --samples "$OUTPUT_DIR/startup_metric_samples.jsonl" \
             --coverage "$OUTPUT_DIR/startup_time_coverage.json"
-        CURRENT_STATE_FILE=""
         echo "$config iteration $iteration: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); print(d.get("startup_time_ms") if d.get("ready") else "unavailable")' "$result_file") ms"
     done
 done
