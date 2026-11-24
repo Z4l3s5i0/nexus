@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+export PATH="$CARGO_HOME/bin:$PATH"
 SOURCES=()
 BINARIES=()
 IMAGES=()
@@ -11,7 +13,7 @@ usage() {
 Usage: $0 [--source LABEL=DIR]... [--binary LABEL=FILE]... [--image LABEL=IMAGE]... [--output FILE]
 
 Compare source-code lines, compiled binary byte sizes, and Docker image byte sizes.
-Source counts use cloc (which excludes blank/comment lines) and omit common generated,
+Source counts use upstream scc, exclude blank/comment lines, and omit common generated,
 vendor, build, and test directories/files.
 
 Examples:
@@ -86,8 +88,8 @@ for entry in "${BINARIES[@]}"; do
         exit 1
     fi
 done
-if [ "${#SOURCES[@]}" -gt 0 ] && ! command -v cloc >/dev/null 2>&1; then
-    echo "Error: cloc is required for source-code line counts." >&2
+if [ "${#SOURCES[@]}" -gt 0 ] && ! command -v scc >/dev/null 2>&1; then
+    echo "Error: scc is required for source-code line counts; run experiments/setup.sh with the size stage selected." >&2
     exit 1
 fi
 if [ "${#SOURCES[@]}" -gt 0 ]; then
@@ -96,7 +98,7 @@ if [ "${#SOURCES[@]}" -gt 0 ]; then
     elif command -v python >/dev/null 2>&1; then
         PYTHON=python
     else
-        echo "Error: Python is required to parse cloc output." >&2
+        echo "Error: Python is required to parse scc CSV output." >&2
         exit 1
     fi
 fi
@@ -118,11 +120,28 @@ printf 'measurement\tlabel\tvalue\tunit\tsource\n'
 for entry in "${SOURCES[@]}"; do
     label="${entry%%=*}"
     path="${entry#*=}"
-    cloc_json=$(cloc --quiet --json --fullpath \
+    scc_csv=$(scc --format csv --no-cocomo --no-complexity --no-size \
+        --no-config --no-scc-ignore --no-gitignore --no-ignore --no-gen \
         --exclude-dir=.git,node_modules,target,build,dist,coverage,generated,vendor,.venv,venv \
-        --not-match-d='(^|/)(test|tests|__tests__)(/|$)' \
-        --not-match-f='(^|/)(test_|.*_test|.*\.test|.*\.spec)[^/]*$' "$path")
-    code_lines=$(printf '%s' "$cloc_json" | "$PYTHON" -c 'import json,sys; print(json.load(sys.stdin)["SUM"]["code"])')
+        --not-match '(^|/)(test|tests|__tests__)(/|$)|(^|/)(test_[^/]*|[^/]*_test|[^/]*\.(test|spec))[^/]*$' \
+        "$path")
+    code_lines=$(printf '%s' "$scc_csv" | "$PYTHON" -c '
+import csv
+import sys
+
+reader = csv.DictReader(sys.stdin)
+fields = {name.lower(): name for name in (reader.fieldnames or [])}
+if "code" not in fields:
+    raise SystemExit("scc CSV output is missing the Code column")
+code_column = fields["code"]
+language_column = fields.get("language")
+total = sum(
+    int(row[code_column] or 0)
+    for row in reader
+    if not language_column or row.get(language_column, "").lower() not in {"total", "sum"}
+)
+print(total)
+')
     printf 'source_code\t%s\t%s\tlines\t%s\n' "$label" "$code_lines" "$path"
 done
 

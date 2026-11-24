@@ -13,12 +13,12 @@ usage() {
 Usage: bash experiments/size/run.sh [options]
 
 Options:
-  --source LABEL=DIR    Add a source tree for cloc (repeatable)
+  --source LABEL=DIR    Add a source tree for scc code-line measurement (repeatable)
   --binary LABEL=FILE   Add a compiled binary to measure (repeatable)
   --output-root DIR     Override the parent results directory
   --help                Show this help
 
-By default, the module measures the in-tree NEXUS source and looks for native
+By default, the module uses scc to measure the in-tree NEXUS source and looks for native
 and WASIX release binaries. Missing external-client paths are unavailable, not zero.
 EOF
 }

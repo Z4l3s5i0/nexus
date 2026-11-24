@@ -1,7 +1,9 @@
+import io
 import os
 import pathlib
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import unittest
 
@@ -16,8 +18,9 @@ STUB_COMMANDS = (
     "jq",
     "openssl",
     "python3",
-    "cloc",
+    "sha256sum",
     "docker",
+    "lld",
     "sudo",
     "rustup",
     "cargo",
@@ -26,7 +29,7 @@ STUB_COMMANDS = (
 
 @unittest.skipUnless(shutil.which("bash"), "bash is required")
 class ExperimentSetupTests(unittest.TestCase):
-    def run_setup(self, selection):
+    def run_setup(self, selection, create_wasix_binary=True, preinstall_wasixcc=False):
         with tempfile.TemporaryDirectory(prefix="experiment-setup-test-") as temp:
             temp_root = pathlib.Path(temp)
             bin_dir = temp_root / "bin"
@@ -35,12 +38,30 @@ class ExperimentSetupTests(unittest.TestCase):
             source_root = temp_root / "wasix_eth"
             cargo_home = temp_root / "cargo"
             wasmer_dir = temp_root / "wasmer"
+            scc_archive = temp_root / "scc-release.tar.gz"
+            scc_script = b"#!/bin/sh\nprintf 'scc version 4.1.0\\n'\n"
+            with tarfile.open(scc_archive, "w:gz") as archive:
+                binary = tarfile.TarInfo("scc")
+                binary.mode = 0o755
+                binary.size = len(scc_script)
+                archive.addfile(binary, io.BytesIO(scc_script))
             native_binary = source_root / "target" / "release" / "wasix_eth"
             wasix_binary = source_root / "target" / "wasm32-wasmer-wasi" / "release" / "wasix_eth.wasi.wasm"
             native_binary.parent.mkdir(parents=True)
             wasix_binary.parent.mkdir(parents=True)
             native_binary.write_bytes(b"native-binary")
-            wasix_binary.write_bytes(b"wasix-binary")
+            if create_wasix_binary:
+                wasix_binary.write_bytes(b"wasix-binary")
+            if preinstall_wasixcc:
+                wasixcc = bin_dir / "wasixcc"
+                wasixcc.write_text("#!/bin/sh\nprintf 'wasixcc 0.4.7\\n'\n", encoding="utf-8")
+                wasixcc.chmod(0o755)
+                wasixccenv = bin_dir / "wasixccenv"
+                wasixccenv.write_text(
+                    '#!/bin/sh\nprintf "%s %s\\n" "$(basename "$0")" "$*" >> "$SETUP_TEST_LOG"\n',
+                    encoding="utf-8",
+                )
+                wasixccenv.chmod(0o755)
             for name in STUB_COMMANDS:
                 command = bin_dir / name
                 stub = (
@@ -54,6 +75,16 @@ class ExperimentSetupTests(unittest.TestCase):
                         '  printf "#!/bin/sh\\nexit 0\\n" > "$CARGO_HOME/bin/cargo-wasix"\n'
                         '  chmod +x "$CARGO_HOME/bin/cargo-wasix"\n'
                         'fi\n'
+                        'if [ "$1" = "+stable" ] && [ "$2" = "install" ] && [ "$3" = "wasixcc" ]; then\n'
+                        '  mkdir -p "$CARGO_HOME/bin"\n'
+                        '  printf "%s\\n" "#!/bin/sh" "printf \\"wasixcc 0.4.7\\\\n\\"" > "$CARGO_HOME/bin/wasixcc"\n'
+                        '  printf "%s\\n" "#!/bin/sh" "printf \\"wasixccenv %s\\\\n\\" \\"\\$*\\" >> \\"\\$SETUP_TEST_LOG\\"" > "$CARGO_HOME/bin/wasixccenv"\n'
+                        '  chmod +x "$CARGO_HOME/bin/wasixcc" "$CARGO_HOME/bin/wasixccenv"\n'
+                        'fi\n'
+                        'if [ "$1" = "+stable" ] && [ "$2" = "wasix" ] && [ "$3" = "build" ]; then\n'
+                        '  mkdir -p "$EXPERIMENTS_WASIX_ETH_ROOT/target/wasm32-wasmer-wasi/release"\n'
+                        '  printf "wasix-binary" > "$EXPERIMENTS_WASIX_ETH_ROOT/target/wasm32-wasmer-wasi/release/wasix_eth.wasi.wasm"\n'
+                        'fi\n'
                     )
                 elif name == "curl":
                     stub += (
@@ -62,7 +93,12 @@ class ExperimentSetupTests(unittest.TestCase):
                         '  printf "#!/bin/sh\\nprintf \\\"wasmer 7.4.2\\\\n\\\"\\n" > "$WASMER_DIR/bin/wasmer"\n'
                         '  chmod +x "$WASMER_DIR/bin/wasmer"\n'
                         'fi\n'
+                        'if [ "$6" = "https://github.com/boyter/scc/releases/download/v4.1.0/scc_Linux_x86_64.tar.gz" ] || [ "$6" = "https://github.com/boyter/scc/releases/download/v4.1.0/scc_Linux_arm64.tar.gz" ]; then\n'
+                        '  cp "$SCC_TEST_ARCHIVE" "$5"\n'
+                        'fi\n'
                     )
+                elif name == "sha256sum":
+                    stub += 'exit 0\n'
                 stub += 'exit 0\n'
                 command.write_text(stub, encoding="utf-8")
                 command.chmod(0o755)
@@ -73,6 +109,7 @@ class ExperimentSetupTests(unittest.TestCase):
                     "EXPERIMENTS_SELECTED": selection,
                     "PATH": str(bin_dir) + os.pathsep + "/usr/bin:/bin",
                     "SETUP_TEST_LOG": str(log_path),
+                    "SCC_TEST_ARCHIVE": str(scc_archive),
                     "EXPERIMENTS_WASIX_ETH_ROOT": str(source_root),
                     "CARGO_HOME": str(cargo_home),
                     "WASMER_DIR": str(wasmer_dir),
@@ -93,6 +130,33 @@ class ExperimentSetupTests(unittest.TestCase):
         self.assertIn("rustup toolchain install stable --profile minimal", calls)
         self.assertIn("cargo +stable install cargo-wasix", calls)
         self.assertIn("curl -fsSL https://get.wasmer.io", calls)
+        self.assertTrue(any("boyter/scc/releases/download/v4.1.0/scc_Linux_" in call for call in calls))
+        self.assertIn("sha256sum --check --status checksum", calls)
+
+    def test_wasixcc_and_lld_are_ready_before_wasix_build(self):
+        result, calls = self.run_setup("size", create_wasix_binary=False)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lld_install = next(
+            call for call in calls if "apt-get install -y" in call and call.split()[-1] == "lld"
+        )
+        wasixcc_install = "cargo +stable install wasixcc --version 0.4.7 --locked --force"
+        download_all = "wasixccenv download-all"
+        wasix_build = "cargo +stable wasix build --release"
+
+        self.assertIn(wasixcc_install, calls)
+        self.assertTrue(any(call.startswith("wasixccenv install-executables ") for call in calls))
+        self.assertIn(download_all, calls)
+        self.assertLess(calls.index(lld_install), calls.index(wasix_build))
+        self.assertLess(calls.index(wasixcc_install), calls.index(wasix_build))
+        self.assertLess(calls.index(download_all), calls.index(wasix_build))
+
+    def test_existing_wasixcc_version_is_verified_without_reinstalling(self):
+        result, calls = self.run_setup("size", preinstall_wasixcc=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("cargo +stable install wasixcc --version 0.4.7 --locked --force", calls)
+        self.assertIn("wasixccenv download-all", calls)
 
     def test_runtime_setup_checks_docker_and_prepares_images(self):
         result, calls = self.run_setup("runtime")
@@ -100,12 +164,14 @@ class ExperimentSetupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("docker compose version", calls)
         self.assertIn("docker info", calls)
+        self.assertFalse(any("boyter/scc/releases" in call for call in calls))
         pulls = [call for call in calls if call.startswith("docker pull ")]
         self.assertIn(
             "docker pull ethereum/client-go@sha256:798b7eb1bcef6d4be7576232beea63bf291450f48b025dc8fb5c6e37840e4364",
             pulls,
         )
         self.assertIn("docker pull ghcr.io/paradigmxyz/reth:latest", pulls)
+        self.assertIn("docker pull gcr.io/cadvisor/cadvisor:v0.61.0", pulls)
 
     def test_startup_setup_prepares_the_metric_service_and_client_images(self):
         result, calls = self.run_setup("startup")

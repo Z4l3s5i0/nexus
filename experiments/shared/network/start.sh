@@ -221,9 +221,20 @@ for ((i = 0; i < c_geth; i++)); do node_types+=("geth"); done
 for ((i = 0; i < c_reth; i++)); do node_types+=("reth"); done
 for ((i = 0; i < c_wasix; i++)); do node_types+=("wasix"); done
 
+"$PYTHON_CMD" "$SCRIPT_DIR/generate_prometheus_targets.py" \
+    --node-exporter-output "$REPO_ROOT/startup_v2/node-exporter-targets.json" \
+    --execution-metrics-output "$REPO_ROOT/startup_v2/execution-node-targets.json" \
+    --node-types "${node_types[@]}"
+
 for i in $(seq 0 $((NODES - 1))); do
     TYPE=${node_types[$i]}
     IS_VAL=$(is_validator "$i" "$NODES")
+    NODE_CLIENT_LABEL="$TYPE"
+    NODE_RUNTIME_VARIANT="$TYPE"
+    if [ "$TYPE" = "linux" ] || [ "$TYPE" = "wasix" ]; then
+        NODE_CLIENT_LABEL="wasix-eth"
+        [ "$TYPE" = "linux" ] && NODE_RUNTIME_VARIANT="native"
+    fi
     
     ETH_PORT=$(get_eth_rpc_port "$i")
     AUTH_PORT=$(get_auth_rpc_port "$i")
@@ -338,6 +349,11 @@ for i in $(seq 0 $((NODES - 1))); do
   el-node-$i:
     $IMAGE_STR
     $BUILD_STR
+    labels:
+      experiment_node_index: "$i"
+      experiment_client: "$NODE_CLIENT_LABEL"
+      experiment_runtime_variant: "$NODE_RUNTIME_VARIANT"
+      experiment_node_service: "el-node-$i"
     volumes:
       - $DATA_DIR/el:/app/data
       - ./startup_v2:/app/startup
@@ -712,12 +728,12 @@ verify_geth_mixed_peers() {
 }
 
 # Start metrics server and monitoring first
-echo "Starting metrics-server, prometheus, grafana, and node-exporter..."
+echo "Starting metrics-server, prometheus, grafana, node-exporter, and cAdvisor..."
 if [ -z "$METRICS_IMAGE_OVERRIDE" ]; then
     echo "Building local metrics-server image..."
     $COMPOSE_CMD -f "$COMPOSE_FILE" build metrics-server
 fi
-$COMPOSE_CMD -f "$COMPOSE_FILE" up -d metrics-server prometheus grafana node-exporter
+$COMPOSE_CMD -f "$COMPOSE_FILE" up -d metrics-server prometheus grafana node-exporter cadvisor
 
 if [ "$GETH_NODES" -gt 0 ] || [ "$RETH_NODES" -gt 0 ]; then
     for attempt in $(seq 1 60); do

@@ -306,11 +306,12 @@ curl "http://127.0.0.1:9100/api/bootstrap/nodes?network=devnet&limit=16"
 
 The monitoring stack used by runtime and empty-block is configured in `experiments/shared/network/monitoring/`:
 
-- **Prometheus** scrapes `/metrics` from all nodes and the metrics server
+- **Prometheus** scrapes host node-exporter metrics (`scope="host"`), separate node-exporter endpoints in native/WASIX execution-node containers (with node/client labels), each client's own metrics endpoint at its configured `9050 + node_index` port, cAdvisor container-resource metrics for all execution nodes (including Geth/Reth), and the metrics server.
+- cAdvisor exports CPU, memory, disk, and network metrics with `node_index`, `client`, `runtime_variant`, `node_service`, `container_name`, and `scope="container"` labels. Its Docker-label whitelist is limited to experiment identity labels.
 - **Grafana** provides dashboards for real-time visualization
-- Configuration is automatically copied to `startup_v2/` by `experiments/shared/network/start.sh`
+- Configuration and generated node-exporter file-discovery targets are copied/generated under `startup_v2/` by `experiments/shared/network/start.sh`
 
-Access Grafana at `http://localhost:3000` (default credentials from provisioning config).
+Access Prometheus at `http://localhost:9091` and Grafana at `http://localhost:3000` (default credentials from provisioning config). The cAdvisor service requires privileged access to the Linux Docker host and its cgroups; Docker Desktop/WSL deployments should verify that cAdvisor can see the engine's containers.
 
 ## HIVE Test Suite
 

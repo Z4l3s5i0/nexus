@@ -7,8 +7,8 @@ CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
 WASMER_DIR="${WASMER_DIR:-$HOME/.wasmer}"
 export CARGO_HOME WASMER_DIR
 export PATH="$CARGO_HOME/bin:$WASMER_DIR/bin:$PATH"
-required_packages=(curl wget git jq ca-certificates gnupg lsb-release openssl python3 cloc)
-required_commands=(curl wget git jq openssl python3 cloc)
+required_packages=(curl wget git jq ca-certificates gnupg lsb-release openssl python3 tar coreutils lld)
+required_commands=(curl wget git jq openssl python3 tar sha256sum install)
 
 usage() {
     cat <<EOF
@@ -45,8 +45,43 @@ as_root() {
     fi
 }
 
+install_scc() (
+    local version="v4.1.0"
+    local archive checksum
+    case "$(uname -m)" in
+        x86_64|amd64)
+            archive="scc_Linux_x86_64.tar.gz"
+            checksum="c7328436d3027f4357d3d7853f7dc3ac2bbcb4ca08f1adad91a27c593884079b"
+            ;;
+        aarch64|arm64)
+            archive="scc_Linux_arm64.tar.gz"
+            checksum="6e0d2a1f8d3540ba7df185477dec40bb7340f1b214bfd303147de5cad2bd7b8b"
+            ;;
+        *) fail "scc $version has no configured release asset for $(uname -m)." ;;
+    esac
+
+    if command -v scc >/dev/null 2>&1 && scc --version 2>/dev/null | grep -Fq "${version#v}"; then
+        echo "scc $version is already installed."
+        return
+    fi
+
+    local temp_dir release_url
+    temp_dir="$(mktemp -d)" || fail "could not create a temporary directory to install scc."
+    trap 'rm -rf -- "$temp_dir"' EXIT
+    release_url="https://github.com/boyter/scc/releases/download/$version/$archive"
+    echo "Installing scc $version from the upstream Linux release..."
+    curl -fsSL --retry 3 -o "$temp_dir/$archive" "$release_url" || fail "could not download scc $version."
+    printf '%s  %s\n' "$checksum" "$archive" > "$temp_dir/checksum"
+    (cd "$temp_dir" && sha256sum --check --status checksum) || fail "scc $version release checksum did not match."
+    tar -xzf "$temp_dir/$archive" -C "$temp_dir" || fail "could not extract scc $version."
+    [[ -x "$temp_dir/scc" ]] || fail "scc binary was not present in the upstream release archive."
+    mkdir -p "$CARGO_HOME/bin"
+    install -m 0755 "$temp_dir/scc" "$CARGO_HOME/bin/scc" || fail "could not install scc into $CARGO_HOME/bin."
+    command -v scc >/dev/null 2>&1 && scc --version 2>/dev/null | grep -Fq "${version#v}" || fail "installed scc does not report version $version."
+)
+
 if [[ "$(uname -s)" != "Linux" ]]; then
-    fail "automatic setup supports Ubuntu/Debian Linux; install Docker with Compose, Python 3, cloc, curl, wget, git, and jq manually on this system."
+    fail "automatic setup supports Ubuntu/Debian Linux; install Docker with Compose, Python 3, scc for size measurements, curl, wget, git, and jq manually on this system."
 fi
 if [[ ! -r /etc/os-release ]]; then
     fail "cannot identify the Linux distribution; install prerequisites manually."
@@ -65,6 +100,7 @@ needs_docker=false
 needs_chain_images=false
 needs_metrics_image=false
 needs_client_binaries=false
+needs_scc=false
 for experiment in "${selected_experiments[@]}"; do
     case "$experiment" in
         runtime|empty-block|startup)
@@ -79,6 +115,7 @@ for experiment in "${selected_experiments[@]}"; do
             ;;
         size)
             needs_client_binaries=true
+            needs_scc=true
             ;;
         *) fail "unknown experiment '$experiment' in EXPERIMENTS_SELECTED." ;;
     esac
@@ -91,6 +128,13 @@ as_root apt-get install -y "${required_packages[@]}"
 for command_name in "${required_commands[@]}"; do
     command -v "$command_name" >/dev/null 2>&1 || fail "required command '$command_name' is still unavailable."
 done
+if ! command -v lld >/dev/null 2>&1 && ! command -v ld.lld >/dev/null 2>&1; then
+    fail "LLVM lld is still unavailable after installing the lld package."
+fi
+
+if [[ "$needs_scc" == true ]]; then
+    install_scc
+fi
 
 if [[ "$needs_client_binaries" == true ]]; then
     if ! command -v rustup >/dev/null 2>&1; then
@@ -106,6 +150,16 @@ if [[ "$needs_client_binaries" == true ]]; then
         cargo +stable install cargo-wasix || fail "cargo-wasix installation failed."
     fi
     command -v cargo-wasix >/dev/null 2>&1 || fail "cargo-wasix is still unavailable after installation."
+
+    if ! command -v wasixcc >/dev/null 2>&1 || [[ "$(wasixcc --version 2>/dev/null || true)" != *"0.4.7"* ]]; then
+        echo "Installing wasixcc 0.4.7..."
+        cargo +stable install wasixcc --version 0.4.7 --locked --force || fail "wasixcc 0.4.7 installation failed."
+    fi
+    command -v wasixccenv >/dev/null 2>&1 || fail "wasixccenv is unavailable after installing wasixcc."
+    wasixccenv install-executables "$CARGO_HOME/bin" || fail "could not install wasixcc executables into $CARGO_HOME/bin."
+    wasixccenv download-all || fail "could not download the wasixcc LLVM and WASIX sysroot toolchains."
+    command -v wasixcc >/dev/null 2>&1 || fail "wasixcc is still unavailable after installation."
+    [[ "$(wasixcc --version 2>/dev/null || true)" == *"0.4.7"* ]] || fail "wasixcc 0.4.7 is required, but the installed version is different."
 
     if ! command -v wasmer >/dev/null 2>&1 || [[ "$(wasmer --version 2>/dev/null || true)" != *"7.4.2"* ]]; then
         echo "Installing Wasmer 7.4.2..."
@@ -177,6 +231,7 @@ if [[ "$needs_chain_images" == true ]]; then
         sigp/lighthouse:v8.2.1 \
         ghcr.io/ethstaker/ethstaker-deposit-cli:v1.3.0 \
         prom/node-exporter:v1.8.1 \
+        gcr.io/cadvisor/cadvisor:v0.61.0 \
         grafana/grafana:11.1.0 \
         prom/prometheus:v2.53.1 \
         docker.io/z4l3s5i0/contender:latest \

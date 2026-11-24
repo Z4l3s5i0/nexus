@@ -7,15 +7,48 @@ scrape_configs:
     static_configs:
       - targets: ['prometheus:9090']
 
-  - job_name: 'node-exporter'
+  - job_name: 'node-exporter-host'
     static_configs:
       - targets: ['node-exporter:9100']
+        labels:
+          scope: host
+
+  - job_name: 'node-exporter-containers'
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/node-exporter-targets.json
+        refresh_interval: 15s
+
+  - job_name: 'execution-node-metrics'
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/execution-node-targets.json
+        refresh_interval: 15s
+
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+    metric_relabel_configs:
+      - source_labels: [container_label_experiment_node_index]
+        regex: '.+'
+        action: keep
+      - source_labels: [container_label_experiment_node_index]
+        target_label: node_index
+      - source_labels: [container_label_experiment_client]
+        target_label: client
+      - source_labels: [container_label_experiment_runtime_variant]
+        target_label: runtime_variant
+      - source_labels: [container_label_experiment_node_service]
+        target_label: node_service
+      - source_labels: [name]
+        target_label: container_name
+      - target_label: scope
+        replacement: container
 
   - job_name: 'metrics-server'
     static_configs:
       - targets: ['metrics-server:9100']
 
-  # Individual nodes will be added dynamically or via file_sd_config if needed
-  # For now, we rely on the metrics-server to aggregate, or we can add them here.
-  # Since start_local.sh generates the docker-compose, it's easier to have a static
-  # config that points to the services by name.
+
+# Keep the host, execution-node, and container scrape scopes distinct.
+

@@ -10,8 +10,9 @@ This guide covers everything needed to build, run, test, and debug NEXUS (the `w
 - **Wasmer** — runtime for executing WASIX binaries
 - **WASIX toolchain**:
   - `cargo-wasix` — Cargo subcommand for building WASIX targets
+  - `wasixcc` v0.4.7 — WASIX C/C++ toolchain and sysroot manager
   - `wasi-sdk` — C/C++ toolchain for WASI
-  - `clang` + `llvm` — required by WASIX build process
+  - `lld` — LLVM linker required by the WASIX build process
 
 ### Optional Tools
 
@@ -21,10 +22,14 @@ This guide covers everything needed to build, run, test, and debug NEXUS (the `w
 ### Installing WASIX
 
 ```bash
-cargo install cargo-wasix
+cargo +stable install cargo-wasix
+cargo +stable install wasixcc --version 0.4.7 --locked
+wasixccenv install-executables "$HOME/.cargo/bin"
+wasixccenv download-all
+sudo apt-get install -y lld
 ```
 
-Follow the [WASIX documentation](https://wasix.io/) for installing `wasi-sdk`, `clang`, and `llvm`.
+`wasixccenv download-all` provides the `wasixcc` LLVM toolchain and WASIX sysroot. Follow the [WASIX documentation](https://wasix.io/) for `wasi-sdk` if it is required by your C/C++ dependencies.
 
 ## Building the Project
 

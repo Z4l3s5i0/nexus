@@ -837,10 +837,10 @@ A static comparison of the three client implementations measures lines of code a
 | **Reth** | Rust | Total Rust source lines | Includes all crates in the Reth workspace |
 | **Nexus** | Rust | Total Rust source lines | Includes all crates in the Nexus workspace |
 
-Lines of code are counted excluding:
+Lines of code are counted with `scc`, excluding:
 - Auto-generated files (build scripts, codegen)
 - Test files (unless explicitly included for comparison)
-- Blank lines and comments (using `cloc` or equivalent)
+- Blank lines and comments
 
 **Binary size comparison:**
 

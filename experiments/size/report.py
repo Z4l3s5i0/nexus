@@ -21,7 +21,7 @@ def build_report(output_dir, run_id):
         "source_code": sources,
         "compiled_binaries": binaries,
         "notes": [
-            "Source size is cloc code-line count with tests, generated files, build output, and vendor directories excluded.",
+            "Source size is the scc v4.1.0 code-line count with test, generated, build, and vendor content excluded.",
             "Binary size is the byte length of the supplied compiled file; no build is performed by this module.",
             "A missing source path or binary is explicitly unavailable rather than a zero-sized measurement.",
             "Docker image size is omitted because it includes unrelated runtime layers and is not equivalent to compiled client size.",
