@@ -49,6 +49,5 @@ scrape_configs:
     static_configs:
       - targets: ['metrics-server:9100']
 
-
 # Keep the host, execution-node, and container scrape scopes distinct.
 

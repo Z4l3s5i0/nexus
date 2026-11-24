@@ -64,13 +64,17 @@ def _read_results(output_dir):
     return results
 
 
-def build_report(output_dir, expected_iterations):
+def build_report(output_dir, expected_iterations=None):
     output_dir = Path(output_dir)
     results = _read_results(output_dir)
     system_samples = read_jsonl(output_dir / "system_metric_samples.jsonl")
     startup_samples = read_jsonl(output_dir / "startup_metric_samples.jsonl")
     metadata_path = output_dir / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {"nodes": []}
+    if expected_iterations is None:
+        expected_iterations = metadata.get("iterations")
+    if not isinstance(expected_iterations, int) or expected_iterations < 1:
+        raise ValueError("Startup metadata must contain a positive integer 'iterations' value.")
     startup_coverage_path = output_dir / "startup_time_coverage.json"
     startup_coverage = json.loads(startup_coverage_path.read_text(encoding="utf-8")) if startup_coverage_path.is_file() else {"iterations": []}
     grouped = defaultdict(list)
@@ -174,7 +178,7 @@ def build_report(output_dir, expected_iterations):
 def main():
     parser = argparse.ArgumentParser(description="Summarize startup times and system metric coverage.")
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--iterations", type=int, required=True)
+    parser.add_argument("--iterations", type=int)
     args = parser.parse_args()
     build_report(args.output_dir, args.iterations)
 

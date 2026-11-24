@@ -168,7 +168,7 @@ class StartupBenchmarkTests(unittest.TestCase):
             (output_dir / "iterations" / "geth" / "1").mkdir(parents=True)
             (output_dir / "iterations" / "geth" / "2").mkdir(parents=True)
             metadata_value = {
-                "experiment_id": "run-1", "chain_id": 12345,
+                "experiment_id": "run-1", "chain_id": 12345, "iterations": 2,
                 "nodes": [{"index": 0, "node_id": "startup-geth-1", "client": "geth", "variant": "geth"}],
             }
             (output_dir / "metadata.json").write_text(json.dumps(metadata_value), encoding="utf-8")
@@ -181,7 +181,7 @@ class StartupBenchmarkTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            report = startup_report.build_report(output_dir, expected_iterations=2)
+            report = startup_report.build_report(output_dir)
 
         self.assertEqual(report["configurations"]["geth"]["startup_time_ms"]["mean"], 150.0)
         self.assertEqual(report["configurations"]["geth"]["iterations_unavailable"], 0)

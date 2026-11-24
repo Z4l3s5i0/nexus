@@ -52,9 +52,9 @@ def build_report(output_dir, run_id):
 def main():
     parser = argparse.ArgumentParser(description="Report source and compiled binary size measurements.")
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--run-id")
     args = parser.parse_args()
-    build_report(args.output_dir, args.run_id)
+    build_report(args.output_dir, args.run_id or Path(args.output_dir).name)
 
 
 if __name__ == "__main__":

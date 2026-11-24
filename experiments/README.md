@@ -1,14 +1,28 @@
 # Modular experiment suite
 
-`experiments/run.sh` is the primary entry point for the five experiment modules. It prompts for a selection, runs the shared setup once, then dispatches modules sequentially in the order entered. Select `6` (or `all`) for the standard order: runtime, empty-block, startup, compliance, and size comparison.
+`experiments/run.sh` is the primary entry point for the five experiment modules. It prompts for a selection, runs the shared setup once, then dispatches modules sequentially in the order entered. Select `6` (or `all`) for the standard order: runtime, empty-block, startup, compliance, and size comparison. Select `7` to enter evaluation mode and choose which saved experiment results to reevaluate without rerunning workloads or setup.
 
 ```bash
 bash experiments/run.sh
 ```
 
-Enter a comma-separated selection such as `3,1,5` to run startup, runtime, then size comparison. `bash experiments/run.sh --help` displays the menu. `experiments/setup.sh` can also be run directly; without the runner’s selection it prepares dependencies for all five modules.
+Enter a comma-separated selection such as `3,1,5` to run startup, runtime, then size comparison. For reevaluation, enter `7` and then select `1–5`, a comma-separated list, or `6` for all module types. Evaluation regenerates reports for every saved run directory under the selected modules in `experiment-results/`; the saved samples and measurements are reused, and no clients, workloads, Hive suites, or source measurements are rerun. Missing/incomplete results are reported as errors while other selected runs are still checked. `bash experiments/run.sh --help` displays the menu. `experiments/setup.sh` can also be run directly; without the runner’s selection it prepares dependencies for all five modules.
 
 Each run writes to `experiment-results/<module>/<run-id>/`. The runner exports a common `EXPERIMENT_RUN_ID` and output root to all selected modules. Generated result directories are ignored by Git; source scripts under `experiments/` are tracked.
+
+## Interactive run configuration
+
+After selecting experiments, the runner displays each selected module's proposed defaults in the same order. Press Enter (or answer `n`) to accept that module's defaults, or answer `y` to customize its settings; every custom field also accepts Enter to keep its displayed default. The prompts and validation finish before the shared setup runs, and evaluation mode (`7`) does not ask for run configuration.
+
+| Module | Configurable run settings |
+|---|---|
+| Runtime | Native, WASIX, Geth, and Reth node counts (the client mix); one or more Contender workload scenarios; spammer accounts and target TPS per workload node; workload and collection-wait durations; chain ID; runtime iterations; whether generated network state may be cleared. Every workload/iteration pair is saved under a distinct run ID. |
+| Empty block | Client, chain ID, transaction-count groups, samples per group, maximum attempts, receipt/block timeouts, RPC poll interval, and network reset permission. A nonzero transaction group requires a funded disposable test key; if `EB_PRIVATE_KEY` is not set, the runner prompts for it without echoing input. The key is passed only to the empty-block run, not shared setup. |
+| Startup | Client configurations, iterations per configuration, chain ID, readiness timeout, system sampling interval, client images, optional NEXUS WASIX module, and Wasmer executable. |
+| Compliance | Custom Hive clients, Hive image, parallelism, per-client timeout, and whether to build or reuse existing client/Hive images. |
+| Size | Comma-separated `LABEL=DIR` source trees and `LABEL=FILE` binaries; paths containing commas are not supported by this prompt format. |
+
+The runtime scenario field accepts comma-separated Contender scenario paths such as `exp/uber,exp/counter,exp/dota`; each workload scenario runs separately for every requested runtime iteration, with its own network lifecycle, metadata, and result directory. Startup and empty-block iteration settings retain their module-specific meanings (repetitions per client configuration and samples per transaction-count group respectively).
 
 ## Modules
 
@@ -70,6 +84,7 @@ Prometheus exposition names are retained raw and are not normalized unless clien
 ### Implemented
 
 - Interactive ordered dispatch, one-time selection-aware setup, shared run IDs, and isolated output folders.
+- Evaluation-only dispatch through `experiments/run.sh` to regenerate selected modules' reports from saved runs without setup or workload execution.
 - Runtime lifecycle, RPC status samples, raw Prometheus retention, secure metric ingestion for derived/system/log samples, host/container system collection, structured log parsing, and per-node availability reports.
 - Separate host, per-node NEXUS node-exporter, and cAdvisor scrape targets, with execution-container labels preserved in Prometheus time series.
 - Per-client execution metrics endpoints scraped with indexed ports and `node_index`, `client`, `runtime_variant`, and `scope` labels.

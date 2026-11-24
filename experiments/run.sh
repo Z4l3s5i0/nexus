@@ -14,7 +14,8 @@ usage() {
 Usage: bash experiments/run.sh
 
 Choose experiments by entering their numbers separated by commas, in the order
-they should run. Enter 6 to run all five in the standard order.
+they should run. Enter 6 to run all five in the standard order, or 7 to
+reevaluate reports from saved results without rerunning experiments.
 
   1) Runtime
   2) Empty block
@@ -22,7 +23,302 @@ they should run. Enter 6 to run all five in the standard order.
   4) Compliance (Hive ethereum/engine)
   5) Size comparison
   6) All experiments
+  7) Evaluate saved results
+
+For each selected run, press Enter to use the module's defaults or choose
+custom values before the shared setup starts.
 EOF
+}
+
+prompt_value() {
+    local variable="$1" label="$2" default="$3" kind="$4" value
+    while true; do
+        if ! IFS= read -r -p "$label [$default]: " value; then
+            echo "Error: input ended while configuring $label." >&2
+            return 2
+        fi
+        value="${value:-$default}"
+        case "$kind" in
+            positive)
+                [[ "$value" =~ ^[1-9][0-9]*$ ]] || { echo "Enter a positive whole number." >&2; continue; }
+                ;;
+            nonnegative)
+                [[ "$value" =~ ^[0-9]+$ ]] || { echo "Enter a nonnegative whole number." >&2; continue; }
+                ;;
+            positive_decimal)
+                [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk "BEGIN { exit !($value > 0) }" || {
+                    echo "Enter a positive number." >&2
+                    continue
+                }
+                ;;
+            text)
+                [[ -n "$value" ]] || { echo "A value is required." >&2; continue; }
+                ;;
+            optional_text)
+                ;;
+        esac
+        printf -v "$variable" '%s' "$value"
+        return 0
+    done
+}
+
+prompt_yes_no() {
+    local variable="$1" label="$2" default="$3" value
+    while true; do
+        if ! IFS= read -r -p "$label [$default]: " value; then
+            echo "Error: input ended while configuring $label." >&2
+            return 2
+        fi
+        value="${value:-$default}"
+        case "${value,,}" in
+            y|yes) printf -v "$variable" 'true'; return 0 ;;
+            n|no) printf -v "$variable" 'false'; return 0 ;;
+            *) echo "Enter yes or no." >&2 ;;
+        esac
+    done
+}
+
+prompt_customize() {
+    local experiment="$1" value
+    echo "Default $experiment configuration: $2"
+    while true; do
+        if ! IFS= read -r -p 'Customize these values? [y/N]: ' value; then
+            echo "Error: input ended while configuring $experiment." >&2
+            return 2
+        fi
+        case "${value,,}" in
+            y|yes) return 0 ;;
+            ''|n|no) echo "Using $experiment defaults."; return 1 ;;
+            *) echo "Enter yes or no." >&2 ;;
+        esac
+    done
+}
+
+validate_csv_choices() {
+    local value="$1" allowed="$2" item candidate found
+    local -A list_seen=()
+    IFS=',' read -r -a items <<< "$value"
+    (( ${#items[@]} > 0 )) || return 1
+    for item in "${items[@]}"; do
+        item="${item//[[:space:]]/}"
+        [[ -n "$item" && -z "${list_seen[$item]:-}" ]] || return 1
+        found=false
+        IFS=',' read -r -a candidates <<< "$allowed"
+        for candidate in "${candidates[@]}"; do
+            if [[ "$item" == "$candidate" ]]; then found=true; break; fi
+        done
+        [[ "$found" == true ]] || return 1
+        list_seen[$item]=1
+    done
+}
+
+validate_workload_types() {
+    local value="$1" workload
+    local -A workload_seen=()
+    runtime_workloads=()
+    IFS=',' read -r -a workload_items <<< "$value"
+    (( ${#workload_items[@]} > 0 )) || return 1
+    for workload in "${workload_items[@]}"; do
+        workload="${workload//[[:space:]]/}"
+        [[ "$workload" =~ ^[A-Za-z0-9._/-]+$ ]] || return 1
+        [[ -z "${workload_seen[$workload]:-}" ]] || return 1
+        workload_seen[$workload]=1
+        runtime_workloads+=("$workload")
+    done
+}
+
+validate_counts() {
+    local value="$1" item normalized
+    local -A list_seen=()
+    has_nonzero_count=false
+    IFS=',' read -r -a items <<< "$value"
+    (( ${#items[@]} > 0 )) || return 1
+    for item in "${items[@]}"; do
+        item="${item//[[:space:]]/}"
+        [[ "$item" =~ ^[0-9]{1,9}$ ]] || return 1
+        normalized=$((10#$item))
+        [[ -z "${list_seen[$normalized]:-}" ]] || return 1
+        list_seen[$normalized]=1
+        if (( normalized > 0 )); then has_nonzero_count=true; fi
+    done
+}
+
+prompt_secret() {
+    local secret
+    while true; do
+        if ! IFS= read -r -s -p 'Funded test account private key (hidden): ' secret; then
+            echo >&2
+            echo "Error: input ended while reading the private key." >&2
+            return 2
+        fi
+        echo >&2
+        secret="${secret#0x}"
+        if [[ "$secret" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            EB_PRIVATE_KEY="$secret"
+            return 0
+        fi
+        echo "Enter a 32-byte hexadecimal private key." >&2
+    done
+}
+
+configure_module() {
+    local experiment="$1" customize result
+    local -n module_args="${experiment//-/_}_args"
+    module_args=()
+
+    case "$experiment" in
+        runtime)
+            if prompt_customize runtime '2 native, 2 WASIX, 0 Geth, 0 Reth nodes; exp/uber workload; 4 TPS; 4 accounts; 300 seconds; 1 iteration'; then
+                prompt_value linux_nodes 'Native/Linux nodes' 2 nonnegative || return $?
+                prompt_value wasix_nodes 'WASIX nodes' 2 nonnegative || return $?
+                prompt_value geth_nodes 'Geth nodes' 0 nonnegative || return $?
+                prompt_value reth_nodes 'Reth nodes' 0 nonnegative || return $?
+                if (( 10#$linux_nodes + 10#$wasix_nodes + 10#$geth_nodes + 10#$reth_nodes == 0 )); then
+                    echo 'At least one runtime node is required.' >&2
+                    return 2
+                fi
+                while true; do
+                    prompt_value workload_type 'Contender workload scenarios (comma-separated)' 'exp/uber' text || return $?
+                    if validate_workload_types "$workload_type"; then break; fi
+                    echo 'Use unique scenario paths with letters, numbers, dots, underscores, slashes, or hyphens.' >&2
+                done
+                prompt_value accounts 'Spamming accounts per workload node' 4 positive || return $?
+                prompt_value tps 'Target TPS per workload node' 4 positive || return $?
+                prompt_value duration 'Workload duration in seconds' 300 positive || return $?
+                prompt_value wait_duration 'Post-workload collection wait in seconds' 1800 nonnegative || return $?
+                prompt_value chain_id 'Network chain ID' 12345 positive || return $?
+                prompt_value runtime_iterations 'Number of independent runtime iterations' 1 positive || return $?
+                prompt_yes_no reset_network 'Allow clearing generated network state' no || return $?
+                module_args=(--linux-nodes "$linux_nodes" --wasix-nodes "$wasix_nodes"
+                    --geth-nodes "$geth_nodes" --reth-nodes "$reth_nodes"
+                    --accounts "$accounts" --tps "$tps"
+                    --duration "$duration" --wait-duration "$wait_duration" --chain-id "$chain_id")
+                [[ "$reset_network" == true ]] && module_args+=(--reset-network)
+            else
+                result=$?
+                (( result == 1 )) || return "$result"
+                runtime_iterations=1
+                runtime_workloads=(exp/uber)
+            fi
+            ;;
+        empty-block)
+            if prompt_customize empty-block 'wasix client; counts 0,1,5,10,20,50,100; 3 samples per count; max 5 attempts'; then
+                prompt_value eb_client 'Client (native, wasix, geth, reth)' wasix text || return $?
+                case "$eb_client" in native|linux|wasix|geth|reth) ;; *) echo 'Choose native, wasix, geth, or reth.' >&2; return 2 ;; esac
+                prompt_value eb_chain_id 'Network chain ID' 23456 positive || return $?
+                while true; do
+                    prompt_value eb_counts 'Transactions per block-count group (comma-separated)' '0,1,5,10,20,50,100' text || return $?
+                    if validate_counts "$eb_counts"; then break; fi
+                    echo 'Use unique, comma-separated nonnegative integers.' >&2
+                done
+                prompt_value eb_blocks 'Samples/iterations per transaction count' 3 positive || return $?
+                prompt_value eb_attempts 'Maximum attempts per transaction count' 5 positive || return $?
+                prompt_value eb_receipt_timeout 'Receipt timeout in seconds' 180 positive || return $?
+                prompt_value eb_block_timeout 'Block timeout in seconds' 120 positive || return $?
+                prompt_value eb_poll_interval 'RPC poll interval in seconds' 1 positive_decimal || return $?
+                if [[ "$has_nonzero_count" == true && -z "${EB_PRIVATE_KEY:-}" ]]; then
+                    prompt_secret || return $?
+                fi
+                prompt_yes_no eb_reset_network 'Allow clearing generated network state' no || return $?
+                module_args=(--client "$eb_client" --chain-id "$eb_chain_id" --counts "$eb_counts"
+                    --blocks-per-count "$eb_blocks" --max-attempts "$eb_attempts"
+                    --receipt-timeout "$eb_receipt_timeout" --block-timeout "$eb_block_timeout"
+                    --poll-interval "$eb_poll_interval")
+                [[ "$eb_reset_network" == true ]] && module_args+=(--reset-network)
+            else
+                result=$?
+                (( result == 1 )) || return "$result"
+            fi
+            if [[ -z "${EB_PRIVATE_KEY:-}" && ${#module_args[@]} -eq 0 ]]; then
+                prompt_secret || return $?
+            fi
+            ;;
+        startup)
+            startup_configs_default='geth,reth,nexus-linux,nexus-wasix-docker'
+            if [[ -n "${NEXUS_WASIX_WASM:-}" ]]; then startup_configs_default+=',nexus-wasmer'; fi
+            if prompt_customize startup "$startup_configs_default; 5 iterations; readiness timeout 60 seconds; chain ID 12345"; then
+                while true; do
+                    prompt_value startup_configs 'Configurations (comma-separated)' "$startup_configs_default" text || return $?
+                    if validate_csv_choices "$startup_configs" 'geth,reth,nexus-linux,nexus-wasix-docker,nexus-wasmer'; then break; fi
+                    echo 'Choose unique startup configurations from the displayed list.' >&2
+                done
+                startup_configs="${startup_configs//[[:space:]]/}"
+                prompt_value startup_iterations 'Iterations per configuration' 5 positive || return $?
+                prompt_value startup_chain_id 'Isolated genesis chain ID' 12345 positive || return $?
+                prompt_value startup_timeout 'Readiness timeout in seconds' 60 positive_decimal || return $?
+                prompt_value startup_interval 'System metrics interval in seconds' 0.2 positive_decimal || return $?
+                prompt_value geth_image 'Geth image' 'ethereum/client-go@sha256:798b7eb1bcef6d4be7576232beea63bf291450f48b025dc8fb5c6e37840e4364' text || return $?
+                prompt_value reth_image 'Reth image' 'ghcr.io/paradigmxyz/reth:latest' text || return $?
+                prompt_value nexus_linux_image 'NEXUS Linux image' 'docker.io/z4l3s5i0/wasix-eth-linux:clean' text || return $?
+                prompt_value nexus_wasix_image 'NEXUS WASIX Docker image' 'docker.io/z4l3s5i0/wasix-eth-wasix:clean' text || return $?
+                prompt_value nexus_wasix_wasm 'NEXUS WASIX module path (optional)' "${NEXUS_WASIX_WASM:-}" optional_text || return $?
+                prompt_value wasmer_bin 'Wasmer executable' wasmer text || return $?
+                module_args=(--configs "$startup_configs" --iterations "$startup_iterations"
+                    --chain-id "$startup_chain_id" --timeout "$startup_timeout"
+                    --metrics-interval "$startup_interval" --geth-image "$geth_image"
+                    --reth-image "$reth_image" --nexus-linux-image "$nexus_linux_image"
+                    --nexus-wasix-image "$nexus_wasix_image" --wasmer-bin "$wasmer_bin")
+                [[ -n "$nexus_wasix_wasm" ]] && module_args+=(--nexus-wasix-wasm "$nexus_wasix_wasm")
+                if [[ ",$startup_configs," == *,nexus-wasmer,* && -z "$nexus_wasix_wasm" ]]; then
+                    echo 'The nexus-wasmer configuration requires a NEXUS WASIX module path.' >&2
+                    return 2
+                fi
+            else
+                result=$?
+                (( result == 1 )) || return "$result"
+            fi
+            ;;
+        compliance)
+            if prompt_customize compliance 'both custom Hive clients; hive-custom:latest; parallelism 20; timeout 3600 seconds; build images'; then
+                while true; do
+                    prompt_value hive_clients 'Hive clients (comma-separated)' 'wasix-r-eth,wasix-w-eth' text || return $?
+                    if validate_csv_choices "$hive_clients" 'wasix-r-eth,wasix-w-eth'; then break; fi
+                    echo 'Choose unique clients: wasix-r-eth and/or wasix-w-eth.' >&2
+                done
+                hive_clients="${hive_clients//[[:space:]]/}"
+                prompt_value hive_image 'Hive runner image' 'hive-custom:latest' text || return $?
+                prompt_value hive_parallelism 'Hive parallelism' 20 positive || return $?
+                prompt_value hive_timeout 'Per-client timeout in seconds' 3600 positive || return $?
+                prompt_yes_no skip_base_build 'Skip custom client image builds (verify existing images)' no || return $?
+                prompt_yes_no skip_hive_build 'Skip Hive runner image build (verify existing image)' no || return $?
+                module_args=(--clients "$hive_clients" --hive-image "$hive_image"
+                    --parallelism "$hive_parallelism" --timeout "$hive_timeout")
+                [[ "$skip_base_build" == true ]] && module_args+=(--skip-base-build)
+                [[ "$skip_hive_build" == true ]] && module_args+=(--skip-hive-build)
+            else
+                result=$?
+                (( result == 1 )) || return "$result"
+            fi
+            ;;
+        size)
+            size_sources_default="wasix-eth=$REPO_ROOT/wasix_eth"
+            [[ -n "${GETH_SOURCE_DIR:-}" ]] && size_sources_default+=",geth=$GETH_SOURCE_DIR"
+            [[ -n "${RETH_SOURCE_DIR:-}" ]] && size_sources_default+=",reth=$RETH_SOURCE_DIR"
+            size_binaries_default="wasix-eth-native=${WASIX_ETH_NATIVE_BINARY:-$REPO_ROOT/wasix_eth/target/release/wasix_eth},wasix-eth-wasix=${WASIX_ETH_WASIX_BINARY:-$REPO_ROOT/wasix_eth/target/wasm32-wasmer-wasi/release/wasix_eth.wasi.wasm}"
+            [[ -n "${GETH_BINARY:-}" ]] && size_binaries_default+=",geth=$GETH_BINARY"
+            [[ -n "${RETH_BINARY:-}" ]] && size_binaries_default+=",reth=$RETH_BINARY"
+            if prompt_customize size "source inputs: $size_sources_default; binary inputs: $size_binaries_default"; then
+                prompt_value size_sources 'Source inputs LABEL=DIR (comma-separated)' "$size_sources_default" text || return $?
+                prompt_value size_binaries 'Binary inputs LABEL=FILE (comma-separated)' "$size_binaries_default" text || return $?
+                local -a source_entries=()
+                IFS=',' read -r -a source_entries <<< "$size_sources"
+                for entry in "${source_entries[@]}"; do
+                    [[ "$entry" == *=* && -n "${entry%%=*}" && -n "${entry#*=}" ]] || { echo 'Each source must be LABEL=DIR.' >&2; return 2; }
+                    module_args+=(--source "$entry")
+                done
+                local -a binary_entries=()
+                IFS=',' read -r -a binary_entries <<< "$size_binaries"
+                for entry in "${binary_entries[@]}"; do
+                    [[ "$entry" == *=* && -n "${entry%%=*}" && -n "${entry#*=}" ]] || { echo 'Each binary must be LABEL=FILE.' >&2; return 2; }
+                    module_args+=(--binary "$entry")
+                done
+            else
+                result=$?
+                (( result == 1 )) || return "$result"
+            fi
+            ;;
+    esac
+    return 0
 }
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
@@ -37,16 +333,30 @@ fi
 
 declare -a labels=(runtime empty-block startup compliance size)
 declare -a selected=()
+declare -a runtime_args=() empty_block_args=() startup_args=() compliance_args=() size_args=()
+declare -a runtime_workloads=(exp/uber)
+runtime_iterations=1
+mode=run
 
 usage
 while true; do
-    if ! IFS= read -r -p 'Selection: ' selection; then
-        echo "Error: no experiment selection was provided." >&2
+    if [[ "$mode" == evaluate ]]; then
+        prompt='Experiments to evaluate (1-5, comma-separated, or 6 for all): '
+    else
+        prompt='Selection: '
+    fi
+    if ! IFS= read -r -p "$prompt" selection; then
+        echo "Error: no selection was provided." >&2
         exit 2
     fi
     selection="${selection//[[:space:]]/}"
     if [[ -z "$selection" ]]; then
-        echo "Please select at least one experiment." >&2
+        echo "Please select at least one experiment or action." >&2
+        continue
+    fi
+    if [[ "$mode" == run && "$selection" == "7" ]]; then
+        mode=evaluate
+        echo "Evaluation mode: reports will be regenerated from saved results; experiments will not be rerun."
         continue
     fi
     if [[ "$selection" == "6" || "${selection,,}" == "all" ]]; then
@@ -77,20 +387,66 @@ while true; do
     fi
 done
 
-if [[ ! -f "$SETUP_SCRIPT" ]]; then
-    echo "Error: setup script not found: $SETUP_SCRIPT" >&2
-    exit 1
-fi
-
 export EXPERIMENTS_OUTPUT_ROOT="${EXPERIMENTS_OUTPUT_ROOT:-$REPO_ROOT/experiment-results}"
-export EXPERIMENT_RUN_ID="${EXPERIMENT_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 EXPERIMENTS_SELECTED="$(IFS=,; printf '%s' "${selected[*]}")"
 export EXPERIMENTS_SELECTED
 
-echo "Run ID: $EXPERIMENT_RUN_ID"
-echo "Output root: $EXPERIMENTS_OUTPUT_ROOT"
-echo "Running shared setup once..."
-bash "$SETUP_SCRIPT"
+if [[ "$mode" == evaluate ]]; then
+    evaluation_status=0
+    for experiment in "${selected[@]}"; do
+        module_dir="$MODULE_ROOT/$experiment"
+        report_script="$module_dir/report.py"
+        module_output_root="$EXPERIMENTS_OUTPUT_ROOT/$experiment"
+        if [[ ! -f "$report_script" ]]; then
+            echo "Error: report script not found for '$experiment': $report_script" >&2
+            evaluation_status=1
+            continue
+        fi
+
+        shopt -s nullglob
+        result_dirs=("$module_output_root"/*)
+        shopt -u nullglob
+        found_result=false
+        for output_dir in "${result_dirs[@]}"; do
+            [[ -d "$output_dir" ]] || continue
+            found_result=true
+            missing_artifacts=()
+            case "$experiment" in
+                runtime|empty-block|startup) required_artifacts=(metadata.json) ;;
+                compliance) required_artifacts=(metadata.json results.jsonl) ;;
+                size) required_artifacts=(source_size.tsv binary_size.tsv) ;;
+            esac
+            for artifact in "${required_artifacts[@]}"; do
+                if [[ ! -f "$output_dir/$artifact" ]]; then
+                    missing_artifacts+=("$artifact")
+                fi
+            done
+            if (( ${#missing_artifacts[@]} > 0 )); then
+                echo "Error: skipping incomplete $experiment results in '$output_dir'; missing: ${missing_artifacts[*]}." >&2
+                evaluation_status=1
+                continue
+            fi
+
+            echo "=== Re-evaluating $experiment results: $(basename "$output_dir") ==="
+            if python3 "$report_script" --output-dir "$output_dir"; then
+                echo "=== Re-evaluated $experiment results: $output_dir ==="
+            else
+                status=$?
+                echo "Error: could not evaluate $experiment results in '$output_dir' (exit $status)." >&2
+                evaluation_status=1
+            fi
+        done
+        if [[ "$found_result" != true ]]; then
+            echo "Error: no saved $experiment results found in '$module_output_root'." >&2
+            evaluation_status=1
+        fi
+    done
+    if (( evaluation_status != 0 )); then
+        exit "$evaluation_status"
+    fi
+    echo "All selected saved results were evaluated successfully."
+    exit 0
+fi
 
 for experiment in "${selected[@]}"; do
     module_script="$MODULE_ROOT/$experiment/run.sh"
@@ -98,15 +454,68 @@ for experiment in "${selected[@]}"; do
         echo "Error: entry point not found for '$experiment': $module_script" >&2
         exit 1
     fi
-    echo "=== Starting $experiment experiment ==="
-    if bash "$module_script"; then
+    if configure_module "$experiment"; then
         :
     else
         status=$?
-        echo "Error: $experiment experiment failed; later experiments were not started." >&2
         exit "$status"
     fi
+done
+
+if [[ ! -f "$SETUP_SCRIPT" ]]; then
+    echo "Error: setup script not found: $SETUP_SCRIPT" >&2
+    exit 1
+fi
+
+if [[ -v EB_PRIVATE_KEY ]]; then export -n EB_PRIVATE_KEY; fi
+export EXPERIMENT_RUN_ID="${EXPERIMENT_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+BASE_EXPERIMENT_RUN_ID="$EXPERIMENT_RUN_ID"
+echo "Run ID: $EXPERIMENT_RUN_ID"
+echo "Output root: $EXPERIMENTS_OUTPUT_ROOT"
+echo "Running shared setup once..."
+bash "$SETUP_SCRIPT"
+
+for experiment in "${selected[@]}"; do
+    module_script="$MODULE_ROOT/$experiment/run.sh"
+    echo "=== Starting $experiment experiment ==="
+    args_name="${experiment//-/_}_args"
+    declare -n module_args="$args_name"
+    iterations=1
+    workload_count=1
+    if [[ "$experiment" == runtime ]]; then iterations="$runtime_iterations"; fi
+    if [[ "$experiment" == runtime ]]; then workload_count="${#runtime_workloads[@]}"; fi
+    for ((iteration = 1; iteration <= iterations; iteration++)); do
+        for ((workload_index = 1; workload_index <= workload_count; workload_index++)); do
+            export EXPERIMENT_RUN_ID="$BASE_EXPERIMENT_RUN_ID"
+            if [[ "$experiment" == runtime && ( "$iterations" -gt 1 || "$workload_count" -gt 1 ) ]]; then
+                EXPERIMENT_RUN_ID="${BASE_EXPERIMENT_RUN_ID}-runtime-${iteration}-${workload_index}"
+                if (( ${#EXPERIMENT_RUN_ID} > 128 )); then
+                    echo "Error: runtime workload/iteration run ID exceeds the 128-character limit." >&2
+                    exit 2
+                fi
+                export EXPERIMENT_RUN_ID
+            fi
+            if [[ "$experiment" == runtime ]]; then
+                echo "--- Workload $workload_index of $workload_count: ${runtime_workloads[$((workload_index - 1))]} (iteration $iteration of $iterations) ---"
+                module_command=(bash "$module_script" "${module_args[@]}" --workload-type "${runtime_workloads[$((workload_index - 1))]}")
+            else
+                module_command=(bash "$module_script" "${module_args[@]}")
+            fi
+            if (( iterations > 1 )) && [[ "$experiment" != runtime ]]; then echo "--- Iteration $iteration of $iterations ---"; fi
+            if [[ "$experiment" == empty-block && -v EB_PRIVATE_KEY ]]; then export EB_PRIVATE_KEY; fi
+            if "${module_command[@]}"; then
+                :
+            else
+                status=$?
+                echo "Error: $experiment experiment failed; later experiments were not started." >&2
+                exit "$status"
+            fi
+            if [[ "$experiment" == empty-block && -v EB_PRIVATE_KEY ]]; then export -n EB_PRIVATE_KEY; fi
+        done
+    done
+    unset -n module_args
     echo "=== Finished $experiment experiment ==="
 done
 
+export EXPERIMENT_RUN_ID="$BASE_EXPERIMENT_RUN_ID"
 echo "All selected experiments completed successfully."
