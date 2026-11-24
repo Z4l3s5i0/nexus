@@ -55,7 +55,10 @@ class ExperimentRunnerTests(unittest.TestCase):
                     result.stderr.decode("utf-8", errors="replace"),
                 )
 
-    def run_with_stubs(self, selection, fail_module=None, config_answers=None, fail_setup_status=None, runner_args=None):
+    def run_with_stubs(
+        self, selection, fail_module=None, config_answers=None, fail_setup_status=None,
+        runner_args=None, private_key="0" * 64,
+    ):
         with tempfile.TemporaryDirectory(prefix="experiment-runner-test-", dir=ROOT) as temp:
             temp_root = pathlib.Path(temp)
             module_root = temp_root / "modules"
@@ -79,6 +82,7 @@ class ExperimentRunnerTests(unittest.TestCase):
                     f'if [[ "$#" -gt 0 ]]; then printf "args:{name}:%s\\n" "$*" >> "$TEST_LOG"; fi\n'
                     'if [[ "${EXPERIMENT_RUN_ID:-}" == *-runtime-* ]]; then printf "run-id:%s\\n" "$EXPERIMENT_RUN_ID" >> "$TEST_LOG"; fi\n'
                     f'if [[ "{name}" == empty-block && -n "${{EB_PRIVATE_KEY:-}}" ]]; then printf "private-key-present\\n" >> "$TEST_LOG"; fi\n'
+                    f'if [[ "{name}" == empty-block && "${{EB_PRIVATE_KEY:-}}" == "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" ]]; then printf "private-key-default\\n" >> "$TEST_LOG"; fi\n'
                     f'exit {exit_status}\n'
                 ).encode("utf-8"))
                 (module_dir / "report.py").write_text(
@@ -110,7 +114,7 @@ class ExperimentRunnerTests(unittest.TestCase):
                     "EXPERIMENTS_OUTPUT_ROOT": bash_compatible_path(output_root),
                     "EXPERIMENT_RUN_ID": "test-run",
                     "TEST_LOG": bash_compatible_path(log_path),
-                    "EB_PRIVATE_KEY": "0" * 64,
+                    "EB_PRIVATE_KEY": private_key,
                 }
             )
             forward_wsl_environment(
@@ -285,6 +289,14 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertNotIn("setup-key-leaked", calls)
         self.assertIn("private-key-present", calls)
         self.assertTrue(any(call.startswith("args:empty-block:--client geth --chain-id 23456 --counts 0,1,5") for call in calls))
+
+    def test_empty_block_defaults_to_prefunded_anvil_key_without_prompting(self):
+        result, calls = self.run_with_stubs("2", config_answers="n\n", private_key="")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("private-key-default", calls)
+        self.assertNotIn("Funded test account private key", result.stdout + result.stderr)
+        self.assertNotIn("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80", "".join(self.last_logs.values()))
 
     def test_custom_startup_configuration_forwards_options(self):
         answers = "y\ngeth,nexus-linux\n2\n777\n30\n0.5\ngeth:test\nreth:test\nlinux:test\nwasix:test\n\nwasmer-test\n"

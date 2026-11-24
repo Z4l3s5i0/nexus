@@ -213,26 +213,9 @@ validate_counts() {
     done
 }
 
-prompt_secret() {
-    local secret
-    while true; do
-        if ! IFS= read -r -s -p 'Funded test account private key (hidden): ' secret; then
-            echo >&2
-            echo "Error: input ended while reading the private key." >&2
-            return 2
-        fi
-        echo >&2
-        secret="${secret#0x}"
-        if [[ "$secret" =~ ^[0-9a-fA-F]{64}$ ]]; then
-            EB_PRIVATE_KEY="$secret"
-            return 0
-        fi
-        echo "Enter a 32-byte hexadecimal private key." >&2
-    done
-}
-
 configure_module() {
     local experiment="$1" customize result reset_network="${RESET_NETWORK:-false}"
+    local has_nonzero_count=false
     local -n module_args="${experiment//-/_}_args"
     module_args=()
 
@@ -274,6 +257,7 @@ configure_module() {
             [[ "$reset_network" == true ]] && module_args+=(--reset-network)
             ;;
         empty-block)
+            source "$REPO_ROOT/experiments/empty-block/defaults.sh"
             if prompt_customize empty-block 'wasix client; counts 0,1,5,10,20,50,100; 3 samples per count; max 5 attempts'; then
                 prompt_value eb_client 'Client (native, wasix, geth, reth)' wasix text || return $?
                 case "$eb_client" in native|linux|wasix|geth|reth) ;; *) echo 'Choose native, wasix, geth, or reth.' >&2; return 2 ;; esac
@@ -288,9 +272,6 @@ configure_module() {
                 prompt_value eb_receipt_timeout 'Receipt timeout in seconds' 180 positive || return $?
                 prompt_value eb_block_timeout 'Block timeout in seconds' 120 positive || return $?
                 prompt_value eb_poll_interval 'RPC poll interval in seconds' 1 positive_decimal || return $?
-                if [[ "$has_nonzero_count" == true && -z "${EB_PRIVATE_KEY:-}" ]]; then
-                    prompt_secret || return $?
-                fi
                 prompt_yes_no eb_reset_network 'Allow clearing generated network state' no || return $?
                 module_args=(--client "$eb_client" --chain-id "$eb_chain_id" --counts "$eb_counts"
                     --blocks-per-count "$eb_blocks" --max-attempts "$eb_attempts"
@@ -301,8 +282,8 @@ configure_module() {
                 result=$?
                 (( result == 1 )) || return "$result"
             fi
-            if [[ -z "${EB_PRIVATE_KEY:-}" && ${#module_args[@]} -eq 0 ]]; then
-                prompt_secret || return $?
+            if [[ -z "${EB_PRIVATE_KEY:-}" && ( ${#module_args[@]} -eq 0 || "$has_nonzero_count" == true ) ]]; then
+                EB_PRIVATE_KEY="$EMPTY_BLOCK_DEFAULT_PRIVATE_KEY"
             fi
             ;;
         startup)

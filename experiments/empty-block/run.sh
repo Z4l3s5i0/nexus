@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$SCRIPT_DIR/defaults.sh"
 NETWORK_SCRIPT="$SCRIPT_DIR/network.sh"
 RUN_ID="${EXPERIMENT_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 OUTPUT_ROOT="${EXPERIMENTS_OUTPUT_ROOT:-$REPO_ROOT/experiment-results}"
@@ -14,7 +15,7 @@ MAX_ATTEMPTS=5
 RECEIPT_TIMEOUT=180
 BLOCK_TIMEOUT=120
 POLL_INTERVAL=1
-PRIVATE_KEY="${EB_PRIVATE_KEY:-}"
+PRIVATE_KEY="${EB_PRIVATE_KEY:-$EMPTY_BLOCK_DEFAULT_PRIVATE_KEY}"
 RESET_NETWORK=false
 NETWORK_STARTED=false
 SYSTEM_COLLECTOR_PID=""
@@ -33,11 +34,11 @@ Options:
   --receipt-timeout SECS   Receipt wait timeout (default: $RECEIPT_TIMEOUT)
   --block-timeout SECS     New block timeout (default: $BLOCK_TIMEOUT)
   --poll-interval SECS     RPC poll interval (default: $POLL_INTERVAL)
-  --private-key KEY        Funded local test key; EB_PRIVATE_KEY is also supported
+  --private-key KEY        Override the default local Anvil key; EB_PRIVATE_KEY is also supported
   --reset-network          Allow the local launcher to remove pre-existing generated data
   --help                   Show this help
 
-Nonzero counts require a funded private key. Use a disposable local test account.
+Nonzero counts use the pre-funded local Anvil test key unless overridden. Never use it on a live network.
 EOF
 }
 

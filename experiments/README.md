@@ -29,7 +29,7 @@ After selecting experiments, the runner displays each selected module's proposed
 | Module | Configurable run settings |
 |---|---|
 | Runtime | Native, WASIX, Geth, and Reth node counts (the client mix); one or more Contender workload scenarios; spammer accounts and target TPS per workload node; workload and collection-wait durations; chain ID; runtime iterations; whether generated network state may be cleared. Every workload/iteration pair is saved under a distinct run ID. |
-| Empty block | Client, chain ID, transaction-count groups, samples per group, maximum attempts, receipt/block timeouts, RPC poll interval, and network reset permission. A nonzero transaction group requires a funded disposable test key; if `EB_PRIVATE_KEY` is not set, the runner prompts for it without echoing input. The key is passed only to the empty-block run, not shared setup. |
+| Empty block | Client, chain ID, transaction-count groups, samples per group, maximum attempts, receipt/block timeouts, RPC poll interval, and network reset permission. Nonzero transaction groups use the local pre-funded Anvil test key by default; `EB_PRIVATE_KEY` or `--private-key` can override it. The key is passed only to the empty-block run, not shared setup. |
 | Startup | Client configurations, iterations per configuration, chain ID, readiness timeout, system sampling interval, client images, optional NEXUS WASIX module, and Wasmer executable. |
 | Compliance | Custom Hive clients, Hive image, parallelism, per-client timeout, and whether to build or reuse existing client/Hive images. |
 | Size | Comma-separated `LABEL=DIR` source trees and `LABEL=FILE` binaries; paths containing commas are not supported by this prompt format. |
@@ -56,7 +56,7 @@ Prometheus keeps host node-exporter data under `job="node-exporter-host",scope="
 
 ### Empty block
 
-The empty-block module defaults to the `wasix` client and transaction counts `0,1,5,10,20,50,100`. Nonzero counts require a funded local test key supplied with `EB_PRIVATE_KEY` or `--private-key`; use a disposable account. `--reset-network` explicitly permits removal of pre-existing generated `data_v2/` and `startup_v2/` state. On successful archival, the module removes only its generated network state so the next selected module can start cleanly; failed runs retain state for diagnosis.
+The empty-block module defaults to the `wasix` client and transaction counts `0,1,5,10,20,50,100`. Nonzero counts use the pre-funded default Anvil account unless overridden with `EB_PRIVATE_KEY` or `--private-key`. This is a publicly known development key; never use it on a live network or with real funds. `--reset-network` explicitly permits removal of pre-existing generated `data_v2/` and `startup_v2/` state. On successful archival, the module removes only its generated network state so the next selected module can start cleanly; failed runs retain state for diagnosis.
 
 ### Startup
 
