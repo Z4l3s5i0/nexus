@@ -18,6 +18,8 @@ class NetworkSupportTests(unittest.TestCase):
             with self.subTest(module=module):
                 self.assertIn("experiments/shared/network/launch.sh", script)
                 self.assertNotIn("scripts/v2", script)
+        empty_block_script = (ROOT / "experiments" / "empty-block" / "network.sh").read_text(encoding="utf-8")
+        self.assertIn('GENESIS_DELAY=0 bash "$NETWORK_START"', empty_block_script)
 
     def test_network_launcher_help_resolves_assets_outside_repo_cwd(self):
         with tempfile.TemporaryDirectory(prefix="network-launcher-test-") as temp:
@@ -163,6 +165,7 @@ class NetworkSupportTests(unittest.TestCase):
                     "EXPERIMENTS_NETWORK_SUPPORT_DIR": str(NETWORK_SUPPORT),
                     "NETWORK_TEST_DOCKER_LOG": str(docker_log),
                     "OUTPUT_DIR": str(output_dir),
+                    "GENESIS_DELAY": "0",
                     "PATH": str(bin_dir) + os.pathsep + "/usr/bin:/bin",
                 }
             )
@@ -181,6 +184,7 @@ class NetworkSupportTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("CHAIN_ID=9876", (output_dir / "values.env").read_text(encoding="utf-8"))
+            self.assertIn("GENESIS_DELAY=0", (output_dir / "values.env").read_text(encoding="utf-8"))
             self.assertTrue((output_dir / "validators" / "node_0" / "keystore-m_12381_3600_0-0.json").is_file())
             docker_calls = docker_log.read_text(encoding="utf-8")
             self.assertIn(f"{output_dir}/values.env:/config/values.env", docker_calls)

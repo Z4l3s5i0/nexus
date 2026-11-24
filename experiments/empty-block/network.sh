@@ -58,7 +58,7 @@ start() {
         options+=(--cleanup)
     fi
     cd "$REPO_ROOT"
-    bash "$NETWORK_START" "${options[@]}"
+    GENESIS_DELAY=0 bash "$NETWORK_START" "${options[@]}"
 }
 
 stop() {

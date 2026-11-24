@@ -8,7 +8,7 @@ SCRIPT_DIR="${EXPERIMENTS_NETWORK_SUPPORT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CHAIN_ID=12345
 NUM_NODES=4
-GENESIS_DELAY=180 # 3 minutes
+GENESIS_DELAY="${GENESIS_DELAY:-180}" # 3 minutes by default
 MNEMONIC="sleep moment list remain like wall lake industry canvas wonder ecology elite duck salad naive syrup frame brass utility club odor country obey pudding"
 OUTPUT_DIR="startup_v2"
 
