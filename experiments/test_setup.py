@@ -171,7 +171,7 @@ class ExperimentSetupTests(unittest.TestCase):
             pulls,
         )
         self.assertIn("docker pull ghcr.io/paradigmxyz/reth:latest", pulls)
-        self.assertIn("docker pull gcr.io/cadvisor/cadvisor:v0.61.0", pulls)
+        self.assertIn("docker pull ghcr.io/google/cadvisor:0.61.0", pulls)
 
     def test_startup_setup_prepares_the_metric_service_and_client_images(self):
         result, calls = self.run_setup("startup")

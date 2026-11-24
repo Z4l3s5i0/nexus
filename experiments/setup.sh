@@ -231,7 +231,7 @@ if [[ "$needs_chain_images" == true ]]; then
         sigp/lighthouse:v8.2.1 \
         ghcr.io/ethstaker/ethstaker-deposit-cli:v1.3.0 \
         prom/node-exporter:v1.8.1 \
-        gcr.io/cadvisor/cadvisor:v0.61.0 \
+        ghcr.io/google/cadvisor:0.61.0 \
         grafana/grafana:11.1.0 \
         prom/prometheus:v2.53.1 \
         docker.io/z4l3s5i0/contender:latest \

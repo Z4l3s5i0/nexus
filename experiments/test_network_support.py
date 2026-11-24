@@ -45,12 +45,22 @@ class NetworkSupportTests(unittest.TestCase):
         prometheus = (NETWORK_SUPPORT / "monitoring" / "prometheus.yml").read_text(encoding="utf-8")
         launcher = (NETWORK_SUPPORT / "start.sh").read_text(encoding="utf-8")
 
-        self.assertIn("gcr.io/cadvisor/cadvisor:v0.61.0", compose)
+        self.assertIn("ghcr.io/google/cadvisor:0.61.0", compose)
         self.assertIn("--store_container_labels=false", compose)
-        self.assertIn("--whitelisted_container_labels=experiment_node_index,experiment_client", compose)
+        self.assertIn(
+            "--whitelisted_container_labels="
+            "experiment_node_index,experiment_client,experiment_runtime_variant,experiment_node_service",
+            compose,
+        )
         self.assertIn("node-exporter-targets.json:/etc/prometheus/node-exporter-targets.json:ro", compose)
         self.assertIn("execution-node-targets.json:/etc/prometheus/execution-node-targets.json:ro", compose)
-        self.assertIn("experiment_node_index:", launcher)
+        for label in (
+            "experiment_node_index",
+            "experiment_client",
+            "experiment_runtime_variant",
+            "experiment_node_service",
+        ):
+            self.assertIn(f"{label}:", launcher)
         self.assertIn("generate_prometheus_targets.py", launcher)
         self.assertIn("--execution-metrics-output", launcher)
         self.assertIn("up -d metrics-server prometheus grafana node-exporter cadvisor", launcher)
@@ -59,8 +69,16 @@ class NetworkSupportTests(unittest.TestCase):
         self.assertIn("job_name: 'node-exporter-containers'", prometheus)
         self.assertIn("job_name: 'execution-node-metrics'", prometheus)
         self.assertIn("job_name: 'cadvisor'", prometheus)
-        self.assertIn("target_label: node_index", prometheus)
-        self.assertIn("target_label: client", prometheus)
+        for label in ("node_index", "client", "runtime_variant", "node_service", "container_name"):
+            self.assertIn(f"target_label: {label}", prometheus)
+        for label in (
+            "container_label_experiment_node_index",
+            "container_label_experiment_client",
+            "container_label_experiment_runtime_variant",
+            "container_label_experiment_node_service",
+        ):
+            self.assertIn(f"source_labels: [{label}]", prometheus)
+        self.assertIn("scope: host", prometheus)
         self.assertIn("replacement: container", prometheus)
 
     def test_target_generator_labels_per_node_exporter_and_execution_metrics(self):
