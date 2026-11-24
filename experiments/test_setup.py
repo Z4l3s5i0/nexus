@@ -29,7 +29,13 @@ STUB_COMMANDS = (
 
 @unittest.skipUnless(shutil.which("bash"), "bash is required")
 class ExperimentSetupTests(unittest.TestCase):
-    def run_setup(self, selection, create_wasix_binary=True, preinstall_wasixcc=False):
+    def run_setup(
+        self,
+        selection,
+        create_wasix_binary=True,
+        preinstall_wasixcc=False,
+        missing_images=(),
+    ):
         with tempfile.TemporaryDirectory(prefix="experiment-setup-test-") as temp:
             temp_root = pathlib.Path(temp)
             bin_dir = temp_root / "bin"
@@ -99,6 +105,12 @@ class ExperimentSetupTests(unittest.TestCase):
                     )
                 elif name == "sha256sum":
                     stub += 'exit 0\n'
+                elif name == "docker":
+                    stub += (
+                        'if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then\n'
+                        '  case ",$SETUP_TEST_MISSING_IMAGES," in *,"$3",*) exit 1 ;; esac\n'
+                        'fi\n'
+                    )
                 stub += 'exit 0\n'
                 command.write_text(stub, encoding="utf-8")
                 command.chmod(0o755)
@@ -111,6 +123,7 @@ class ExperimentSetupTests(unittest.TestCase):
                     "SETUP_TEST_LOG": str(log_path),
                     "SCC_TEST_ARCHIVE": str(scc_archive),
                     "EXPERIMENTS_WASIX_ETH_ROOT": str(source_root),
+                    "SETUP_TEST_MISSING_IMAGES": ",".join(missing_images),
                     "CARGO_HOME": str(cargo_home),
                     "WASMER_DIR": str(wasmer_dir),
                 }
@@ -173,13 +186,30 @@ class ExperimentSetupTests(unittest.TestCase):
         self.assertIn("docker pull ghcr.io/paradigmxyz/reth:latest", pulls)
         self.assertIn("docker pull ghcr.io/google/cadvisor:0.61.0", pulls)
 
-    def test_startup_setup_prepares_the_metric_service_and_client_images(self):
-        result, calls = self.run_setup("startup")
+    def test_startup_setup_builds_missing_nexus_images_locally(self):
+        result, calls = self.run_setup(
+            "startup",
+            create_wasix_binary=False,
+            missing_images=("wasix-eth-linux:latest", "wasix-eth-wasix:latest"),
+        )
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(any(call.startswith("docker build -t wasix-eth-metrics:latest") for call in calls))
-        self.assertIn("docker pull docker.io/z4l3s5i0/wasix-eth-linux:clean", calls)
-        self.assertIn("docker pull docker.io/z4l3s5i0/wasix-eth-wasix:clean", calls)
+        native_build = next(call for call in calls if call.startswith("docker build -t wasix-eth-linux:latest"))
+        wasix_build = next(call for call in calls if call.startswith("docker build -t wasix-eth-wasix:latest"))
+        self.assertIn("-f ", native_build)
+        self.assertIn("Dockerfile.linux", native_build)
+        self.assertIn("Dockerfile.wasix", wasix_build)
+        self.assertLess(calls.index("cargo +stable wasix build --release"), calls.index(wasix_build))
+        self.assertFalse(any(call.startswith("docker pull docker.io/z4l3s5i0/wasix-eth-") for call in calls))
+
+    def test_startup_setup_reuses_existing_local_nexus_images(self):
+        result, calls = self.run_setup("startup")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any(call.startswith("docker build -t wasix-eth-linux:latest") for call in calls))
+        self.assertFalse(any(call.startswith("docker build -t wasix-eth-wasix:latest") for call in calls))
+        self.assertFalse(any(call.startswith("docker pull docker.io/z4l3s5i0/wasix-eth-") for call in calls))
 
 
 if __name__ == "__main__":

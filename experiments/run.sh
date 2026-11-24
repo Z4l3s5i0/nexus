@@ -94,6 +94,20 @@ prompt_customize() {
     done
 }
 
+run_logged() {
+    local log_file="$1" description="$2" status
+    shift 2
+    mkdir -p "$(dirname "$log_file")"
+    printf '\n[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$description" | tee -a "$log_file"
+    if "$@" 2>&1 | tee -a "$log_file"; then
+        status=0
+    else
+        status="${PIPESTATUS[0]}"
+    fi
+    printf '[%s] Exit status: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$status" | tee -a "$log_file"
+    return "$status"
+}
+
 validate_csv_choices() {
     local value="$1" allowed="$2" item candidate found
     local -A list_seen=()
@@ -249,8 +263,8 @@ configure_module() {
                 prompt_value startup_interval 'System metrics interval in seconds' 0.2 positive_decimal || return $?
                 prompt_value geth_image 'Geth image' 'ethereum/client-go@sha256:798b7eb1bcef6d4be7576232beea63bf291450f48b025dc8fb5c6e37840e4364' text || return $?
                 prompt_value reth_image 'Reth image' 'ghcr.io/paradigmxyz/reth:latest' text || return $?
-                prompt_value nexus_linux_image 'NEXUS Linux image' 'docker.io/z4l3s5i0/wasix-eth-linux:clean' text || return $?
-                prompt_value nexus_wasix_image 'NEXUS WASIX Docker image' 'docker.io/z4l3s5i0/wasix-eth-wasix:clean' text || return $?
+                prompt_value nexus_linux_image 'NEXUS Linux image' 'wasix-eth-linux:latest' text || return $?
+                prompt_value nexus_wasix_image 'NEXUS WASIX Docker image' 'wasix-eth-wasix:latest' text || return $?
                 prompt_value nexus_wasix_wasm 'NEXUS WASIX module path (optional)' "${NEXUS_WASIX_WASM:-}" optional_text || return $?
                 prompt_value wasmer_bin 'Wasmer executable' wasmer text || return $?
                 module_args=(--configs "$startup_configs" --iterations "$startup_iterations"
@@ -331,6 +345,15 @@ if [[ "$#" -gt 0 ]]; then
     exit 2
 fi
 
+EXPERIMENTS_OUTPUT_ROOT="${EXPERIMENTS_OUTPUT_ROOT:-$REPO_ROOT/experiment-results}"
+export EXPERIMENTS_OUTPUT_ROOT
+LOG_SESSION_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+RUN_LOG_DIR="$EXPERIMENTS_OUTPUT_ROOT/logs/$LOG_SESSION_ID"
+mkdir -p "$RUN_LOG_DIR"
+exec > >(tee -a "$RUN_LOG_DIR/runner.log")
+exec 2> >(tee -a "$RUN_LOG_DIR/runner.log" >&2)
+echo "Suite log directory: $RUN_LOG_DIR"
+
 declare -a labels=(runtime empty-block startup compliance size)
 declare -a selected=()
 declare -a runtime_args=() empty_block_args=() startup_args=() compliance_args=() size_args=()
@@ -387,9 +410,10 @@ while true; do
     fi
 done
 
-export EXPERIMENTS_OUTPUT_ROOT="${EXPERIMENTS_OUTPUT_ROOT:-$REPO_ROOT/experiment-results}"
 EXPERIMENTS_SELECTED="$(IFS=,; printf '%s' "${selected[*]}")"
 export EXPERIMENTS_SELECTED
+echo "Execution mode: $mode"
+echo "Selected experiments (in order): ${selected[*]}"
 
 if [[ "$mode" == evaluate ]]; then
     evaluation_status=0
@@ -407,6 +431,7 @@ if [[ "$mode" == evaluate ]]; then
         result_dirs=("$module_output_root"/*)
         shopt -u nullglob
         found_result=false
+        evaluation_index=0
         for output_dir in "${result_dirs[@]}"; do
             [[ -d "$output_dir" ]] || continue
             found_result=true
@@ -428,7 +453,10 @@ if [[ "$mode" == evaluate ]]; then
             fi
 
             echo "=== Re-evaluating $experiment results: $(basename "$output_dir") ==="
-            if python3 "$report_script" --output-dir "$output_dir"; then
+            evaluation_index=$((evaluation_index + 1))
+            if run_logged "$RUN_LOG_DIR/$experiment/evaluation-$evaluation_index.log" \
+                "Evaluate $experiment saved run $(basename "$output_dir")" \
+                python3 "$report_script" --output-dir "$output_dir"; then
                 echo "=== Re-evaluated $experiment results: $output_dir ==="
             else
                 status=$?
@@ -473,7 +501,13 @@ BASE_EXPERIMENT_RUN_ID="$EXPERIMENT_RUN_ID"
 echo "Run ID: $EXPERIMENT_RUN_ID"
 echo "Output root: $EXPERIMENTS_OUTPUT_ROOT"
 echo "Running shared setup once..."
-bash "$SETUP_SCRIPT"
+if run_logged "$RUN_LOG_DIR/setup.log" "Shared setup (single invocation)" bash "$SETUP_SCRIPT"; then
+    :
+else
+    status=$?
+    echo "Error: shared setup failed (exit $status); no experiments were started." >&2
+    exit "$status"
+fi
 
 for experiment in "${selected[@]}"; do
     module_script="$MODULE_ROOT/$experiment/run.sh"
@@ -503,7 +537,9 @@ for experiment in "${selected[@]}"; do
             fi
             if (( iterations > 1 )) && [[ "$experiment" != runtime ]]; then echo "--- Iteration $iteration of $iterations ---"; fi
             if [[ "$experiment" == empty-block && -v EB_PRIVATE_KEY ]]; then export EB_PRIVATE_KEY; fi
-            if "${module_command[@]}"; then
+            module_log_file="$RUN_LOG_DIR/$experiment/run-${EXPERIMENT_RUN_ID}.log"
+            if run_logged "$module_log_file" "Run $experiment experiment (run ID $EXPERIMENT_RUN_ID)" \
+                "${module_command[@]}"; then
                 :
             else
                 status=$?

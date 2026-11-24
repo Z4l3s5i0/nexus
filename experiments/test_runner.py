@@ -26,7 +26,7 @@ class ExperimentRunnerTests(unittest.TestCase):
                     result.stderr.decode("utf-8", errors="replace"),
                 )
 
-    def run_with_stubs(self, selection, fail_module=None, config_answers=None):
+    def run_with_stubs(self, selection, fail_module=None, config_answers=None, fail_setup_status=None):
         with tempfile.TemporaryDirectory(prefix="experiment-runner-test-", dir=ROOT) as temp:
             temp_root = pathlib.Path(temp)
             module_root = temp_root / "modules"
@@ -35,8 +35,10 @@ class ExperimentRunnerTests(unittest.TestCase):
 
             setup_script = temp_root / "setup.sh"
             setup_script.write_text(
+                'printf "setup-output\\n"\n'
                 'printf "setup:%s\\n" "$EXPERIMENTS_SELECTED" >> "$TEST_LOG"\n'
-                'if [[ -n "${EB_PRIVATE_KEY:-}" ]]; then printf "setup-key-leaked\\n" >> "$TEST_LOG"; fi\n',
+                'if [[ -n "${EB_PRIVATE_KEY:-}" ]]; then printf "setup-key-leaked\\n" >> "$TEST_LOG"; fi\n'
+                + (f"exit {fail_setup_status}\n" if fail_setup_status is not None else ""),
                 encoding="utf-8",
             )
             for name in ("runtime", "empty-block", "startup", "compliance", "size"):
@@ -44,6 +46,7 @@ class ExperimentRunnerTests(unittest.TestCase):
                 module_dir.mkdir()
                 exit_status = 1 if name == fail_module else 0
                 (module_dir / "run.sh").write_text(
+                    f'printf "{name}-output\\n"\n'
                     f'printf "{name}\\n" >> "$TEST_LOG"\n'
                     f'if [[ "$#" -gt 0 ]]; then printf "args:{name}:%s\\n" "$*" >> "$TEST_LOG"; fi\n'
                     'if [[ "${EXPERIMENT_RUN_ID:-}" == *-runtime-* ]]; then printf "run-id:%s\\n" "$EXPERIMENT_RUN_ID" >> "$TEST_LOG"; fi\n'
@@ -54,6 +57,7 @@ class ExperimentRunnerTests(unittest.TestCase):
                 (module_dir / "report.py").write_text(
                     "import os, pathlib, sys\n"
                     "output_dir = pathlib.Path(sys.argv[sys.argv.index('--output-dir') + 1])\n"
+                    f"print('{name}-report-output')\n"
                     f"with open(os.environ['TEST_LOG'], 'a', encoding='utf-8') as log: log.write('{name}:' + output_dir.name + '\\n')\n",
                     encoding="utf-8",
                 )
@@ -98,6 +102,16 @@ class ExperimentRunnerTests(unittest.TestCase):
                 check=False,
             )
             calls = log_path.read_text(encoding="utf-8").splitlines()
+            logs_root = output_root / "logs"
+            log_sessions = list(logs_root.iterdir()) if logs_root.exists() else []
+            self.last_logs = {}
+            if log_sessions:
+                session_dir = log_sessions[0]
+                self.last_logs = {
+                    str(path.relative_to(session_dir)): path.read_text(encoding="utf-8")
+                    for path in session_dir.rglob("*")
+                    if path.is_file()
+                }
             return result, calls
 
     def test_selected_experiments_run_in_entered_order_after_one_setup(self):
@@ -108,6 +122,24 @@ class ExperimentRunnerTests(unittest.TestCase):
             calls,
             ["setup:startup,runtime,size", "startup", "runtime", "args:runtime:--workload-type exp/uber", "size"],
         )
+        self.assertIn("runner.log", self.last_logs, self.last_logs)
+        self.assertIn("Choose experiments by entering their numbers", self.last_logs["runner.log"])
+        self.assertIn("setup-output", self.last_logs["setup.log"])
+        self.assertIn("startup-output", self.last_logs["startup/run-test-run.log"])
+        self.assertIn("runtime-output", self.last_logs["runtime/run-test-run.log"])
+        self.assertIn("size-output", self.last_logs["size/run-test-run.log"])
+        self.assertEqual(
+            [path for path in self.last_logs if pathlib.PurePosixPath(path).name == "setup.log"],
+            ["setup.log"],
+        )
+
+    def test_setup_failure_is_logged_and_preserves_exit_status(self):
+        result, calls = self.run_with_stubs("1", fail_setup_status=7)
+
+        self.assertEqual(result.returncode, 7)
+        self.assertEqual(calls, ["setup:runtime"])
+        self.assertIn("Exit status: 7", self.last_logs["setup.log"])
+        self.assertNotIn("runtime/run-test-run.log", self.last_logs)
 
     def test_all_selection_uses_standard_order_after_one_setup(self):
         result, calls = self.run_with_stubs("6")
@@ -150,6 +182,8 @@ class ExperimentRunnerTests(unittest.TestCase):
             ],
         )
         self.assertIn("later experiments were not started", result.stderr)
+        self.assertIn("empty-block-output", self.last_logs["empty-block/run-test-run.log"])
+        self.assertIn("Exit status: 1", self.last_logs["empty-block/run-test-run.log"])
 
     def test_custom_runtime_configuration_is_forwarded_and_repeats_get_unique_run_ids(self):
         answers = "y\n1\n0\n1\n0\nexp/uber,exp/dota\n3\n8\n45\n0\n99\n2\nn\n"
@@ -223,6 +257,9 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertEqual(calls, ["empty-block:saved-run", "size:saved-run"])
         self.assertIn("Evaluation mode", result.stdout)
         self.assertIn("All selected saved results were evaluated successfully", result.stdout)
+        self.assertIn("empty-block-report-output", self.last_logs["empty-block/evaluation-1.log"])
+        self.assertIn("size-report-output", self.last_logs["size/evaluation-1.log"])
+        self.assertNotIn("setup.log", self.last_logs)
 
     def test_evaluation_reports_missing_results_without_running_setup(self):
         with tempfile.TemporaryDirectory(prefix="experiment-runner-test-", dir=ROOT) as temp:

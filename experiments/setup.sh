@@ -224,6 +224,21 @@ retry_pull() {
     fail "could not pull shared image '$image'."
 }
 
+prepare_local_nexus_image() {
+    local image="$1"
+    local dockerfile="$2"
+    local binary="$3"
+
+    if docker image inspect "$image" >/dev/null 2>&1; then
+        echo "Using existing local NEXUS image '$image'."
+        return
+    fi
+    [[ -s "$binary" ]] || fail "cannot build '$image': local artifact is missing at $binary."
+    echo "Building NEXUS image '$image' from the local artifact..."
+    docker build -t "$image" -f "$wasix_eth_root/$dockerfile" "$wasix_eth_root" \
+        || fail "could not build local NEXUS image '$image'."
+}
+
 if [[ "$needs_chain_images" == true ]]; then
     echo "Preparing shared execution and monitoring images..."
     for image in \
@@ -245,8 +260,14 @@ fi
 if [[ "$needs_chain_images" == true ]]; then
     for experiment in "${selected_experiments[@]}"; do
         if [[ "$experiment" == startup ]]; then
-            retry_pull docker.io/z4l3s5i0/wasix-eth-linux:clean
-            retry_pull docker.io/z4l3s5i0/wasix-eth-wasix:clean
+            prepare_local_nexus_image \
+                wasix-eth-linux:latest \
+                Dockerfile.linux \
+                "$wasix_eth_root/target/release/wasix_eth"
+            prepare_local_nexus_image \
+                wasix-eth-wasix:latest \
+                Dockerfile.wasix \
+                "$wasix_eth_root/target/wasm32-wasmer-wasi/release/wasix_eth.wasi.wasm"
             break
         fi
     done
