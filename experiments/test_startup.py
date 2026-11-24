@@ -35,11 +35,46 @@ class StartupBenchmarkTests(unittest.TestCase):
         run = metadata.build_metadata("run-1", 12345, 2, ["geth", "nexus-wasmer"])
 
         self.assertEqual(value["config"]["chainId"], 12345)
+        self.assertEqual(value["config"]["terminalTotalDifficulty"], "0x0")
+        self.assertTrue(value["config"]["terminalTotalDifficultyPassed"])
+        self.assertEqual(value["config"]["mergeNetsplitBlock"], 0)
+        self.assertNotIn("ethash", value["config"])
+        self.assertNotIn("clique", value["config"])
+        self.assertEqual(value["difficulty"], "0x0")
+        self.assertEqual(value["baseFeePerGas"], "0x3b9aca00")
+        for field in ("nonce", "timestamp", "extraData", "mixHash", "coinbase", "number", "gasUsed", "parentHash"):
+            self.assertIn(field, value)
         self.assertIn("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266", value["alloc"])
         wasmer_node = next(node for node in run["nodes"] if node["type"] == "nexus-wasmer")
         self.assertEqual(wasmer_node["client"], "wasix-eth")
         self.assertEqual(wasmer_node["variant"], "nexus-wasmer")
         self.assertEqual(wasmer_node["node_id"], "startup-nexus-wasmer-1")
+
+    def test_genesis_cli_applies_parameter_overrides(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output = pathlib.Path(temp) / "genesis.json"
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "generate_genesis.py",
+                    "--chain-id", "23456",
+                    "--gas-limit", "0x1000000",
+                    "--base-fee-per-gas", "2000000000",
+                    "--terminal-total-difficulty", "10",
+                    "--premine-address", "0x0000000000000000000000000000000000000001",
+                    "--premine-balance", "500",
+                    "--output", str(output),
+                ],
+            ):
+                generate_genesis.main()
+            value = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(value["config"]["chainId"], 23456)
+        self.assertEqual(value["config"]["terminalTotalDifficulty"], "0xa")
+        self.assertEqual(value["gasLimit"], "0x1000000")
+        self.assertEqual(value["baseFeePerGas"], "0x77359400")
+        self.assertEqual(value["alloc"], {"0x0000000000000000000000000000000000000001": {"balance": "0x1f4"}})
 
     def test_readiness_probe_accepts_rpc_result_not_http_response_alone(self):
         response = io.BytesIO(json.dumps({"jsonrpc": "2.0", "id": 1, "result": "0x3039"}).encode())

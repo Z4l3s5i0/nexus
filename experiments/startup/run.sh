@@ -16,6 +16,11 @@ NEXUS_WASIX_IMAGE="wasix-eth-wasix:latest"
 NEXUS_WASIX_WASM="${NEXUS_WASIX_WASM:-}"
 WASMER_BIN="wasmer"
 CHAIN_ID=12345
+GENESIS_GAS_LIMIT="0x1fffffffffffff"
+GENESIS_BASE_FEE_PER_GAS="0x3b9aca00"
+TERMINAL_TOTAL_DIFFICULTY="0x0"
+PREMINE_ADDRESS="f39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+PREMINE_BALANCE="0x200000000000000000000000000000000000000000000000000000000000000"
 TIMEOUT=60
 METRICS_INTERVAL=0.2
 CONFIGS=""
@@ -38,6 +43,11 @@ Options:
   --nexus-wasix-wasm PATH NEXUS WASIX module for host Wasmer
   --wasmer-bin PATH       Wasmer executable (default: $WASMER_BIN)
   --chain-id ID           Isolated genesis chain ID (default: $CHAIN_ID)
+  --genesis-gas-limit N   Genesis gas limit in decimal or hex (default: $GENESIS_GAS_LIMIT)
+  --base-fee-per-gas N    Genesis base fee in decimal or hex (default: $GENESIS_BASE_FEE_PER_GAS)
+  --terminal-total-difficulty N  Genesis TTD in decimal or hex (default: $TERMINAL_TOTAL_DIFFICULTY)
+  --premine-address ADDR  Account funded in genesis (default: $PREMINE_ADDRESS)
+  --premine-balance N     Premine balance in wei, decimal or hex (default: $PREMINE_BALANCE)
   --timeout SECONDS       Readiness timeout (default: $TIMEOUT)
   --metrics-interval SEC  System metric sample interval (default: $METRICS_INTERVAL)
   --results-dir DIR       Parent output directory (default: $RESULTS_PARENT)
@@ -58,6 +68,11 @@ while [[ "$#" -gt 0 ]]; do
         --nexus-wasix-wasm) NEXUS_WASIX_WASM="$2"; shift 2 ;;
         --wasmer-bin) WASMER_BIN="$2"; shift 2 ;;
         --chain-id) CHAIN_ID="$2"; shift 2 ;;
+        --genesis-gas-limit) GENESIS_GAS_LIMIT="$2"; shift 2 ;;
+        --base-fee-per-gas) GENESIS_BASE_FEE_PER_GAS="$2"; shift 2 ;;
+        --terminal-total-difficulty) TERMINAL_TOTAL_DIFFICULTY="$2"; shift 2 ;;
+        --premine-address) PREMINE_ADDRESS="$2"; shift 2 ;;
+        --premine-balance) PREMINE_BALANCE="$2"; shift 2 ;;
         --timeout) TIMEOUT="$2"; shift 2 ;;
         --metrics-interval) METRICS_INTERVAL="$2"; shift 2 ;;
         --results-dir) RESULTS_PARENT="$2"; shift 2 ;;
@@ -69,6 +84,16 @@ done
 
 [[ "$ITERATIONS" =~ ^[1-9][0-9]*$ && "$CHAIN_ID" =~ ^[1-9][0-9]*$ ]] || {
     echo "Error: iterations and chain ID must be positive integers." >&2
+    exit 2
+}
+for value in "$GENESIS_GAS_LIMIT" "$GENESIS_BASE_FEE_PER_GAS" "$TERMINAL_TOTAL_DIFFICULTY" "$PREMINE_BALANCE"; do
+    [[ "$value" =~ ^(0[xX][0-9a-fA-F]+|[0-9]+)$ ]] || {
+        echo "Error: genesis numeric values must be decimal or hexadecimal integers." >&2
+        exit 2
+    }
+done
+[[ "$PREMINE_ADDRESS" =~ ^(0x)?[0-9a-fA-F]{40}$ ]] || {
+    echo "Error: premine address must be a 20-byte hexadecimal address." >&2
     exit 2
 }
 [[ "$TIMEOUT" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk "BEGIN { exit !($TIMEOUT > 0) }" || {
@@ -165,7 +190,11 @@ for config in "${CONFIG_LIST[@]}"; do
         mkdir -p "$work_dir" "$logs_dir"
         CURRENT_STATE_FILE="$state_file"
 
-        python3 "$SCRIPT_DIR/generate_genesis.py" --chain-id "$CHAIN_ID" --output "$work_dir/genesis.json"
+        python3 "$SCRIPT_DIR/generate_genesis.py" --chain-id "$CHAIN_ID" \
+            --gas-limit "$GENESIS_GAS_LIMIT" --base-fee-per-gas "$GENESIS_BASE_FEE_PER_GAS" \
+            --terminal-total-difficulty "$TERMINAL_TOTAL_DIFFICULTY" \
+            --premine-address "$PREMINE_ADDRESS" --premine-balance "$PREMINE_BALANCE" \
+            --output "$work_dir/genesis.json"
         python3 "$SCRIPT_DIR/metadata.py" --scope iteration --run-id "$RUN_ID" --chain-id "$CHAIN_ID" \
             --config "$config" --iteration "$iteration" --output "$identity_file"
         PREPARE_STATUS=0
