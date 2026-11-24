@@ -1,6 +1,6 @@
 # User Guide: Multi-Node Blockchain Network Deployment
 
-This guide explains how to use the deployment scripts to start a blockchain network either locally or across multiple machines.
+This guide explains how to run the modular local experiment suite and links to the remaining remote deployment workflow.
 
 ## 1. Prerequisites
 
@@ -10,34 +10,22 @@ This guide explains how to use the deployment scripts to start a blockchain netw
 - **Wasmer CLI**: For running Wasix nodes.
 - **Wine**: For running Windows nodes on Linux.
 
-## 2. Local Network Deployment (Single Machine)
+## 2. Local Experiments (Single Machine)
 
-The `start_local.sh` script automates the process of creating a network using Docker containers on your local machine.
+Use the experiment selector to install shared prerequisites once and run one or more experiment modules:
 
 ### Usage
 ```bash
-./scripts/v2/start_local.sh --nodes 4 --linux 50 --windows 25 --wasix 25 --chain-id 12345 --setup
+bash experiments/run.sh
 ```
 
-*(The `--setup` flag ensures Docker and all required local tools are installed and ready.)*
+For runtime network and workload options, see:
 
-### Parameters
-- `--nodes`: Total number of execution nodes to start.
-- `--linux`: Percentage of nodes running the native Linux version.
-- `--windows`: Percentage of nodes running the Windows version via Wine.
-- `--wasix`: Percentage of nodes running the Wasix version via Wasmer.
-- `--chain-id`: Unique ID for the network experiment.
-- `--cleanup`: (Optional) Deletes old data directories before starting.
+```bash
+bash experiments/runtime/run.sh --help
+```
 
-### What it does
-1. Generates genesis and configuration for the specified `chain-id`.
-2. Generates validator keys and JWT secrets for all nodes.
-3. Spawns the requested number of nodes using Docker.
-4. Each node includes:
-   - An Execution Client (`wasix_eth`).
-   - A Consensus Client (Lighthouse Beacon Node).
-   - (For 50% of nodes) A Validator Client (Lighthouse).
-5. Registers all nodes with the `metrics_server` automatically.
+Runtime and empty-block share the private launcher and configuration assets in `experiments/shared/network/`; start them through their experiment modules rather than invoking the internal launcher directly.
 
 ## 3. Multi-Machine Network Deployment
 
@@ -87,7 +75,7 @@ Use the `--registry` and `--tag` flags in the deployment scripts:
 
 **Local:**
 ```bash
-./scripts/v2/start_local.sh --nodes 4 --registry your-username --tag v1.0
+bash experiments/run.sh
 ```
 
 **Remote:**

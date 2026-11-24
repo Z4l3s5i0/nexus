@@ -55,7 +55,8 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/common.sh"
+NETWORK_SUPPORT="$SCRIPT_DIR/../../experiments/shared/network"
+source "$NETWORK_SUPPORT/common.sh"
 
 # If WORKLOAD_PERCENT is not set, default to 100
 if [ -z "$WORKLOAD_PERCENT" ]; then
@@ -79,9 +80,11 @@ echo "Workload Nodes: $WORKLOAD_NODES (Linux: $w_linux, Geth: $w_geth, Reth: $w_
 
 # 1. Start the local network
 echo "Step 1: Starting local network..."
-START_OPTIONS=(--chain-id "$CHAIN_ID" --linux-nodes "$c_linux" --geth-nodes "$c_geth" --reth-nodes "$c_reth" --wasix-nodes "$c_wasix" --setup --cleanup --registry docker.io/z4l3s5i0)
+export EXPERIMENTS_SELECTED=runtime
+bash "$SCRIPT_DIR/../../experiments/setup.sh"
+START_OPTIONS=(--chain-id "$CHAIN_ID" --linux-nodes "$c_linux" --geth-nodes "$c_geth" --reth-nodes "$c_reth" --wasix-nodes "$c_wasix" --cleanup --registry docker.io/z4l3s5i0)
 if [ -n "$METRICS_IMAGE" ]; then START_OPTIONS+=(--metrics-image "$METRICS_IMAGE"); fi
-bash "$SCRIPT_DIR/start_local.sh" "${START_OPTIONS[@]}"
+bash "$NETWORK_SUPPORT/launch.sh" "${START_OPTIONS[@]}"
 COMPOSE_CMD=$(get_compose_cmd)
 FIRST_EL=$($COMPOSE_CMD -f docker-compose.v2.yml ps -q el-node-0)
 NETWORK_NAME=$(docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' "$FIRST_EL")

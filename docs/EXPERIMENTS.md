@@ -25,16 +25,16 @@ The module structure, setup behavior, output layout, metric coverage matrix, imp
 
 ## Legacy script reference
 
-The following sections describe `scripts/v2/` behavior retained for context and for infrastructure utilities still used by the new modules. Start new experiment runs through `experiments/run.sh` rather than invoking the legacy batch/experiment runners.
+The following sections describe legacy `scripts/v2/` behavior retained for historical context and utilities. The new modules no longer depend on those script paths; their shared network launcher and assets live in `experiments/shared/network/`. Start new experiment runs through `experiments/run.sh` rather than invoking the legacy batch/experiment runners.
 
 | Category | Legacy scripts |
 |---|---|
 | **Orchestration** | `run_experiment.sh`, `run_experiments_loop.sh` |
-| **Infrastructure** | `setup.sh`, `start_local.sh`, `cleanup.sh`, `config_gen.sh` |
+| **Infrastructure** | `setup.sh`, `cleanup.sh` (legacy); `experiments/shared/network/start.sh`, `config_gen.sh`, `common.sh` (current shared support) |
 | **Workload & Collection** | `run_workload.sh`, `collect_results.sh`, `aggregate_logs.sh`, `manage_logs.sh`, `log_processor.sh` |
 | **Analysis** | `analyze_experiment.sh`, `analyze_all_experiments.sh`, `evaluate_logs.py`, `evaluate.sh`, `plot_metrics.py`, `write_experiment_metadata.py`, `workload_allocation.py` |
 | **Image Push** | `push_contender.sh`, `push_linux.sh`, `push_wasix.sh`, `push_metrics.sh` |
-| **Utilities** | `common.sh`, `db_exporter/` (Rust tool) |
+| **Utilities** | `db_exporter/` (Rust tool) |
 
 ### Orchestration Scripts
 
@@ -74,7 +74,7 @@ Orchestrates the full lifecycle of one experiment run: deploys the network, star
 | `--metrics-image IMAGE` | Pre-built metrics image | — |
 
 **What it does (full lifecycle):**
-1. **Deploys network** — Calls `start_local.sh` internally with the given node configuration
+1. **Deploys network** — Calls the shared launcher internally with the given node configuration
 2. **Starts log processor** — Launches `manage_logs.sh` to stream container logs to `logs_dump/`
 3. **Waits for stabilization** — 60s for non-Geth networks, 120s+ per Geth node for state trie initialization
 4. **Starts workloads** — Launches `run_workload.sh` for each target node
@@ -140,12 +140,12 @@ ps aux | grep run_experiments_loop
 
 | Script | Purpose |
 |---|---|
-| `setup.sh` | Build all Docker images (NEXUS native, WASIX, metrics server) |
-| `start_local.sh` | Deploy a Docker Compose network with mixed node types |
-| `cleanup.sh` | Stop and remove all containers, clean up data directories |
-| `config_gen.sh` | Generate node TOML configuration files for a given chain ID and node count |
+| `experiments/setup.sh` | Install/verify dependencies and prepare shared artifacts once before dispatch |
+| `experiments/shared/network/start.sh` | Deploy a Docker Compose network with mixed node types for runtime and empty-block modules |
+| `scripts/v2/cleanup.sh` | Legacy cleanup utility for a generated v2 network |
+| `experiments/shared/network/config_gen.sh` | Generate network configuration for a given chain ID and node count |
 
-`start_local.sh` accepts `--linux-nodes`, `--wasix-nodes`, `--geth-nodes`, `--chain-id`, `--cleanup`, `--setup`, `--registry`, `--tag`, and `--metrics-image`. It generates config, copies monitoring files, creates `docker-compose.v2.yml`, and starts all containers. Nodes are named `el-node-0`, `el-node-1`, … with incrementing RPC (8545+) and P2P (9000+) ports.
+The shared launcher accepts `--linux-nodes`, `--wasix-nodes`, `--geth-nodes`, `--reth-nodes`, `--chain-id`, `--cleanup`, `--registry`, `--tag`, and `--metrics-image`. Setup is deliberately not run by the launcher; `experiments/run.sh` performs it once before module dispatch. The launcher generates config, copies monitoring files, creates `docker-compose.v2.yml`, and starts all containers. Nodes are named `el-node-0`, `el-node-1`, … with incrementing RPC (8545+) and P2P (9000+) ports.
 
 ### Workload & Collection Scripts
 
@@ -304,11 +304,11 @@ curl "http://127.0.0.1:9100/api/bootstrap/nodes?network=devnet&limit=16"
 
 ### Prometheus + Grafana
 
-The monitoring stack is configured in `scripts/v2/monitoring/`:
+The monitoring stack used by runtime and empty-block is configured in `experiments/shared/network/monitoring/`:
 
 - **Prometheus** scrapes `/metrics` from all nodes and the metrics server
 - **Grafana** provides dashboards for real-time visualization
-- Configuration is automatically copied to `startup_v2/` by `start_local.sh`
+- Configuration is automatically copied to `startup_v2/` by `experiments/shared/network/start.sh`
 
 Access Grafana at `http://localhost:3000` (default credentials from provisioning config).
 
@@ -371,45 +371,27 @@ These results document performance characteristics including transaction through
 
 ### Single Experiment
 
-The easiest way to run an experiment end-to-end is `run_experiment.sh`:
+Use the modular suite for experiment runs. The interactive selector runs shared setup once, then dispatches the selected modules:
 
 ```bash
-./scripts/v2/run_experiment.sh \
-  --linux-nodes 3 \
-  --wasix-nodes 3 \
-  --workload-type exp/uber \
-  --tps 4 \
-  --duration 120 \
-  --wait-duration 900
+bash experiments/run.sh
 ```
 
-This handles the entire lifecycle: network deployment, workload execution, result collection, and cleanup.
+For runtime-specific options, see `bash experiments/runtime/run.sh --help`; the runtime and empty-block modules use shared internal network support under `experiments/shared/network/`.
 
 ### Batch Experiments
 
-For running many parameter combinations, use `run_experiments_loop.sh` (see the **Orchestration Scripts** section above for details on custom ratios, logging, and remote server execution).
+The legacy `scripts/v2/run_experiments_loop.sh` remains available for its historical workload matrix, but it is not the entry point for the modular experiment suite.
 
 ### Manual Workflow
 
-For fine-grained control, run the steps individually:
+For a one-off runtime run without the interactive selector, run setup and then the module directly:
 
 ```bash
-# 1. Setup and deploy
-./scripts/v2/start_local.sh --linux-nodes 2 --wasix-nodes 2 --cleanup
-
-# 2. Run a workload
-./scripts/v2/run_workload.sh \
-  --rpc http://host.docker.internal:8545 \
-  --scenario simple \
-  --tps 20 \
-  --duration 120 \
-  --network wasm
-
-# 3. Collect and analyze
-./scripts/v2/collect_results.sh
-./scripts/v2/analyze_experiment.sh ./experiments/exp_YYYYMMDD_HHMMSS
+EXPERIMENTS_SELECTED=runtime bash experiments/setup.sh
+bash experiments/runtime/run.sh --linux-nodes 2 --wasix-nodes 2 --reset-network
 ```
 
 ### Remote Deployment
 
-For remote cluster deployment, use the push scripts (`push_linux.sh`, `push_wasix.sh`, `push_metrics.sh`) to upload images to a registry, then deploy using the same pattern as `start_local.sh` but targeting remote hosts.
+For remote cluster deployment, use the legacy push scripts (`push_linux.sh`, `push_wasix.sh`, `push_metrics.sh`) to upload images to a registry and follow the separate remote deployment workflow.

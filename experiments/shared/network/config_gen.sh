@@ -4,6 +4,8 @@ set -e
 # Configuration Generator for v2 Deployment
 # Generates genesis, keys, and JWT for a new network experiment
 
+SCRIPT_DIR="${EXPERIMENTS_NETWORK_SUPPORT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CHAIN_ID=12345
 NUM_NODES=4
 GENESIS_DELAY=180 # 3 minutes
@@ -20,7 +22,11 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
+if [[ "$OUTPUT_DIR" != /* ]]; then
+    OUTPUT_DIR="$REPO_ROOT/$OUTPUT_DIR"
+fi
 mkdir -p "$OUTPUT_DIR"
+OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 GENESIS_TIMESTAMP=$(date +%s)
 
 echo "Generating config for Chain ID: $CHAIN_ID, Nodes: $NUM_NODES"
@@ -58,8 +64,8 @@ EOF
 # 2. Run genesis generator
 echo "Running ethereum-genesis-generator..."
 docker run --rm -u "$(id -u)" \
-  -v "$(pwd)/$OUTPUT_DIR/values.env:/config/values.env" \
-  -v "$(pwd)/$OUTPUT_DIR:/data" \
+  -v "$OUTPUT_DIR/values.env:/config/values.env" \
+  -v "$OUTPUT_DIR:/data" \
   ethpandaops/ethereum-genesis-generator:6.1.3 all
 
 # Cleanup and organize files
@@ -86,7 +92,7 @@ echo "password12345" > "$OUTPUT_DIR/password.txt"
 # We provide a withdrawal address to avoid interactive prompts.
 #WITHDRAWAL_ADDRESS="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 printf "%s\n%s\n%s\n\n\n" "0" "password12345" "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" | \
-docker run --rm -i -u "$(id -u):$(id -g)" -v "$(pwd)/$OUTPUT_DIR:/data" ghcr.io/ethstaker/ethstaker-deposit-cli:v1.3.0 --language English existing-mnemonic \
+docker run --rm -i -u "$(id -u):$(id -g)" -v "$OUTPUT_DIR:/data" ghcr.io/ethstaker/ethstaker-deposit-cli:v1.3.0 --language English existing-mnemonic \
   --mnemonic="$MNEMONIC" \
   --num_validators="$NUM_NODES" \
   --validator_start_index=0 \

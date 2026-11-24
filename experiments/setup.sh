@@ -3,6 +3,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+WASMER_DIR="${WASMER_DIR:-$HOME/.wasmer}"
+export CARGO_HOME WASMER_DIR
+export PATH="$CARGO_HOME/bin:$WASMER_DIR/bin:$PATH"
 required_packages=(curl wget git jq ca-certificates gnupg lsb-release openssl python3 cloc)
 required_commands=(curl wget git jq openssl python3 cloc)
 
@@ -89,6 +93,28 @@ for command_name in "${required_commands[@]}"; do
 done
 
 if [[ "$needs_client_binaries" == true ]]; then
+    if ! command -v rustup >/dev/null 2>&1; then
+        echo "Installing the Rust toolchain..."
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+        export PATH="$CARGO_HOME/bin:$WASMER_DIR/bin:$PATH"
+    fi
+    command -v rustup >/dev/null 2>&1 || fail "rustup is required to install the stable Rust toolchain."
+    command -v cargo >/dev/null 2>&1 || fail "Cargo is required to install cargo-wasix."
+    rustup toolchain install stable --profile minimal || fail "could not install the stable Rust toolchain."
+    if ! command -v cargo-wasix >/dev/null 2>&1; then
+        echo "Installing cargo-wasix with stable Rust..."
+        cargo +stable install cargo-wasix || fail "cargo-wasix installation failed."
+    fi
+    command -v cargo-wasix >/dev/null 2>&1 || fail "cargo-wasix is still unavailable after installation."
+
+    if ! command -v wasmer >/dev/null 2>&1 || [[ "$(wasmer --version 2>/dev/null || true)" != *"7.4.2"* ]]; then
+        echo "Installing Wasmer 7.4.2..."
+        curl -fsSL https://get.wasmer.io | sh -s "v7.4.2"
+        export PATH="$CARGO_HOME/bin:$WASMER_DIR/bin:$PATH"
+    fi
+    command -v wasmer >/dev/null 2>&1 || fail "Wasmer is still unavailable after installation."
+    [[ "$(wasmer --version 2>/dev/null || true)" == *"7.4.2"* ]] || fail "Wasmer 7.4.2 is required, but the installed version is different."
+
     wasix_eth_root="${EXPERIMENTS_WASIX_ETH_ROOT:-$REPO_ROOT/wasix_eth}"
     native_binary="$wasix_eth_root/target/release/wasix_eth"
     wasix_binary="$wasix_eth_root/target/wasm32-wasmer-wasi/release/wasix_eth.wasi.wasm"
@@ -100,7 +126,7 @@ if [[ "$needs_client_binaries" == true ]]; then
     if [[ ! -s "$wasix_binary" ]]; then
         command -v cargo >/dev/null 2>&1 || fail "WASIX NEXUS binary is missing and Cargo is unavailable; install the WASIX toolchain and build $wasix_binary manually."
         echo "Building the WASIX NEXUS binary once..."
-        (cd "$wasix_eth_root" && cargo wasix build --release) || fail "WASIX NEXUS build failed; install/configure cargo-wasix and the WASIX target toolchain."
+        (cd "$wasix_eth_root" && cargo +stable wasix build --release) || fail "WASIX NEXUS build failed with the stable cargo-wasix toolchain."
     fi
     [[ -s "$native_binary" ]] || fail "native NEXUS binary was not produced at $native_binary."
     [[ -s "$wasix_binary" ]] || fail "WASIX NEXUS binary was not produced at $wasix_binary."

@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-LEGACY_START="$REPO_ROOT/scripts/v2/start_local.sh"
+NETWORK_START="$REPO_ROOT/experiments/shared/network/launch.sh"
 COMPOSE_FILE="$REPO_ROOT/docker-compose.v2.yml"
 
 compose() {
@@ -33,7 +33,7 @@ check() {
         fi
     fi
     if [[ "${RESET_NETWORK:-false}" != true ]] && has_generated_data; then
-        echo "Error: generated v2 network data already exists. Archive it or rerun with --reset-network to allow start_local.sh to clear it." >&2
+        echo "Error: generated network data already exists. Archive it or rerun with --reset-network to allow the launcher to clear it." >&2
         return 1
     fi
 }
@@ -51,7 +51,7 @@ start() {
         options+=(--cleanup)
     fi
     cd "$REPO_ROOT"
-    bash "$LEGACY_START" "${options[@]}"
+    bash "$NETWORK_START" "${options[@]}"
 }
 
 stop() {

@@ -20,7 +20,7 @@ Each run writes to `experiment-results/<module>/<run-id>/`. The runner exports a
 | Compliance | `experiments/compliance/run.sh` | Builds the custom Hive image and runs `ethereum/engine` for the selected `wasix-r-eth` and/or `wasix-w-eth` client. Workspaces, command lines, and per-client logs are retained. |
 | Size | `experiments/size/run.sh` | Measures source-code lines and compiled binary bytes. Missing source trees or binaries are reported as unavailable. |
 
-Modules own their run lifecycle and experiment-specific collection/reporting scripts. Shared transport and system-collection helpers are used where the measurement semantics are the same; modules do not delegate to old user-facing experiment entry points.
+Modules own their run lifecycle and experiment-specific collection/reporting scripts. Runtime and empty-block share the internal launcher and config/monitoring assets in `experiments/shared/network/`; neither module delegates to a legacy `scripts/v2` entry point.
 
 ### Runtime
 
@@ -46,9 +46,9 @@ The default source measurement covers `wasix_eth/`; default binary candidates ar
 
 ## Dependency and setup notes
 
-`experiments/setup.sh` supports Ubuntu/Debian Linux. It installs or verifies the shared command-line tools (`curl`, `wget`, `git`, `jq`, `openssl`, Python 3, and `cloc`). Docker and Compose v2 are installed/verified only when a selected stage needs them; the Docker daemon must be usable by the current user. For runtime, empty-block, and startup selections, setup pulls shared images and builds `wasix-eth-metrics:latest` once. Startup-specific NEXUS images are prepared only when startup is selected. When native/WASIX target binaries are absent, setup builds them once using the existing Cargo toolchains. Hive client and Hive runner images are prepared by the compliance module.
+`experiments/setup.sh` supports Ubuntu/Debian Linux. It installs or verifies the shared command-line tools (`curl`, `wget`, `git`, `jq`, `openssl`, Python 3, and `cloc`). When a selected module needs client binaries, it installs Rust stable via `rustup`, installs `cargo-wasix` with stable Rust, and installs or verifies Wasmer 7.4.2 under the current user's Wasmer directory; these binary directories are added to the suite process `PATH`. Docker and Compose v2 are installed/verified only when a selected stage needs them; the Docker daemon must be usable by the current user. For runtime, empty-block, and startup selections, setup pulls shared images and builds `wasix-eth-metrics:latest` once. Startup-specific NEXUS images are prepared only when startup is selected. When native/WASIX target binaries are absent, setup builds them once. Hive client and Hive runner images are prepared by the compliance module.
 
-Rust/WASIX toolchains are not installed by this script. Install Rust, `cargo-wasix`, the WASIX SDK/target, and Wasmer as required by [DEVELOPMENT.md](../docs/DEVELOPMENT.md); setup reports a clear error if a required binary is missing and its toolchain is unavailable. Host Wasmer startup measurements and external binary comparisons also require their respective files/tools. Network access is required for Docker image pulls and Hive’s upstream source build.
+The setup script requires network access to install the Rust stable toolchain, `cargo-wasix`, and Wasmer 7.4.2, and to pull Docker images/build the Hive runner when selected. Host Wasmer startup measurements additionally require a compatible WASIX module; external binary comparisons require the respective files. Docker-backed stages require a running daemon accessible to the current user.
 
 ## Metric coverage
 
@@ -87,7 +87,5 @@ Prometheus exposition names are retained raw and are not normalized unless clien
 
 ```bash
 python3 -m unittest discover -s experiments -p 'test*.py'
-python3 scripts/v2/test_empty_block_experiment.py
-python3 scripts/v2/test_shell_syntax.py
-cargo +nightly test --manifest-path metrics_server/Cargo.toml
+cargo +stable test --manifest-path metrics_server/Cargo.toml
 ```

@@ -109,7 +109,7 @@ if [ -n "$NETWORK" ]; then
     if [[ "$RPC_URL" == *"host.docker.internal"* ]]; then
         echo "Warning: Using 'host.docker.internal' with a custom Docker network might fail on Linux."
         # Try to find a node container in this network
-        # The containers in start_local.sh are named el-node-0, el-node-1, etc.
+        # The containers in the shared network launcher are named el-node-0, el-node-1, etc.
         # But they might have a prefix if docker-compose is used (e.g. wasm_el-node-0)
         # We search for any container that contains 'el-node' and is in the specified network
         NODE_CONTAINER=$(docker ps --filter "network=$NETWORK" --format "{{.Names}}" | grep "el-node" | head -n 1)

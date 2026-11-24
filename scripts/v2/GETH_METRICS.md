@@ -1,7 +1,7 @@
 ### Geth metric availability
 
-The execution image is `ethereum/client-go:v1.15.11`, pinned by digest in
-`start_local.sh`. The metrics server stores raw Geth Prometheus names, labels,
+The execution image is pinned by digest in
+`experiments/shared/network/start.sh`. The metrics server stores raw Geth Prometheus names, labels,
 and the registered node's `geth` client identity; these names are not renamed
 to `wasix_eth` metrics. The Geth endpoint is `/debug/metrics/prometheus`.
 

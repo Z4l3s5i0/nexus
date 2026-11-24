@@ -5,6 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MODULE_ROOT="${EXPERIMENTS_MODULE_ROOT:-$SCRIPT_DIR}"
 SETUP_SCRIPT="${EXPERIMENTS_SETUP_SCRIPT:-$SCRIPT_DIR/setup.sh}"
+CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+WASMER_DIR="${WASMER_DIR:-$HOME/.wasmer}"
+export PATH="$CARGO_HOME/bin:$WASMER_DIR/bin:$PATH"
 
 usage() {
     cat <<EOF

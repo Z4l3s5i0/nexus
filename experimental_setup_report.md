@@ -2,6 +2,8 @@
 
 > **Project:** NEXUS (wasix_eth) — An Ethereum execution client written in Rust, running natively or inside a WebAssembly (WASIX) environment.
 > **Report Date:** 2026-11-23
+>
+> **Status note:** This is a pre-modular implementation report. The current supported experiment workflow and script inventory are documented in [`experiments/README.md`](experiments/README.md); the network launcher, configuration, shared helpers, monitoring files, and Compose template have since moved to `experiments/shared/network/`.
 
 ---
 
@@ -94,7 +96,7 @@ The experiment framework supports:
 
 ### 3.2 Script Categories
 
-All experiment scripts live in `scripts/v2/`:
+The following inventory records the pre-modular script layout:
 
 | Category | Scripts | Purpose |
 |---|---|---|

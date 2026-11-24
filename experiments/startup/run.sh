@@ -3,6 +3,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+WASMER_DIR="${WASMER_DIR:-$HOME/.wasmer}"
+export PATH="$CARGO_HOME/bin:$WASMER_DIR/bin:$PATH"
 RUN_ID="${EXPERIMENT_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 RESULTS_PARENT="${EXPERIMENTS_OUTPUT_ROOT:-$REPO_ROOT/experiment-results}/startup"
 ITERATIONS=5

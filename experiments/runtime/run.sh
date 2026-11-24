@@ -36,7 +36,7 @@ Options:
   --workload-type NAME   Contender scenario (default: $WORKLOAD_TYPE)
   --tps N                Target TPS per workload node (default: $TPS)
   --accounts N           Accounts per workload (default: $ACCOUNTS)
-  --reset-network        Allow start_local.sh to clear existing generated node data
+  --reset-network        Allow the local launcher to clear existing generated node data
   --help                 Show this help
 EOF
 }

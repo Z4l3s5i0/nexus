@@ -3,7 +3,11 @@ set -e
 
 # Local Docker Network Orchestrator for v2 Deployment
 
-source "$(dirname "$0")/common.sh"
+SCRIPT_DIR="${EXPERIMENTS_NETWORK_SUPPORT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+COMPOSE_FILE="$REPO_ROOT/docker-compose.v2.yml"
+cd "$REPO_ROOT"
+source <(tr -d '\r' < "$SCRIPT_DIR/common.sh")
 
 LINUX_NODES=2
 WASIX_NODES=2
@@ -11,13 +15,11 @@ GETH_NODES=0
 RETH_NODES=0
 CHAIN_ID=12345
 CLEANUP=false
-SETUP=false
 REGISTRY=""
 TAG="latest"
 GETH_IMAGE="ethereum/client-go@sha256:798b7eb1bcef6d4be7576232beea63bf291450f48b025dc8fb5c6e37840e4364"
 RETH_IMAGE="ghcr.io/paradigmxyz/reth:latest"
 METRICS_IMAGE_OVERRIDE=""
-COMPOSE_FILE="docker-compose.v2.yml"
 
 usage() {
     echo "Usage: $0 [options]"
@@ -28,12 +30,15 @@ usage() {
     echo "  --reth-nodes N    Number of Reth nodes (default: 0)"
     echo "  --chain-id ID     Unique chain ID (default: 12345)"
     echo "  --cleanup         Remove existing data before starting"
-    echo "  --setup           Run setup.sh locally before starting"
     echo "  --registry URL    Docker registry to pull images from (optional)"
     echo "  --tag TAG         Image tag to use (default: latest)"
     echo "  --metrics-image IMAGE  Use an existing metrics image instead of building locally"
-    exit 1
 }
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    usage
+    exit 0
+fi
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
@@ -43,11 +48,10 @@ while [[ "$#" -gt 0 ]]; do
         --reth-nodes) RETH_NODES="$2"; shift ;;
         --chain-id) CHAIN_ID="$2"; shift ;;
         --cleanup) CLEANUP=true ;;
-        --setup) SETUP=true ;;
         --registry) REGISTRY="$2"; shift ;;
         --tag) TAG="$2"; shift ;;
         --metrics-image) METRICS_IMAGE_OVERRIDE="$2"; shift ;;
-        *) usage ;;
+        *) usage >&2; exit 2 ;;
     esac
     shift
 done
@@ -73,11 +77,6 @@ if [ "$NODES" -le 0 ]; then
     exit 1
 fi
 
-if [ "$SETUP" = true ]; then
-    echo "Running local setup..."
-    "$(dirname "$0")/setup.sh"
-fi
-
 if [ "$CLEANUP" = true ]; then
     echo "Cleaning up old data..."
   # Stop running containers first to release file locks
@@ -97,29 +96,25 @@ mkdir -p data_v2/metrics-server
 
 # 1. Generate Configuration
 echo "Generating network configuration..."
-"$(dirname "$0")/config_gen.sh" --chain-id "$CHAIN_ID" --nodes "$NODES" --output "startup_v2"
-
-# Ensure SCRIPT_DIR is set (it might have been set in common.sh or previously)
-SCRIPT_DIR_LOCAL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR_LOCAL="$(cd "$SCRIPT_DIR_LOCAL/../.." && pwd)"
+EXPERIMENTS_NETWORK_SUPPORT_DIR="$SCRIPT_DIR" bash <(tr -d '\r' < "$SCRIPT_DIR/config_gen.sh") \
+    --chain-id "$CHAIN_ID" --nodes "$NODES" --output "$REPO_ROOT/startup_v2"
 
 # Copy monitoring configuration
 echo "Setting up monitoring configuration..."
-cp "$SCRIPT_DIR_LOCAL/monitoring/prometheus.yml" "startup_v2/prometheus.yml"
+cp "$SCRIPT_DIR/monitoring/prometheus.yml" "startup_v2/prometheus.yml"
 chmod 644 "startup_v2/prometheus.yml"
-cp -r "$SCRIPT_DIR_LOCAL/monitoring/grafana/provisioning/"* "startup_v2/grafana/provisioning/"
+cp -r "$SCRIPT_DIR/monitoring/grafana/provisioning/"* "startup_v2/grafana/provisioning/"
 chmod -R 755 "startup_v2/grafana/provisioning"
 
 # Copy local monitoring dashboards if they exist
-if [ -d "$SCRIPT_DIR_LOCAL/monitoring/grafana/dashboards" ]; then
-    cp "$SCRIPT_DIR_LOCAL/monitoring/grafana/dashboards"/*.json "startup_v2/grafana/dashboards/" 2>/dev/null || true
+if [ -d "$SCRIPT_DIR/monitoring/grafana/dashboards" ]; then
+    cp "$SCRIPT_DIR/monitoring/grafana/dashboards"/*.json "startup_v2/grafana/dashboards/" 2>/dev/null || true
 fi
 
 # Try to find dashboards in multiple possible locations
 DASHBOARD_SOURCES=(
-    "$ROOT_DIR_LOCAL/wasix_eth/grafana/dashboards"
-    "$ROOT_DIR_LOCAL/grafana/dashboards"
-    "$(dirname "$0")/../../wasix_eth/grafana/dashboards"
+    "$REPO_ROOT/wasix_eth/grafana/dashboards"
+    "$REPO_ROOT/grafana/dashboards"
 )
 
 for src in "${DASHBOARD_SOURCES[@]}"; do
@@ -168,13 +163,13 @@ if [ -n "$METRICS_IMAGE_OVERRIDE" ]; then
     METRICS_BUILD_SECTION="# Explicit metrics image used"
 else
     METRICS_IMAGE="wasix-eth-metrics:latest"
-    METRICS_BUILD_SECTION="build:\n      context: $ROOT_DIR_LOCAL/metrics_server\n      dockerfile: Dockerfile"
+    METRICS_BUILD_SECTION="build:\n      context: $REPO_ROOT/metrics_server\n      dockerfile: Dockerfile"
 fi
 
     # Use sed to replace placeholders
     # We use a literal newline replacement for METRICS_BUILD_SECTION
     # Use a temporary file for sed operations to avoid issues with complex replacements
-    cp "$(dirname "$0")/templates/docker-compose.yml.template" "$COMPOSE_FILE"
+    cp "$SCRIPT_DIR/templates/docker-compose.yml.template" "$COMPOSE_FILE"
     
     # Use a robust way to replace placeholders including multi-line ones
     # We'll use a temporary script to perform the replacement to avoid escaping hell
@@ -817,21 +812,3 @@ done
 verify_geth_mixed_peers
 
 echo "Network started. Use '$COMPOSE_CMD -f $COMPOSE_FILE logs -f' to see logs."
-
-# --- Log Management Section ---
-# This section provides information about log locations and offers a CLI to manage background log dumping.
-
-echo ""
-echo "--- Log Information ---"
-echo "Client node logs are stored in containers and can be viewed using: $COMPOSE_CMD -f $COMPOSE_FILE logs"
-echo "Contender logs are typically output to stdout during execution of run_workload.sh."
-echo "If run_workload.sh was used, you can also check the container logs: docker logs <contender_container_id>"
-echo "Contender state/database is saved in: $(pwd)/.contender_state"
-
-echo ""
-echo "To start continuous background log dumping (splitting every 1000 lines):"
-echo "  $(dirname "$0")/manage_logs.sh start --chain-id $CHAIN_ID"
-echo "To stop it:"
-echo "  $(dirname "$0")/manage_logs.sh stop"
-echo "Logs will be saved in ./logs_dump"
-echo "-----------------------"

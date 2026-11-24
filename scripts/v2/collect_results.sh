@@ -5,7 +5,7 @@ set -e
 # Moves all relevant logs, databases, and state files into a single folder for analysis.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/common.sh"
+source "$SCRIPT_DIR/../../experiments/shared/network/common.sh"
 COMPOSE_FILE="docker-compose.v2.yml"
 if [ ! -f "$COMPOSE_FILE" ]; then
     echo "Error: $COMPOSE_FILE is required to stop the metrics writer safely." >&2

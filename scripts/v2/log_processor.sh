@@ -7,7 +7,8 @@ CHAIN_ID=$1
 LOG_DUMP_DIR=$2
 COMPOSE_FILE="docker-compose.v2.yml"
 
-source "$(dirname "$0")/common.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../../experiments/shared/network/common.sh"
 COMPOSE_CMD=$(get_compose_cmd)
 
 mkdir -p "$LOG_DUMP_DIR"

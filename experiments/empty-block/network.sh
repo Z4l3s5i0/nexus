@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-LEGACY_START="$REPO_ROOT/scripts/v2/start_local.sh"
+NETWORK_START="$REPO_ROOT/experiments/shared/network/launch.sh"
 COMPOSE_FILE="$REPO_ROOT/docker-compose.v2.yml"
 
 compose() {
@@ -58,7 +58,7 @@ start() {
         options+=(--cleanup)
     fi
     cd "$REPO_ROOT"
-    bash "$LEGACY_START" "${options[@]}"
+    bash "$NETWORK_START" "${options[@]}"
 }
 
 stop() {

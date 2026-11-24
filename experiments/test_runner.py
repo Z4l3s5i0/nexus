@@ -16,8 +16,9 @@ class ExperimentRunnerTests(unittest.TestCase):
         scripts = sorted((ROOT / "experiments").rglob("*.sh"))
         for script in scripts:
             with self.subTest(script=script.relative_to(ROOT)):
+                contents = script.read_text(encoding="utf-8").replace("\r\n", "\n")
                 result = subprocess.run(
-                    ["bash", "-n", str(script)], capture_output=True, check=False
+                    ["bash", "-n"], input=contents.encode("utf-8"), capture_output=True, check=False
                 )
                 self.assertEqual(
                     result.returncode,

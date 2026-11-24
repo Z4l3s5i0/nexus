@@ -8,7 +8,7 @@ class ShellSyntaxTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("bash"), "bash is required")
     def test_scripts_parse(self):
         directory = pathlib.Path(__file__).parent
-        for name in ("start_local.sh", "run_experiment.sh", "analyze_experiment.sh",
+        for name in ("run_experiment.sh", "analyze_experiment.sh",
                      "run_experiments_loop.sh", "run_workload.sh", "collect_results.sh",
                      "cleanup.sh", "compare_sizes.sh"):
             with self.subTest(script=name):
