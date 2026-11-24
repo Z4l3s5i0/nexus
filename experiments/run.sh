@@ -11,7 +11,7 @@ export PATH="$CARGO_HOME/bin:$WASMER_DIR/bin:$PATH"
 
 usage() {
     cat <<EOF
-Usage: bash experiments/run.sh [--detach]
+Usage: bash experiments/run.sh [--detach] [--reset-network]
 
 Choose experiments by entering their numbers separated by commas, in the order
 they should run. Enter 6 to run all five in the standard order, or 7 to
@@ -29,6 +29,7 @@ For each selected run, press Enter to use the module's defaults or choose
 custom values before the shared setup starts.
 
   --detach                 Continue the selected suite in a persistent session
+  --reset-network          Allow runtime runs to clear pre-existing generated network data
   --attach SESSION_ID      Reattach to a session's console log
   --stop SESSION_ID        Stop a detached session and its child processes
 EOF
@@ -231,7 +232,7 @@ prompt_secret() {
 }
 
 configure_module() {
-    local experiment="$1" customize result
+    local experiment="$1" customize result reset_network="${RESET_NETWORK:-false}"
     local -n module_args="${experiment//-/_}_args"
     module_args=()
 
@@ -257,18 +258,20 @@ configure_module() {
                 prompt_value wait_duration 'Post-workload collection wait in seconds' 1800 nonnegative || return $?
                 prompt_value chain_id 'Network chain ID' 12345 positive || return $?
                 prompt_value runtime_iterations 'Number of independent runtime iterations' 1 positive || return $?
-                prompt_yes_no reset_network 'Allow clearing generated network state' no || return $?
+                if [[ "$RESET_NETWORK" != true ]]; then
+                    prompt_yes_no reset_network 'Allow clearing generated network state' no || return $?
+                fi
                 module_args=(--linux-nodes "$linux_nodes" --wasix-nodes "$wasix_nodes"
                     --geth-nodes "$geth_nodes" --reth-nodes "$reth_nodes"
                     --accounts "$accounts" --tps "$tps"
                     --duration "$duration" --wait-duration "$wait_duration" --chain-id "$chain_id")
-                [[ "$reset_network" == true ]] && module_args+=(--reset-network)
             else
                 result=$?
                 (( result == 1 )) || return "$result"
                 runtime_iterations=1
                 runtime_workloads=(exp/uber)
             fi
+            [[ "$reset_network" == true ]] && module_args+=(--reset-network)
             ;;
         empty-block)
             if prompt_customize empty-block 'wasix client; counts 0,1,5,10,20,50,100; 3 samples per count; max 5 attempts'; then
@@ -394,34 +397,59 @@ EXPERIMENTS_OUTPUT_ROOT="${EXPERIMENTS_OUTPUT_ROOT:-$REPO_ROOT/experiment-result
 export EXPERIMENTS_OUTPUT_ROOT
 
 DETACH_MODE=false
+RESET_NETWORK=false
 RESUME_SESSION=""
-case "${1:-}" in
-    "") ;;
-    --help|-h) usage; exit 0 ;;
-    --detach)
-        [[ "$#" -eq 1 ]] || { usage >&2; exit 2; }
-        DETACH_MODE=true
-        ;;
-    --attach)
-        [[ "$#" -eq 2 ]] || { echo "Usage: bash experiments/run.sh --attach SESSION_ID" >&2; exit 2; }
-        attach_session "$2"
-        exit $?
-        ;;
-    --stop)
-        [[ "$#" -eq 2 ]] || { echo "Usage: bash experiments/run.sh --stop SESSION_ID" >&2; exit 2; }
-        stop_session "$2"
-        exit $?
-        ;;
-    --resume)
-        [[ "$#" -eq 2 ]] && valid_session_id "$2" || { echo "Error: invalid detached session ID." >&2; exit 2; }
-        RESUME_SESSION="$2"
-        ;;
-    *)
-        echo "Error: this runner accepts only --detach, --attach, or --stop." >&2
-        usage >&2
+CONTROL_ACTION=""
+CONTROL_SESSION=""
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        --help|-h) usage; exit 0 ;;
+        --detach)
+            [[ "$DETACH_MODE" == false ]] || { echo "Error: --detach may only be specified once." >&2; exit 2; }
+            DETACH_MODE=true
+            shift
+            ;;
+        --reset-network)
+            RESET_NETWORK=true
+            shift
+            ;;
+        --attach|--stop|--resume)
+            [[ -z "$CONTROL_ACTION" && "$#" -eq 2 ]] || { usage >&2; exit 2; }
+            CONTROL_ACTION="$1"
+            CONTROL_SESSION="$2"
+            shift 2
+            ;;
+        *)
+            echo "Error: unknown runner option: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+if [[ -n "$CONTROL_ACTION" ]]; then
+    [[ "$DETACH_MODE" == false && "$RESET_NETWORK" == false ]] || {
+        echo "Error: session control options cannot be combined with --detach or --reset-network." >&2
         exit 2
-        ;;
-esac
+    }
+    case "$CONTROL_ACTION" in
+        --attach)
+            attach_session "$CONTROL_SESSION"
+            exit $?
+            ;;
+        --stop)
+            stop_session "$CONTROL_SESSION"
+            exit $?
+            ;;
+        --resume)
+            [[ "$CONTROL_SESSION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || {
+                echo "Error: invalid detached session ID." >&2
+                exit 2
+            }
+            RESUME_SESSION="$CONTROL_SESSION"
+            ;;
+    esac
+fi
 
 if [[ "$DETACH_MODE" == true ]] && { ! command -v setsid >/dev/null 2>&1 || ! command -v nohup >/dev/null 2>&1; }; then
     echo "Error: detached sessions require the setsid and nohup commands." >&2

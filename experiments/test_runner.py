@@ -211,6 +211,12 @@ class ExperimentRunnerTests(unittest.TestCase):
             ],
         )
 
+    def test_reset_network_option_is_forwarded_to_runtime_defaults(self):
+        result, calls = self.run_with_stubs("1", runner_args=["--reset-network"])
+
+        self.assertEqual(result.returncode, 0, f"{result.stderr}\n{result.stdout}")
+        self.assertIn("args:runtime:--reset-network --workload-type exp/uber", calls)
+
     def test_invalid_and_duplicate_selections_are_rejected_then_reprompted(self):
         result, calls = self.run_with_stubs("0\n1,1\n2\n")
 
