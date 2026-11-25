@@ -10,7 +10,7 @@ use wasix_eth_utils::info;
 
 use crate::backend::SputnikBackend;
 use crate::state::StateApplier;
-use crate::transaction::TransactionExecutor;
+use crate::transaction::{SimulationContext, TransactionExecutor};
 use evm_precompile::StandardPrecompileSet;
 use std::collections::{HashMap, HashSet};
 
@@ -70,6 +70,32 @@ impl EvmExecutor {
     ) -> Result<TransactionExecutionResult> {
         let executor = TransactionExecutor::new(batch, env, config, invoker, fork);
         executor.execute_transaction(tx, beneficiary, cumulative_gas_used, state_root, interruption_token)
+    }
+
+    pub fn execute_transaction_with_simulation_context(
+        &self,
+        tx: &Transaction,
+        batch: &BatchWriter,
+        env: &InMemoryEnvironment,
+        config: &Config,
+        invoker: &Invoker<EtableResolver<StandardPrecompileSet, Chained<GasometerEtable, ExecutionEtable>>>,
+        fork: Hardfork,
+        beneficiary: Address,
+        _base_fee: Option<u64>,
+        cumulative_gas_used: &mut u64,
+        state_root: Option<B256>,
+        interruption_token: Option<wasix_eth_types::CancellationToken>,
+        simulation_context: SimulationContext,
+    ) -> Result<TransactionExecutionResult> {
+        let executor = TransactionExecutor::new(batch, env, config, invoker, fork);
+        executor.execute_transaction_with_simulation_context(
+            tx,
+            beneficiary,
+            cumulative_gas_used,
+            state_root,
+            interruption_token,
+            simulation_context,
+        )
     }
 
     pub fn execute_system_call(

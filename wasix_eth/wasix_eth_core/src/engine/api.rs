@@ -6,6 +6,7 @@ use alloy_rlp::Encodable;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use wasix_eth_execution::execution_provider::{ExecutionProvider, TransactValueCallCreate};
+use wasix_eth_execution::transaction::SimulationContext;
 use wasix_eth_storage::read::DatabaseReadProvider;
 use wasix_eth_storage::read_traits::AccountProvider;
 use wasix_eth_storage::read_traits::BlockProvider;
@@ -200,13 +201,14 @@ impl RPCEngine {
             .map_err(|e| RpcError::Internal(e.to_string()))?
             .ok_or(RpcError::BlockNotFound(block_id))?;
 
-        let signature = Signature::test_signature();
-        let hash = B256::ZERO;
+        let (tx_envelope, simulation_context) = self.build_simulation_transaction(request, header.state_root)?;
 
-        let tx_envelope = self.build_transaction_envelope(request, signature, hash)
-            .map_err(|e| RpcError::Internal(format!("Failed to build transaction envelope: {:?}", e)))?;
-
-        let result = self.execution.run_simulation_with_state_root(vec![tx_envelope], block, Some(header.state_root)).map(|v| v.0.into_iter().next().unwrap())
+        let result = self.execution.run_simulation_with_state_root_and_context(
+            vec![tx_envelope],
+            block,
+            Some(header.state_root),
+            simulation_context,
+        ).map(|v| v.0.into_iter().next().unwrap())
             .map_err(|e| RpcError::Internal(e.to_string()))?;
         Ok(U256::from(result.gas_used))
     }
@@ -221,14 +223,14 @@ impl RPCEngine {
             .map_err(|e| RpcError::Internal(e.to_string()))?
             .ok_or(RpcError::BlockNotFound(block_id))?;
 
-        // Use a test signature for simulation since it won't be verified for `call`
-        let signature = Signature::test_signature();
-        let hash = B256::ZERO;
+        let (tx_envelope, simulation_context) = self.build_simulation_transaction(request, header.state_root)?;
 
-        let tx_envelope = self.build_transaction_envelope(request, signature, hash)
-            .map_err(|e| RpcError::Internal(format!("Failed to build transaction envelope: {:?}", e)))?;
-
-        let result = self.execution.run_simulation_with_state_root(vec![tx_envelope], block, Some(header.state_root))
+        let result = self.execution.run_simulation_with_state_root_and_context(
+            vec![tx_envelope],
+            block,
+            Some(header.state_root),
+            simulation_context,
+        )
             .map(|v| v.0.into_iter().next().unwrap()).map_err(|e| RpcError::Internal(e.to_string()))?;
 
         match result.call_create {
@@ -615,6 +617,35 @@ impl RPCEngine {
         let value = self.read_storage.storage(address, slot, state_root).map_err(|e| RpcError::Internal(e.to_string()))?;
         Ok(B256::from(value.to_be_bytes()))
     }
+
+    fn build_simulation_transaction(
+        &self,
+        mut request: TransactionRequest,
+        state_root: B256,
+    ) -> RpcResult<(Transaction, SimulationContext)> {
+        let caller = if let Some(caller) = request.from {
+            caller
+        } else {
+            let mut default_request = request.clone();
+            default_request.nonce = Some(0);
+            self.build_transaction_envelope(default_request, Signature::test_signature(), B256::ZERO)
+                .map_err(|e| RpcError::Internal(format!("Failed to build transaction envelope: {:?}", e)))?
+                .recover_signer()
+                .map_err(|e| RpcError::Internal(format!("Failed to recover simulation caller: {:?}", e)))?
+        };
+
+        if request.nonce.is_none() {
+            let account = self.read_storage.account(caller, Some(state_root))
+                .map_err(|e| RpcError::Internal(e.to_string()))?;
+            request.nonce = Some(account.map(|account| account.nonce).unwrap_or_default());
+        }
+
+        let transaction = self.build_transaction_envelope(request, Signature::test_signature(), B256::ZERO)
+            .map_err(|e| RpcError::Internal(format!("Failed to build transaction envelope: {:?}", e)))?;
+
+        Ok((transaction, SimulationContext { caller }))
+    }
+
     fn build_transaction_envelope(&self, request: TransactionRequest, signature: Signature, hash: FixedBytes<32>) -> Result<Transaction, RpcError> {
         let tx_envelope = if let (Some(max_fee), Some(max_priority)) = (request.max_fee_per_gas, request.max_priority_fee_per_gas) {
             let tx = TxEip1559 {

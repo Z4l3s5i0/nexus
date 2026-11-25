@@ -15,6 +15,11 @@ use anyhow::Result;
 use std::collections::HashSet;
 use evm_precompile::StandardPrecompileSet;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SimulationContext {
+    pub caller: Address,
+}
+
 pub struct TransactionExecutor<'a> {
     pub batch: &'a BatchWriter,
     pub env: &'a InMemoryEnvironment,
@@ -42,15 +47,51 @@ impl<'a> TransactionExecutor<'a> {
         state_root: Option<B256>,
         interruption_token: Option<wasix_eth_types::CancellationToken>,
     ) -> Result<TransactionExecutionResult> {
+        self.execute_transaction_with_context(
+            tx,
+            beneficiary,
+            cumulative_gas_used,
+            state_root,
+            interruption_token,
+            None,
+        )
+    }
+
+    pub fn execute_transaction_with_simulation_context(
+        &self,
+        tx: &Transaction,
+        beneficiary: Address,
+        cumulative_gas_used: &mut u64,
+        state_root: Option<B256>,
+        interruption_token: Option<wasix_eth_types::CancellationToken>,
+        simulation_context: SimulationContext,
+    ) -> Result<TransactionExecutionResult> {
+        self.execute_transaction_with_context(
+            tx,
+            beneficiary,
+            cumulative_gas_used,
+            state_root,
+            interruption_token,
+            Some(simulation_context),
+        )
+    }
+
+    fn execute_transaction_with_context(
+        &self,
+        tx: &Transaction,
+        beneficiary: Address,
+        cumulative_gas_used: &mut u64,
+        state_root: Option<B256>,
+        interruption_token: Option<wasix_eth_types::CancellationToken>,
+        simulation_context: Option<SimulationContext>,
+    ) -> Result<TransactionExecutionResult> {
         let recovered = tx.clone().try_into_recovered().map_err(|e| anyhow::anyhow!("Failed to recover signer: {}", e))?;
-        let sender = recovered.signer();
+        let sender = simulation_context.map(|context| context.caller).unwrap_or_else(|| recovered.signer());
         
         self.validate_transaction_with_state(tx, sender, state_root)?;
         
         let start_time = std::time::Instant::now();
 
-        let recovered = tx.clone().try_into_recovered().map_err(|e| anyhow::anyhow!("Failed to recover signer: {}", e))?;
-        let sender = recovered.signer();
         let tx_hash_final = recovered.hash();
 
         exp!("[EXP] TX_EXEC_START hash={:?} sender={:?} nonce={}", tx_hash_final, sender, recovered.nonce());

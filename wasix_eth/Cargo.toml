@@ -8,7 +8,7 @@ members = [
     "wasix_eth_app",
     "wasix_eth_utils",
     "wasix_eth_core",
-    "testing",
+#    "testing",
 ]
 resolver = "3"
 

@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::prepare_execution_env;
 pub use crate::executor::{EvmExecutor, TransactionExecutionResult};
+use crate::transaction::SimulationContext;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ExecutionMeasurements {
@@ -94,6 +95,16 @@ pub trait ExecutionProvider: Send + Sync {
         block: Block<Transaction>,
         state_root: Option<B256>,
     ) -> Result<(Vec<TransactionExecutionResult>, Block<Transaction>)>;
+
+    fn run_simulation_with_state_root_and_context(
+        &self,
+        _transactions: Vec<Transaction>,
+        _block: Block<Transaction>,
+        _state_root: Option<B256>,
+        _simulation_context: SimulationContext,
+    ) -> Result<(Vec<TransactionExecutionResult>, Block<Transaction>)> {
+        Err(anyhow::anyhow!("Simulation context is not supported by this execution provider"))
+    }
 }
 
 pub struct EthExecutionProvider {
@@ -499,6 +510,7 @@ impl EthExecutionProvider {
         apply_changes: bool,
         state_root: Option<B256>,
         is_simulation: bool,
+        simulation_context: Option<SimulationContext>,
     ) -> Result<(Vec<TransactionExecutionResult>, Block<Transaction>)> {
         let batch = self.write_storage.begin_batch()?;
 
@@ -518,26 +530,46 @@ impl EthExecutionProvider {
 
         for tx in transactions {
             if is_simulation {
-                if let Some(from) = tx.recover_signer().ok() {
+                let simulation_sender = simulation_context
+                    .map(|context| context.caller)
+                    .or_else(|| tx.recover_signer().ok());
+                if let Some(from) = simulation_sender {
                     let mut acc = batch.account(from, state_root)?.unwrap_or_default();
                     acc.balance = alloy_primitives::U256::from(10u128.pow(30));
                     batch.update_account(from, acc.into())?;
                 }
             }
 
-            let result = self.executor.execute_transaction(
-                &tx,
-                &batch,
-                &env,
-                &config,
-                &invoker,
-                fork,
-                block.header.beneficiary,
-                block.header.base_fee_per_gas,
-                &mut cumulative_gas_used,
-                state_root,
-                None,
-            )?;
+            let result = if let Some(context) = simulation_context {
+                self.executor.execute_transaction_with_simulation_context(
+                    &tx,
+                    &batch,
+                    &env,
+                    &config,
+                    &invoker,
+                    fork,
+                    block.header.beneficiary,
+                    block.header.base_fee_per_gas,
+                    &mut cumulative_gas_used,
+                    state_root,
+                    None,
+                    context,
+                )?
+            } else {
+                self.executor.execute_transaction(
+                    &tx,
+                    &batch,
+                    &env,
+                    &config,
+                    &invoker,
+                    fork,
+                    block.header.beneficiary,
+                    block.header.base_fee_per_gas,
+                    &mut cumulative_gas_used,
+                    state_root,
+                    None,
+                )?
+            };
 
             receipts.push(result.receipt.clone());
             results.push(result);
@@ -1085,7 +1117,7 @@ impl ExecutionProvider for EthExecutionProvider {
         apply_changes: bool,
         state_root: Option<B256>,
     ) -> Result<(Vec<TransactionExecutionResult>, Block<Transaction>)> {
-        self.ocean_execution_core_logic(transactions, block, apply_changes, state_root, false)
+        self.ocean_execution_core_logic(transactions, block, apply_changes, state_root, false, None)
     }
 
     fn run_simulation_with_state_root(
@@ -1094,6 +1126,23 @@ impl ExecutionProvider for EthExecutionProvider {
         block: Block<Transaction>,
         state_root: Option<B256>,
     ) -> Result<(Vec<TransactionExecutionResult>, Block<Transaction>)> {
-        self.ocean_execution_core_logic(transactions, block, false, state_root, true)
+        self.ocean_execution_core_logic(transactions, block, false, state_root, true, None)
+    }
+
+    fn run_simulation_with_state_root_and_context(
+        &self,
+        transactions: Vec<Transaction>,
+        block: Block<Transaction>,
+        state_root: Option<B256>,
+        simulation_context: SimulationContext,
+    ) -> Result<(Vec<TransactionExecutionResult>, Block<Transaction>)> {
+        self.ocean_execution_core_logic(
+            transactions,
+            block,
+            false,
+            state_root,
+            true,
+            Some(simulation_context),
+        )
     }
 }
