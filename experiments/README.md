@@ -8,7 +8,7 @@ bash experiments/run.sh
 
 Enter a comma-separated selection such as `3,1,5` to run startup, runtime, then size comparison. For reevaluation, enter `7` and then select `1–5`, a comma-separated list, or `6` for all module types. Evaluation regenerates reports for every saved run directory under the selected modules in `experiment-results/`; the saved samples and measurements are reused, and no clients, workloads, Hive suites, or source measurements are rerun. Missing/incomplete results are reported as errors while other selected runs are still checked. `bash experiments/run.sh --help` displays the menu. `experiments/setup.sh` can also be run directly; without the runner’s selection it prepares dependencies for all five modules.
 
-Pass `--reset-network` to `experiments/run.sh` to allow runtime runs to clear pre-existing generated network data, including when accepting the default runtime configuration. It can be combined with `--detach`.
+Pass `--reset-network` to `experiments/run.sh` to allow runtime and empty-block runs to clear pre-existing generated network data, including when accepting their default configurations. For empty-block, this also skips the separate reset-consent prompt. It can be combined with `--detach`.
 
 Each experiment run writes result artifacts to `experiment-results/<module>/<run-id>/`. The runner exports a common base `EXPERIMENT_RUN_ID` and output root to all selected modules; empty-block derives a distinct run ID for each selected client. Generated result directories are ignored by Git; source scripts under `experiments/` are tracked.
 

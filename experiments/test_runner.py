@@ -266,6 +266,20 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, f"{result.stderr}\n{result.stdout}")
         self.assertIn("args:runtime:--reset-network --workload-type exp/uber", calls)
 
+    def test_reset_network_option_is_forwarded_to_empty_block_defaults(self):
+        result, calls = self.run_with_stubs("2", runner_args=["--reset-network"])
+
+        self.assertEqual(result.returncode, 0, f"{result.stderr}\n{result.stdout}")
+        self.assertEqual(
+            [call for call in calls if call.startswith("args:empty-block:")],
+            [
+                "args:empty-block:--client native --reset-network",
+                "args:empty-block:--client wasix --reset-network",
+                "args:empty-block:--client geth --reset-network",
+                "args:empty-block:--client reth --reset-network",
+            ],
+        )
+
     def test_invalid_and_duplicate_selections_are_rejected_then_reprompted(self):
         result, calls = self.run_with_stubs("0\n1,1\n2\n")
 

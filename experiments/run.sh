@@ -29,7 +29,7 @@ For each selected run, press Enter to use the module's defaults or choose
 custom values before the shared setup starts.
 
   --detach                 Continue the selected suite in a persistent session
-  --reset-network          Allow runtime runs to clear pre-existing generated network data
+  --reset-network          Allow runtime and empty-block runs to clear generated network data
   --attach SESSION_ID      Reattach to a session's console log
   --stop SESSION_ID        Stop a detached session and its child processes
 EOF
@@ -215,7 +215,7 @@ validate_counts() {
 
 configure_module() {
     local experiment="$1" customize result reset_network="${RESET_NETWORK:-false}"
-    local has_nonzero_count=false eb_clients eb_clients_normalized eb_client eb_workload startup_configs_default startup_wasix_eth_root startup_wasix_wasm_default
+    local has_nonzero_count=false eb_clients eb_clients_normalized eb_client eb_workload eb_reset_network startup_configs_default startup_wasix_eth_root startup_wasix_wasm_default
     local -n module_args="${experiment//-/_}_args"
     module_args=()
 
@@ -257,6 +257,7 @@ configure_module() {
             [[ "$reset_network" == true ]] && module_args+=(--reset-network)
             ;;
         empty-block)
+            eb_reset_network="$reset_network"
             source "$REPO_ROOT/experiments/empty-block/defaults.sh"
             empty_block_clients=(native wasix geth reth)
             if prompt_customize empty-block 'native, wasix, geth, and reth clients; counts 0,1,5,10,20,50,100; 3 samples per count; max 5 attempts'; then
@@ -287,7 +288,9 @@ configure_module() {
                 prompt_value eb_receipt_timeout 'Receipt timeout in seconds' 180 positive || return $?
                 prompt_value eb_block_timeout 'Block timeout in seconds' 120 positive || return $?
                 prompt_value eb_poll_interval 'RPC poll interval in seconds' 1 positive_decimal || return $?
-                prompt_yes_no eb_reset_network 'Allow clearing generated network state' no || return $?
+                if [[ "$reset_network" != true ]]; then
+                    prompt_yes_no eb_reset_network 'Allow clearing generated network state' no || return $?
+                fi
                 while true; do
                     prompt_value eb_workload 'Contract workload (none, counter, dota, uber)' none text || return $?
                     case "$eb_workload" in none|counter|dota|uber) break ;; esac
@@ -298,11 +301,11 @@ configure_module() {
                     --receipt-timeout "$eb_receipt_timeout" --block-timeout "$eb_block_timeout"
                     --poll-interval "$eb_poll_interval")
                 [[ "$eb_workload" == none ]] || module_args+=(--workload "$eb_workload")
-                [[ "$eb_reset_network" == true ]] && module_args+=(--reset-network)
             else
                 result=$?
                 (( result == 1 )) || return "$result"
             fi
+            [[ "$eb_reset_network" == true ]] && module_args+=(--reset-network)
             if [[ -z "${EB_PRIVATE_KEY:-}" && ( ${#module_args[@]} -eq 0 || "$has_nonzero_count" == true ) ]]; then
                 EB_PRIVATE_KEY="$EMPTY_BLOCK_DEFAULT_PRIVATE_KEY"
             fi
