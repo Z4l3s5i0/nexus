@@ -26,6 +26,11 @@ def build_report(output_dir):
     system_samples = read_jsonl(output_dir / "system_metric_samples.jsonl")
     log_samples = read_jsonl(output_dir / "log_metric_samples.jsonl")
     derived_samples = read_jsonl(output_dir / "derived_metric_samples.jsonl")
+    latency_rows = []
+    latency_path = output_dir / "transaction_inclusion_samples.csv"
+    if latency_path.is_file():
+        with latency_path.open(newline="", encoding="utf-8") as source:
+            latency_rows = list(csv.DictReader(source))
     rows = []
     samples_path = output_dir / "samples.csv"
     if samples_path.is_file():
@@ -54,6 +59,33 @@ def build_report(output_dir):
             "observed": bool(times),
             "mean": statistics.mean(times) if times else None,
         }
+    latencies_by_type = {}
+    for row in latency_rows:
+        try:
+            latency = float(row["inclusion_latency_ms"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        transaction_type = row.get("transaction_type") or "unknown"
+        summary = latencies_by_type.setdefault(
+            transaction_type, {"values": [], "workloads": set(), "failed_observations": 0}
+        )
+        summary["values"].append(latency)
+        summary["workloads"].add(row.get("workload") or "none")
+        if str(row.get("status") or "").lower() in ("0x0", "0"):
+            summary["failed_observations"] += 1
+    transaction_inclusion_latency = {}
+    for transaction_type, latency_data in latencies_by_type.items():
+        latencies = latency_data["values"]
+        ordered = sorted(latencies)
+        p95_index = max(0, (95 * len(ordered) + 99) // 100 - 1)
+        transaction_inclusion_latency[transaction_type] = {
+            "observations": len(ordered),
+            "failed_observations": latency_data["failed_observations"],
+            "workload": ", ".join(sorted(latency_data["workloads"])) or metadata.get("workload", "none"),
+            "mean_ms": statistics.mean(ordered),
+            "median_ms": statistics.median(ordered),
+            "p95_ms": ordered[p95_index],
+        }
     sweep = metadata.get("sweep", {})
     expected_samples = sweep.get("blocks_per_count", 0)
     for target in sweep.get("transaction_counts", []):
@@ -74,6 +106,9 @@ def build_report(output_dir):
         "registered": metadata.get("registered", False),
         "sample_count": len(rows),
         "by_target_transaction_count": grouped,
+        "workload": metadata.get("workload", "none"),
+        "contract_deployment": metadata.get("contract_deployment"),
+        "transaction_inclusion_latency": transaction_inclusion_latency,
         "block_metric_coverage": block_coverage.get("fields", {}),
         "log_metric_coverage": log_coverage.get("requested_fields", {}),
         "node_metric_coverage": node_coverage.get("nodes", []),
@@ -101,6 +136,7 @@ def build_report(output_dir):
         f"- Client variant: `{metadata.get('client_variant', 'unavailable')}`",
         f"- Node: `{coverage['node_id']}` (registered: `{metadata.get('registered', False)}`)",
         f"- Chain ID: `{metadata['chain_id']}`",
+        f"- Contract workload: `{metadata.get('workload', 'none')}`",
         f"- Run exit status: `{run_status.get('status', 0)}`",
         f"- Block samples: `{len(rows)}`",
         "",
@@ -117,6 +153,20 @@ def build_report(output_dir):
             )
     else:
         lines.append("- No block samples were written.")
+    lines.extend(["", "## Transaction inclusion latency", ""])
+    if transaction_inclusion_latency:
+        for transaction_type, summary in sorted(transaction_inclusion_latency.items()):
+            lines.append(
+                f"- `{transaction_type}` ({summary['workload']}): {summary['observations']} observations; "
+                f"mean `{summary['mean_ms']:.3f}` ms, median `{summary['median_ms']:.3f}` ms, "
+                f"p95 `{summary['p95_ms']:.3f}` ms; {summary['failed_observations']} reverted."
+            )
+        lines.append(
+            "Latency is measured from the client-side submission start until the first receipt poll observes inclusion; "
+            "the configured polling interval contributes observation delay."
+        )
+    else:
+        lines.append("- No transaction inclusion latency observations were recorded.")
     lines.extend(["", "## Metric availability", ""])
     for category, fields in (
         ("RPC-derived block metrics", coverage["block_metric_coverage"]),

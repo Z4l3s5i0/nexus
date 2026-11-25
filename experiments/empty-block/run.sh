@@ -15,6 +15,7 @@ MAX_ATTEMPTS=5
 RECEIPT_TIMEOUT=180
 BLOCK_TIMEOUT=120
 POLL_INTERVAL=1
+WORKLOAD=none
 PRIVATE_KEY="${EB_PRIVATE_KEY:-$EMPTY_BLOCK_DEFAULT_PRIVATE_KEY}"
 RESET_NETWORK=false
 NETWORK_STARTED=false
@@ -34,6 +35,7 @@ Options:
   --receipt-timeout SECS   Receipt wait timeout (default: $RECEIPT_TIMEOUT)
   --block-timeout SECS     New block timeout (default: $BLOCK_TIMEOUT)
   --poll-interval SECS     RPC poll interval (default: $POLL_INTERVAL)
+  --workload TYPE         none, counter, dota, or uber contract calls (default: $WORKLOAD)
   --private-key KEY        Override the default local Anvil key; EB_PRIVATE_KEY is also supported
   --reset-network          Allow the local launcher to remove pre-existing generated data
   --help                   Show this help
@@ -52,6 +54,7 @@ while [[ "$#" -gt 0 ]]; do
         --receipt-timeout) RECEIPT_TIMEOUT="$2"; shift 2 ;;
         --block-timeout) BLOCK_TIMEOUT="$2"; shift 2 ;;
         --poll-interval) POLL_INTERVAL="$2"; shift 2 ;;
+        --workload) WORKLOAD="$2"; shift 2 ;;
         --private-key) PRIVATE_KEY="$2"; shift 2 ;;
         --reset-network) RESET_NETWORK=true; shift ;;
         --help|-h) usage; exit 0 ;;
@@ -65,6 +68,10 @@ case "$CLIENT" in
     geth) CLIENT_LABEL=geth ;;
     reth) CLIENT_LABEL=reth ;;
     *) echo "Error: --client must be native, wasix, geth, or reth." >&2; exit 2 ;;
+esac
+case "$WORKLOAD" in
+    none|counter|dota|uber) ;;
+    *) echo "Error: --workload must be none, counter, dota, or uber." >&2; exit 2 ;;
 esac
 [[ "$CHAIN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "Error: --chain-id must be a positive integer." >&2; exit 2; }
 [[ "$BLOCKS_PER_COUNT" =~ ^[1-9][0-9]*$ && "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || {
@@ -84,6 +91,7 @@ fi
 export EB_PRIVATE_KEY="$PRIVATE_KEY"
 python3 "$SCRIPT_DIR/run_experiment.py" \
     --validate-only --counts "$COUNTS" --private-key "$PRIVATE_KEY" \
+    --workload "$WORKLOAD" \
     --rpc-url "http://127.0.0.1:8545" --chain-id "$CHAIN_ID" \
     --blocks-per-count "$BLOCKS_PER_COUNT" --max-attempts "$MAX_ATTEMPTS" \
     --receipt-timeout "$RECEIPT_TIMEOUT" --block-timeout "$BLOCK_TIMEOUT" \
@@ -160,6 +168,7 @@ fi
 python3 "$SCRIPT_DIR/capture_metadata.py" \
     --output "$OUTPUT_DIR/metadata.json" --experiment-id "$RUN_ID" \
     --chain-id "$CHAIN_ID" --client-label "$CLIENT_LABEL" --client-variant "$CLIENT" \
+    --workload "$WORKLOAD" \
     --counts "$COUNTS" --blocks-per-count "$BLOCKS_PER_COUNT" --max-attempts "$MAX_ATTEMPTS"
 NODE_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("node_id") or "el-node-0")' "$OUTPUT_DIR/metadata.json")"
 NETWORK_NAME="$(docker compose -f "$REPO_ROOT/docker-compose.v2.yml" ps -q el-node-0 | xargs -r docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}')"
@@ -184,9 +193,11 @@ python3 "$SCRIPT_DIR/run_experiment.py" \
     --cast-network "$NETWORK_NAME" --private-key "$PRIVATE_KEY" \
     --chain-id "$CHAIN_ID" --experiment-id "$RUN_ID" \
     --client "$CLIENT_LABEL" --client-variant "$CLIENT" --node-id "$NODE_ID" \
+    --workload "$WORKLOAD" \
     --counts "$COUNTS" --blocks-per-count "$BLOCKS_PER_COUNT" --max-attempts "$MAX_ATTEMPTS" \
     --receipt-timeout "$RECEIPT_TIMEOUT" --block-timeout "$BLOCK_TIMEOUT" \
     --poll-interval "$POLL_INTERVAL" --output "$OUTPUT_DIR/block_samples.csv" \
+    --inclusion-output "$OUTPUT_DIR/transaction_inclusion_samples.csv" \
     || RUN_STATUS=$?
 
 if [[ -n "$SYSTEM_COLLECTOR_PID" ]]; then

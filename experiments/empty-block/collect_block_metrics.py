@@ -13,7 +13,7 @@ sys.path.insert(0, str(RUNTIME_HELPERS))
 from metrics_api import ingest_samples, metric_sample
 
 
-def derive_block_samples(rows, metadata, experiment_id):
+def derive_block_samples(rows, metadata, experiment_id, latency_rows=()):
     client = metadata.get("client", "unavailable")
     node_id = metadata.get("node_id") or "el-node-0"
     network = str(metadata["chain_id"])
@@ -103,10 +103,54 @@ def derive_block_samples(rows, metadata, experiment_id):
             )
         )
 
+    for row in latency_rows:
+        try:
+            latency_ms = float(row["inclusion_latency_ms"])
+            if row.get("included_at_epoch"):
+                timestamp_ms = int(float(row["included_at_epoch"]) * 1000)
+            elif row.get("included_at_utc"):
+                timestamp_ms = int(datetime.fromisoformat(row["included_at_utc"].replace("Z", "+00:00")).timestamp() * 1000)
+            else:
+                timestamp_ms = int(float(row.get("block_timestamp", 0)) * 1000)
+            if latency_ms < 0 or timestamp_ms <= 0:
+                continue
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        labels = {
+            "transaction_type": row.get("transaction_type", "unknown"),
+            "workload": row.get("workload", "") or "none",
+            "transaction_status": (
+                "failed" if str(row.get("status") or "").lower() in ("0x0", "0")
+                else "success" if str(row.get("status") or "").lower() in ("0x1", "1")
+                else "unknown"
+            ),
+            "basis": "submission start to first receipt observation",
+            "runtime_variant": client_variant,
+        }
+        if row.get("target_tx_count"):
+            labels["target_tx_count"] = row["target_tx_count"]
+        if row.get("attempt"):
+            labels["attempt"] = row["attempt"]
+        if row.get("block_number"):
+            labels["block_number"] = row["block_number"]
+        samples.append(
+            metric_sample(
+                timestamp_ms,
+                experiment_id,
+                node_id,
+                network,
+                client,
+                "Derived",
+                "empty_block_transaction_inclusion_latency_ms",
+                latency_ms,
+                labels,
+            )
+        )
+
     names = {sample["name"] for sample in samples}
     fields = (
         "actual_transaction_count", "target_transaction_count", "matched_block",
-        "block_timestamp", "tps", "commit_to_submit_ratio",
+        "block_timestamp", "tps", "commit_to_submit_ratio", "transaction_inclusion_latency",
     )
     coverage = {
         field: "observed" if metric_name in names else "unavailable"
@@ -115,7 +159,7 @@ def derive_block_samples(rows, metadata, experiment_id):
             (
                 "empty_block_actual_transaction_count", "empty_block_target_transaction_count",
                 "empty_block_block_matched", "empty_block_timestamp_seconds", "empty_block_tps",
-                "empty_block_commit_to_submit_ratio",
+                "empty_block_commit_to_submit_ratio", "empty_block_transaction_inclusion_latency_ms",
             ),
         )
     }
@@ -129,7 +173,12 @@ def collect(args):
     if input_path.is_file():
         with input_path.open(newline="", encoding="utf-8") as source:
             rows = list(csv.DictReader(source))
-    samples, coverage = derive_block_samples(rows, metadata, args.experiment_id)
+    latency_rows = []
+    latency_path = Path(args.samples).with_name("transaction_inclusion_samples.csv")
+    if latency_path.is_file():
+        with latency_path.open(newline="", encoding="utf-8") as source:
+            latency_rows = list(csv.DictReader(source))
+    samples, coverage = derive_block_samples(rows, metadata, args.experiment_id, latency_rows)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     with (output_dir / "derived_metric_samples.jsonl").open("w", encoding="utf-8") as output:

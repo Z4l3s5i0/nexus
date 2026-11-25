@@ -256,6 +256,14 @@ def parse_logs(args):
         selected_blocks.add(row["block_number"])
         for field in ("transaction_hashes", "submitted_transaction_hashes"):
             relevant_hashes.update(tx_hash for tx_hash in row.get(field, "").split(";") if tx_hash)
+    inclusion_path = input_csv.with_name("transaction_inclusion_samples.csv")
+    if inclusion_path.is_file():
+        with inclusion_path.open(newline="", encoding="utf-8") as source:
+            for row in csv.DictReader(source):
+                if row.get("tx_hash"):
+                    relevant_hashes.add(row["tx_hash"])
+                if row.get("block_number"):
+                    selected_blocks.add(row["block_number"])
 
     execution_times = load_execution_times(log_path)
     output_dir = Path(args.output_dir)

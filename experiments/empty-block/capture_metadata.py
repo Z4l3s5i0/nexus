@@ -48,6 +48,7 @@ def capture(args):
         "chain_id": args.chain_id,
         "client": registered.get("client") if registered else args.client_label,
         "client_variant": args.client_variant,
+        "workload": args.workload,
         "sweep": {
             "transaction_counts": [int(value) for value in args.counts.split(",")],
             "blocks_per_count": args.blocks_per_count,
@@ -81,6 +82,7 @@ def main():
     parser.add_argument("--chain-id", type=int, required=True)
     parser.add_argument("--client-label", required=True)
     parser.add_argument("--client-variant", required=True)
+    parser.add_argument("--workload", choices=("none", "counter", "dota", "uber"), default="none")
     parser.add_argument("--counts", required=True)
     parser.add_argument("--blocks-per-count", type=int, required=True)
     parser.add_argument("--max-attempts", type=int, required=True)

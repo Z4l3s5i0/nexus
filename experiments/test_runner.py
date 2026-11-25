@@ -235,7 +235,7 @@ class ExperimentRunnerTests(unittest.TestCase):
             self.assertIn(f"empty-block/run-test-run-empty-block-{client}.log", self.last_logs)
 
     def test_custom_empty_block_configuration_can_run_multiple_clients(self):
-        answers = "y\ngeth,reth\n23456\n0,1,5\n2\n3\n30\n20\n0.5\nn\n"
+        answers = "y\ngeth,reth\n23456\n0,1,5\n2\n3\n30\n20\n0.5\nn\nnone\n"
         result, calls = self.run_with_stubs("2", config_answers=answers)
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -248,6 +248,17 @@ class ExperimentRunnerTests(unittest.TestCase):
         )
         self.assertIn("empty-block/run-test-run-empty-block-geth.log", self.last_logs)
         self.assertIn("empty-block/run-test-run-empty-block-reth.log", self.last_logs)
+
+    def test_custom_empty_block_configuration_forwards_contract_workload(self):
+        answers = "y\ngeth\n23456\n1,5\n1\n2\n30\n20\n0.5\nn\nuber\n"
+        result, calls = self.run_with_stubs("2", config_answers=answers)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "args:empty-block:--client geth --chain-id 23456 --counts 1,5 --blocks-per-count 1 "
+            "--max-attempts 2 --receipt-timeout 30 --block-timeout 20 --poll-interval 0.5 --workload uber",
+            calls,
+        )
 
     def test_reset_network_option_is_forwarded_to_runtime_defaults(self):
         result, calls = self.run_with_stubs("1", runner_args=["--reset-network"])
@@ -328,7 +339,7 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertTrue(any(call.startswith("args:runtime:--linux-nodes 1") for call in calls))
 
     def test_custom_empty_block_configuration_forwards_options_and_keeps_key_from_setup(self):
-        answers = "y\ngeth\n23456\n0,1,5\n2\n3\n30\n20\n0.5\nn\n"
+        answers = "y\ngeth\n23456\n0,1,5\n2\n3\n30\n20\n0.5\nn\nnone\n"
         result, calls = self.run_with_stubs("2", config_answers=answers)
 
         self.assertEqual(result.returncode, 0, result.stderr)

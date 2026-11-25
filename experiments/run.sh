@@ -215,7 +215,7 @@ validate_counts() {
 
 configure_module() {
     local experiment="$1" customize result reset_network="${RESET_NETWORK:-false}"
-    local has_nonzero_count=false eb_clients eb_clients_normalized eb_client startup_configs_default startup_wasix_eth_root startup_wasix_wasm_default
+    local has_nonzero_count=false eb_clients eb_clients_normalized eb_client eb_workload startup_configs_default startup_wasix_eth_root startup_wasix_wasm_default
     local -n module_args="${experiment//-/_}_args"
     module_args=()
 
@@ -288,10 +288,16 @@ configure_module() {
                 prompt_value eb_block_timeout 'Block timeout in seconds' 120 positive || return $?
                 prompt_value eb_poll_interval 'RPC poll interval in seconds' 1 positive_decimal || return $?
                 prompt_yes_no eb_reset_network 'Allow clearing generated network state' no || return $?
+                while true; do
+                    prompt_value eb_workload 'Contract workload (none, counter, dota, uber)' none text || return $?
+                    case "$eb_workload" in none|counter|dota|uber) break ;; esac
+                    echo 'Choose none, counter, dota, or uber.' >&2
+                done
                 module_args=(--chain-id "$eb_chain_id" --counts "$eb_counts"
                     --blocks-per-count "$eb_blocks" --max-attempts "$eb_attempts"
                     --receipt-timeout "$eb_receipt_timeout" --block-timeout "$eb_block_timeout"
                     --poll-interval "$eb_poll_interval")
+                [[ "$eb_workload" == none ]] || module_args+=(--workload "$eb_workload")
                 [[ "$eb_reset_network" == true ]] && module_args+=(--reset-network)
             else
                 result=$?

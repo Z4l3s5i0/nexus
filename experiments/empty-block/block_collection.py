@@ -41,23 +41,29 @@ def block_details(rpc_url, number, timeout):
     return block_transaction_count(block), int(block["timestamp"], 16)
 
 
-def wait_for_receipts(rpc_url, tx_hashes, timeout, poll_interval):
+def wait_for_receipts(
+    rpc_url, tx_hashes, timeout, poll_interval, include_observation_times=False, allow_failed_receipts=False
+):
     deadline = time.monotonic() + timeout
     receipts = {}
+    observed_times = {}
     while len(receipts) < len(tx_hashes):
         for tx_hash in tx_hashes:
             if tx_hash in receipts:
                 continue
             receipt = rpc_call(rpc_url, "eth_getTransactionReceipt", [tx_hash], min(timeout, 30))
             if receipt is not None:
-                if receipt.get("status") not in (None, "0x1"):
+                if receipt.get("status") not in (None, "0x1") and not allow_failed_receipts:
                     raise RuntimeError(f"transaction {tx_hash} failed")
                 receipts[tx_hash] = receipt
+                observed_times[tx_hash] = {"monotonic": time.monotonic(), "epoch": time.time()}
         if len(receipts) < len(tx_hashes):
             if time.monotonic() >= deadline:
                 missing = len(tx_hashes) - len(receipts)
                 raise TimeoutError(f"timed out waiting for {missing} transaction receipt(s)")
             time.sleep(poll_interval)
+    if include_observation_times:
+        return receipts, observed_times
     return receipts
 
 
