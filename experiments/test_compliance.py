@@ -1,11 +1,13 @@
 import importlib.util
+import io
 import json
 import pathlib
 import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from contextlib import redirect_stdout
+from unittest.mock import MagicMock, patch
 
 
 COMPLIANCE = pathlib.Path(__file__).resolve().parent / "compliance"
@@ -42,8 +44,11 @@ class ComplianceExperimentTests(unittest.TestCase):
     def test_clients_run_sequentially_and_keep_individual_status(self):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
-            outcomes = [subprocess.CompletedProcess([], 0), subprocess.CompletedProcess([], 1)]
-            with patch.object(run_suite.subprocess, "run", side_effect=outcomes) as docker_run:
+            processes = [
+                MagicMock(stdout=io.StringIO(), wait=MagicMock(return_value=0)),
+                MagicMock(stdout=io.StringIO(), wait=MagicMock(return_value=1)),
+            ]
+            with patch.object(run_suite.subprocess, "Popen", side_effect=processes) as docker_run:
                 results = run_suite.run_clients(
                     ["wasix-r-eth", "wasix-w-eth"],
                     "hive-custom:latest",
@@ -60,6 +65,30 @@ class ComplianceExperimentTests(unittest.TestCase):
         self.assertEqual([result["status"] for result in results], ["passed", "failed"])
         self.assertEqual([result["client"] for result in saved], ["wasix-r-eth", "wasix-w-eth"])
         self.assertEqual(results[0]["simulation"], "ethereum/engine")
+
+    def test_hive_output_is_visible_in_console_and_client_log(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            console = io.StringIO()
+            with patch.object(
+                run_suite.subprocess,
+                "Popen",
+                return_value=MagicMock(stdout=io.StringIO("Hive progress\n"), wait=MagicMock(return_value=0)),
+            ):
+                with redirect_stdout(console):
+                    run_suite.run_clients(
+                        ["wasix-r-eth"],
+                        "hive-custom:latest",
+                        root / "workspace",
+                        root / "logs",
+                        root / "results.jsonl",
+                        "run-1",
+                        5,
+                        3600,
+                    )
+
+            self.assertIn("Hive progress", console.getvalue())
+            self.assertIn("Hive progress", (root / "logs" / "wasix-r-eth.log").read_text(encoding="utf-8"))
 
     def test_report_counts_client_passes_and_failures(self):
         with tempfile.TemporaryDirectory() as temp:

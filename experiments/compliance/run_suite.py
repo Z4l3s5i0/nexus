@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,6 +30,14 @@ def build_hive_command(client, image, workspace, parallelism, name):
     ]
 
 
+def forward_output(stream, log_file):
+    for line in stream:
+        log_file.write(line)
+        log_file.flush()
+        sys.stdout.write(line)
+        sys.stdout.flush()
+
+
 def run_clients(clients, image, workspace_root, logs_dir, results_path, run_id, parallelism, timeout):
     results = []
     for client in clients:
@@ -43,17 +52,37 @@ def run_clients(clients, image, workspace_root, logs_dir, results_path, run_id, 
         started = datetime.now(timezone.utc).isoformat()
         status = 1
         error = None
+        print(f"Starting Hive ethereum/engine for {client}; live output is also saved to {log_path}.", flush=True)
         try:
-            with log_path.open("wb") as output:
-                process = subprocess.run(command, stdout=output, stderr=subprocess.STDOUT, timeout=timeout, check=False)
-            status = process.returncode
-        except subprocess.TimeoutExpired:
-            error = f"Hive suite exceeded timeout of {timeout} seconds"
-            subprocess.run(["docker", "stop", "--time", "20", name], capture_output=True, check=False)
-            subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False)
-            status = 124
+            with log_path.open("w", encoding="utf-8") as output:
+                process = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    bufsize=1,
+                )
+                output_thread = threading.Thread(target=forward_output, args=(process.stdout, output))
+                output_thread.start()
+                try:
+                    status = process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    error = f"Hive suite exceeded timeout of {timeout} seconds"
+                    subprocess.run(["docker", "stop", "--time", "20", name], capture_output=True, check=False)
+                    subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False)
+                    if process.poll() is None:
+                        try:
+                            process.kill()
+                        except ProcessLookupError:
+                            pass
+                    process.wait()
+                    status = 124
+                output_thread.join()
         except OSError as exc:
             error = str(exc)
+        print(f"Hive {client} finished with exit code {status}; log: {log_path}", flush=True)
         result = {
             "client": client,
             "simulation": "ethereum/engine",
