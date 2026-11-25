@@ -112,6 +112,26 @@ class StartupBenchmarkTests(unittest.TestCase):
         self.assertEqual(docker_args[docker_args.index("--entrypoint") + 1], "sh")
         self.assertLess(docker_args.index("--entrypoint"), docker_args.index("wasix"))
 
+    def test_setup_command_failure_points_to_its_log(self):
+        with tempfile.TemporaryDirectory() as temp:
+            log_file = pathlib.Path(temp) / "client.log"
+            with patch.object(
+                benchmark_client.subprocess,
+                "run",
+                return_value=SimpleNamespace(returncode=1),
+            ):
+                with self.assertRaises(RuntimeError) as raised:
+                    benchmark_client.run_checked(["docker", "run"], log_file)
+        self.assertIn(str(log_file), str(raised.exception))
+
+    def test_wasix_docker_preparation_creates_volume_source_directory(self):
+        args = SimpleNamespace(config="nexus-wasix-docker", nexus_wasix_image="nexus-wasix")
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(benchmark_client, "ensure_image"):
+                benchmark_client.prepare_config(args, temp, pathlib.Path(temp) / "client.log")
+
+            self.assertTrue((pathlib.Path(temp) / "data" / "nexus").is_dir())
+
     def test_nexus_linux_launch_uses_run_subcommand(self):
         args = SimpleNamespace(config="nexus-linux", rpc_port=8545, nexus_linux_image="nexus-linux")
         with tempfile.TemporaryDirectory() as temp:

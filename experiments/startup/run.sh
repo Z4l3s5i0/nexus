@@ -180,6 +180,19 @@ python3 "$SCRIPT_DIR/metadata.py" --scope run --run-id "$RUN_ID" --chain-id "$CH
     --iterations "$ITERATIONS" --configs "$CONFIGS" --output "$OUTPUT_DIR/metadata.json"
 
 COLLECT_DURATION="$(python3 -c 'import math,sys; print(math.ceil(float(sys.argv[1]) + 10))' "$TIMEOUT")"
+
+print_iteration_result() {
+    local config="$1" iteration="$2" result_file="$3" client_log="$4"
+    local startup_time error
+    startup_time="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); print(d.get("startup_time_ms") if d.get("ready") and d.get("startup_time_ms") is not None else "unavailable")' "$result_file")"
+    echo "$config iteration $iteration: $startup_time ms"
+    if [[ "$startup_time" == unavailable ]]; then
+        error="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); print(d.get("error") or "No failure reason was recorded.")' "$result_file")"
+        echo "  Failure: $error"
+        echo "  Client log: $client_log"
+    fi
+}
+
 for config in "${CONFIG_LIST[@]}"; do
     for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
         iteration_dir="$OUTPUT_DIR/iterations/$config/$iteration"
@@ -214,6 +227,7 @@ for config in "${CONFIG_LIST[@]}"; do
             python3 "$SCRIPT_DIR/collect_startup_metrics.py" \
                 --result "$result_file" --samples "$OUTPUT_DIR/startup_metric_samples.jsonl" \
                 --coverage "$OUTPUT_DIR/startup_time_coverage.json"
+            print_iteration_result "$config" "$iteration" "$result_file" "$client_log"
             CURRENT_STATE_FILE=""
             continue
         fi
@@ -268,7 +282,7 @@ for config in "${CONFIG_LIST[@]}"; do
         python3 "$SCRIPT_DIR/collect_startup_metrics.py" \
             --result "$result_file" --samples "$OUTPUT_DIR/startup_metric_samples.jsonl" \
             --coverage "$OUTPUT_DIR/startup_time_coverage.json"
-        echo "$config iteration $iteration: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); print(d.get("startup_time_ms") if d.get("ready") else "unavailable")' "$result_file") ms"
+        print_iteration_result "$config" "$iteration" "$result_file" "$client_log"
     done
 done
 

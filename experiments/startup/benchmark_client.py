@@ -58,7 +58,10 @@ def run_checked(command, log_file):
     with Path(log_file).open("ab") as output:
         result = subprocess.run(command, stdout=output, stderr=subprocess.STDOUT, check=False)
     if result.returncode:
-        raise RuntimeError(f"client setup command failed with exit status {result.returncode}")
+        raise RuntimeError(
+            f"client setup command failed with exit status {result.returncode}; "
+            f"see {log_file} for command output"
+        )
 
 
 def ensure_image(image, log_file):
@@ -72,6 +75,8 @@ def ensure_image(image, log_file):
 def prepare_config(args, work_dir, log_file):
     work_dir = Path(work_dir).resolve()
     (work_dir / "data").mkdir(parents=True, exist_ok=True)
+    if args.config in {"nexus-wasix-docker", "nexus-wasmer"}:
+        (work_dir / "data" / "nexus").mkdir(parents=True, exist_ok=True)
     (work_dir / "jwt.hex").write_text(os.urandom(32).hex() + "\n", encoding="ascii")
     if args.config == "geth":
         ensure_image(args.geth_image, log_file)
