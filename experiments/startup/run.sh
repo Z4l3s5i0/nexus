@@ -13,7 +13,7 @@ GETH_IMAGE="ethereum/client-go@sha256:798b7eb1bcef6d4be7576232beea63bf291450f48b
 RETH_IMAGE="ghcr.io/paradigmxyz/reth:latest"
 NEXUS_LINUX_IMAGE="wasix-eth-linux:latest"
 NEXUS_WASIX_IMAGE="wasix-eth-wasix:latest"
-NEXUS_WASIX_WASM="${NEXUS_WASIX_WASM:-}"
+NEXUS_WASIX_WASM="${NEXUS_WASIX_WASM:-${EXPERIMENTS_WASIX_ETH_ROOT:-$REPO_ROOT/wasix_eth}/target/wasm32-wasmer-wasi/release/wasix_eth.wasi.wasm}"
 WASMER_BIN="wasmer"
 CHAIN_ID=12345
 GENESIS_GAS_LIMIT="0x1fffffffffffff"
@@ -114,7 +114,7 @@ fi
 
 if [[ -z "$CONFIGS" ]]; then
     CONFIGS="geth,reth,nexus-linux,nexus-wasix-docker"
-    if [[ -n "$NEXUS_WASIX_WASM" ]] && command -v "$WASMER_BIN" >/dev/null 2>&1; then
+    if [[ -f "$NEXUS_WASIX_WASM" ]] && command -v "$WASMER_BIN" >/dev/null 2>&1; then
         CONFIGS+=",nexus-wasmer"
     fi
 fi

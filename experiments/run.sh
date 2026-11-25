@@ -215,7 +215,7 @@ validate_counts() {
 
 configure_module() {
     local experiment="$1" customize result reset_network="${RESET_NETWORK:-false}"
-    local has_nonzero_count=false
+    local has_nonzero_count=false startup_configs_default startup_wasix_eth_root startup_wasix_wasm_default
     local -n module_args="${experiment//-/_}_args"
     module_args=()
 
@@ -287,8 +287,9 @@ configure_module() {
             fi
             ;;
         startup)
-            startup_configs_default='geth,reth,nexus-linux,nexus-wasix-docker'
-            if [[ -n "${NEXUS_WASIX_WASM:-}" ]]; then startup_configs_default+=',nexus-wasmer'; fi
+            startup_configs_default='geth,reth,nexus-linux,nexus-wasix-docker,nexus-wasmer'
+            startup_wasix_eth_root="${EXPERIMENTS_WASIX_ETH_ROOT:-$REPO_ROOT/wasix_eth}"
+            startup_wasix_wasm_default="${NEXUS_WASIX_WASM:-$startup_wasix_eth_root/target/wasm32-wasmer-wasi/release/wasix_eth.wasi.wasm}"
             if prompt_customize startup "$startup_configs_default; 5 iterations; readiness timeout 60 seconds; chain ID 12345"; then
                 while true; do
                     prompt_value startup_configs 'Configurations (comma-separated)' "$startup_configs_default" text || return $?
@@ -304,7 +305,7 @@ configure_module() {
                 prompt_value reth_image 'Reth image' 'ghcr.io/paradigmxyz/reth:latest' text || return $?
                 prompt_value nexus_linux_image 'NEXUS Linux image' 'wasix-eth-linux:latest' text || return $?
                 prompt_value nexus_wasix_image 'NEXUS WASIX Docker image' 'wasix-eth-wasix:latest' text || return $?
-                prompt_value nexus_wasix_wasm 'NEXUS WASIX module path (optional)' "${NEXUS_WASIX_WASM:-}" optional_text || return $?
+                prompt_value nexus_wasix_wasm 'NEXUS WASIX module path' "$startup_wasix_wasm_default" optional_text || return $?
                 prompt_value wasmer_bin 'Wasmer executable' wasmer text || return $?
                 module_args=(--configs "$startup_configs" --iterations "$startup_iterations"
                     --chain-id "$startup_chain_id" --timeout "$startup_timeout"

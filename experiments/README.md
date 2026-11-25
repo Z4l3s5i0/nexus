@@ -60,7 +60,7 @@ The empty-block module defaults to the `wasix` client and transaction counts `0,
 
 ### Startup
 
-The default startup configurations are Geth, Reth, NEXUS native, and NEXUS in Docker/WASIX. NEXUS Docker configurations use local `wasix-eth-linux:latest` and `wasix-eth-wasix:latest` images; setup reuses those images when present and otherwise builds them from the local `target/` binaries. A host Wasmer configuration is included only when `NEXUS_WASIX_WASM` points to a module and Wasmer is available, or when selected explicitly with `--configs nexus-wasmer`. `--timeout`, `--iterations`, `--configs`, image paths, and other options are listed by `bash experiments/startup/run.sh --help`.
+The default startup configurations are Geth, Reth, NEXUS native, NEXUS in Docker/WASIX, and host NEXUS WASIX via Wasmer. NEXUS Docker configurations use local `wasix-eth-linux:latest` and `wasix-eth-wasix:latest` images; setup reuses those images when present and otherwise builds them from the local `target/` binaries. The host Wasmer configuration uses `wasix_eth/target/wasm32-wasmer-wasi/release/wasix_eth.wasi.wasm` by default (or `NEXUS_WASIX_WASM` when set); standalone startup runs include it when the module and Wasmer are available. `--timeout`, `--iterations`, `--configs`, image paths, and other options are listed by `bash experiments/startup/run.sh --help`.
 
 The measured endpoint is the first successful `eth_chainId` response. Geth, Reth, and host-Wasmer data initialization is outside the timed interval; initialization for the WASIX-in-Docker configuration remains part of its timed launch, matching the prior benchmark behavior. Image references and IDs are recorded for reproducibility.
 

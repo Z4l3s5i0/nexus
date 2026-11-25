@@ -116,13 +116,17 @@ def prepare_config(args, work_dir, log_file):
         )
 
 
-def launch_docker(args, work_dir, image, internal_port, docker_args, container_name):
+def launch_docker(args, work_dir, image, internal_port, docker_args, container_name, entrypoint=None):
     work_dir = str(Path(work_dir).resolve())
-    command = [
-        "docker", "run", "-d", "--name", container_name,
-        "-v", f"{work_dir}:/data", "-p", f"{args.rpc_port}:{internal_port}",
-        image, *docker_args,
-    ]
+    command = ["docker", "run", "-d", "--name", container_name]
+    if entrypoint:
+        command.extend(["--entrypoint", entrypoint])
+    command.extend(
+        [
+            "-v", f"{work_dir}:/data", "-p", f"{args.rpc_port}:{internal_port}",
+            image, *docker_args,
+        ]
+    )
     result = subprocess.run(command, text=True, capture_output=True, check=False)
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or f"docker run failed for {image}")
@@ -194,7 +198,7 @@ def launch_config(args, work_dir, log_file, container_name):
         return launch_docker(
             args, work_dir, args.nexus_linux_image, rpc_port,
             [
-                "--data-dir", "/data/data/nexus", "--genesis-path", "/data/genesis.json",
+                "run", "--data-dir", "/data/data/nexus", "--genesis-path", "/data/genesis.json",
                 "--eth-rpc-port", str(rpc_port), "--auth-rpc-port", str(auth_port),
                 "--auth-rpc-jwt-path", "/data/jwt.hex", "--verbose", "0",
             ],
@@ -214,7 +218,10 @@ def launch_config(args, work_dir, log_file, container_name):
             f"run --data-dir /app/data --genesis-path /app/startup/genesis.json --eth-rpc-port {rpc_port} "
             f"--auth-rpc-port {auth_port} --auth-rpc-jwt-path /app/startup/jwt.hex --verbose 0"
         )
-        return launch_docker(args, work_dir, args.nexus_wasix_image, rpc_port, ["sh", "-c", command], container_name)
+        return launch_docker(
+            args, work_dir, args.nexus_wasix_image, rpc_port, ["-c", command], container_name,
+            entrypoint="sh",
+        )
 
     if args.config == "nexus-wasmer":
         wasmer = shutil.which(args.wasmer_bin)

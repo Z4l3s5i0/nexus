@@ -299,12 +299,22 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertNotIn("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80", "".join(self.last_logs.values()))
 
     def test_custom_startup_configuration_forwards_options(self):
-        answers = "y\ngeth,nexus-linux\n2\n777\n30\n0.5\ngeth:test\nreth:test\nlinux:test\nwasix:test\n\nwasmer-test\n"
+        answers = "y\ngeth,nexus-linux,nexus-wasmer\n2\n777\n30\n0.5\ngeth:test\nreth:test\nlinux:test\nwasix:test\n\nwasmer-test\n"
         result, calls = self.run_with_stubs("3", config_answers=answers)
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(any(call.startswith("args:startup:--configs geth,nexus-linux --iterations 2") for call in calls))
+        self.assertTrue(any(call.startswith("args:startup:--configs geth,nexus-linux,nexus-wasmer --iterations 2") for call in calls))
+        self.assertTrue(any("--nexus-wasix-wasm" in call and "wasm32-wasmer-wasi/release/wasix_eth.wasi.wasm" in call for call in calls))
         self.assertTrue(any("--wasmer-bin wasmer-test" in call for call in calls))
+
+    def test_startup_defaults_include_geth_and_host_wasix(self):
+        result, _ = self.run_with_stubs("3", config_answers="n\n")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "Default startup configuration: geth,reth,nexus-linux,nexus-wasix-docker,nexus-wasmer;",
+            result.stdout,
+        )
 
     def test_custom_compliance_configuration_forwards_options(self):
         answers = "y\nwasix-w-eth\nhive-test\n4\n900\nn\ny\n"

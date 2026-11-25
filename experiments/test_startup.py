@@ -98,6 +98,41 @@ class StartupBenchmarkTests(unittest.TestCase):
 
         self.assertNotIn("--rm", run_command.call_args_list[0].args[0])
 
+    def test_docker_launch_can_override_the_image_entrypoint(self):
+        args = SimpleNamespace(rpc_port=8545)
+        responses = [
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+            SimpleNamespace(returncode=0, stdout="123 sha256:test\n", stderr=""),
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(benchmark_client.subprocess, "run", side_effect=responses) as run_command:
+                benchmark_client.launch_docker(args, temp, "wasix", 8545, ["-c", "true"], "startup-test", entrypoint="sh")
+
+        docker_args = run_command.call_args_list[0].args[0]
+        self.assertEqual(docker_args[docker_args.index("--entrypoint") + 1], "sh")
+        self.assertLess(docker_args.index("--entrypoint"), docker_args.index("wasix"))
+
+    def test_nexus_linux_launch_uses_run_subcommand(self):
+        args = SimpleNamespace(config="nexus-linux", rpc_port=8545, nexus_linux_image="nexus-linux")
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(benchmark_client, "launch_docker") as launch_docker:
+                benchmark_client.launch_config(args, temp, "client.log", "startup-test")
+
+        self.assertEqual(launch_docker.call_args.args[4][0], "run")
+
+    def test_nexus_wasix_docker_uses_shell_entrypoint_for_init_and_run(self):
+        args = SimpleNamespace(config="nexus-wasix-docker", rpc_port=8545, nexus_wasix_image="nexus-wasix")
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(benchmark_client, "launch_docker") as launch_docker:
+                benchmark_client.launch_config(args, temp, "client.log", "startup-test")
+
+        self.assertEqual(launch_docker.call_args.kwargs["entrypoint"], "sh")
+        command = launch_docker.call_args.args[4]
+        self.assertEqual(command[0], "-c")
+        self.assertIn(" init ", command[1])
+        self.assertIn(" && ", command[1])
+        self.assertIn(" run ", command[1])
+
     def test_reth_launch_uses_the_custom_genesis_chainspec(self):
         args = SimpleNamespace(config="reth", rpc_port=8545, reth_image="reth")
         with tempfile.TemporaryDirectory() as temp:
