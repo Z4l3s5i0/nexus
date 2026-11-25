@@ -54,7 +54,7 @@ fn simulation_uses_requested_caller_without_changing_block_sender_validation() {
 
     let tx = Transaction::Legacy(Signed::new_unchecked(
         TxLegacy {
-            nonce: 2,
+            nonce: 3,
             gas_price: 1,
             gas_limit: 100_000,
             to: contract.into(),
@@ -101,5 +101,5 @@ fn simulation_uses_requested_caller_without_changing_block_sender_validation() {
     block.header.parent_hash = read_provider.block_hash(0).unwrap().unwrap();
     block.body.transactions.push(tx);
     let error = execution.execute_block(block).unwrap_err();
-    assert!(error.to_string().contains("expected 0, got 2"));
+    assert!(error.to_string().contains("expected 0, got 3"));
 }

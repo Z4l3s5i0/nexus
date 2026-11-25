@@ -88,7 +88,7 @@ impl<'a> TransactionExecutor<'a> {
         let recovered = tx.clone().try_into_recovered().map_err(|e| anyhow::anyhow!("Failed to recover signer: {}", e))?;
         let sender = simulation_context.map(|context| context.caller).unwrap_or_else(|| recovered.signer());
         
-        self.validate_transaction_with_state(tx, sender, state_root)?;
+        self.validate_transaction_with_state(tx, sender, state_root, simulation_context.is_none())?;
         
         let start_time = std::time::Instant::now();
 
@@ -206,9 +206,15 @@ impl<'a> TransactionExecutor<'a> {
         })
     }
 
-    fn validate_transaction_with_state(&self, tx: &Transaction, sender: Address, state_root: Option<B256>) -> Result<()> {
+    fn validate_transaction_with_state(
+        &self,
+        tx: &Transaction,
+        sender: Address,
+        state_root: Option<B256>,
+        validate_nonce: bool,
+    ) -> Result<()> {
         let account = self.batch.account(sender, state_root)?.unwrap_or_default();
-        if tx.nonce() != account.nonce {
+        if validate_nonce && tx.nonce() != account.nonce {
             return Err(anyhow::anyhow!("Nonce mismatch for sender {:?}: expected {}, got {}", sender, account.nonce, tx.nonce()));
         }
 

@@ -131,10 +131,11 @@ async fn rpc_simulations_use_request_caller_and_nonce_without_persisting_changes
     assert_eq!(caller_after.nonce, 4);
     assert_eq!(caller_after.balance, U256::ZERO);
 
-    let mut mismatched_nonce_request = request.clone();
-    mismatched_nonce_request.nonce = Some(5);
-    let error = engine.call(mismatched_nonce_request, Some(block_id)).await.unwrap_err();
-    assert!(error.to_string().contains("Nonce mismatch"));
+    let mut future_nonce_request = request.clone();
+    future_nonce_request.nonce = Some(5);
+    let output = engine.call(future_nonce_request.clone(), Some(block_id)).await.unwrap();
+    assert_eq!(&output[12..], caller.as_slice());
+    assert!(engine.estimate_gas(future_nonce_request, Some(block_id)).await.unwrap() > U256::ZERO);
 
     let mut omitted_nonce_request = request.clone();
     omitted_nonce_request.nonce = None;
