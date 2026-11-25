@@ -178,7 +178,11 @@ class EmptyBlockExperimentTests(unittest.TestCase):
             )
 
         self.assertEqual(result, (tx_hash, sent_at))
-        self.assertEqual(cast.call_args.args[1][:3], ["send", "--create", "0x608060"])
+        arguments = cast.call_args.args[1]
+        self.assertEqual(arguments[:3], ["send", "--create", "0x608060"])
+        self.assertNotIn("--legacy", arguments)
+        gas_price_index = arguments.index("--gas-price")
+        self.assertEqual(arguments[gas_price_index + 1], "7")
 
     def test_workload_calls_target_the_contract_and_capture_send_time(self):
         tx_hash = "0x" + "a" * 64

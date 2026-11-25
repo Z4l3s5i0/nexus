@@ -192,7 +192,6 @@ def submit_contract_deployment(
             "send",
             "--create",
             "0x" + bytecode.removeprefix("0x"),
-            "--legacy",
             "--gas-price",
             str(gas_price),
             "--nonce",
