@@ -88,6 +88,24 @@ class NetworkSupportTests(unittest.TestCase):
 
         self.assertEqual(launcher.count("prometheus-node-exporter --no-collector.systemd"), 2)
 
+    def test_reth_uses_supported_tcp_and_discovery_ports(self):
+        launcher = (NETWORK_SUPPORT / "start.sh").read_text(encoding="utf-8")
+        reth_config = launcher.split('elif [ "$TYPE" = "reth" ]; then', 1)[1].split(
+            'elif [ "$TYPE" = "wasix" ]; then', 1
+        )[0]
+
+        self.assertIn("- --port=$P2P_PORT", reth_config)
+        self.assertIn("- --discovery.port=$DISC_PORT", reth_config)
+        self.assertNotIn("--discovery.quic-port", reth_config)
+        self.assertIn("$P2P_PORT:$P2P_PORT/tcp", reth_config)
+        self.assertIn("$DISC_PORT:$DISC_PORT/udp", reth_config)
+        self.assertIn("local discovery_port=$4", launcher)
+        self.assertIn("?discport=$discovery_port", launcher)
+        self.assertIn(
+            'register_reth_node "$i" "$ETH_PORT" "$P2P_PORT" "$DISC_PORT" "$METRICS_PORT"',
+            launcher,
+        )
+
     def test_target_generator_labels_per_node_exporter_and_execution_metrics(self):
         with tempfile.TemporaryDirectory(prefix="node-exporter-targets-test-") as temp:
             node_exporter_output = pathlib.Path(temp) / "node-exporter-targets.json"

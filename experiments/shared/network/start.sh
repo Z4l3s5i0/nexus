@@ -297,9 +297,9 @@ for i in $(seq 0 $((NODES - 1))); do
       - --authrpc.addr=0.0.0.0
       - --authrpc.port=$AUTH_PORT
       - --authrpc.jwtsecret=/app/startup/jwt_$i.hex
+      - --port=$P2P_PORT
       - --discovery.addr=0.0.0.0
-      - --discovery.port=$P2P_PORT
-      - --discovery.quic-port=$((P2P_PORT + 1))
+      - --discovery.port=$DISC_PORT
       - --nat=extip:$EXT_IP
       - --max-outbound-peers=50
       - --max-inbound-peers=50
@@ -307,7 +307,7 @@ for i in $(seq 0 $((NODES - 1))); do
         PORTS_STR="ports:
       - \"$ETH_PORT:$ETH_PORT\"
       - \"$P2P_PORT:$P2P_PORT/tcp\"
-      - \"$((P2P_PORT + 1)):$((P2P_PORT + 1))/udp\"
+      - \"$DISC_PORT:$DISC_PORT/udp\"
       - \"$METRICS_PORT:$METRICS_PORT\""
         DEPENDS_ON="depends_on:
       metrics-server:
@@ -586,7 +586,8 @@ register_reth_node() {
     local index=$1
     local eth_port=$2
     local p2p_port=$3
-    local metrics_port=$4
+    local discovery_port=$4
+    local metrics_port=$5
     local service="el-node-$index"
     local expected_chain_id
 
@@ -626,10 +627,9 @@ register_reth_node() {
         return 1
     fi
 
-    # Build an enode string for Reth (using TCP port for discovery)
-    local enode="enode://$node_id@$EXT_IP:$p2p_port?discport=$p2p_port"
+    local enode="enode://$node_id@$EXT_IP:$p2p_port?discport=$discovery_port"
     local register_body
-    register_body=$(python3 - "$node_id" "$CHAIN_ID" "$index" "$EXT_IP" "$eth_port" "$metrics_port" "$p2p_port" "$p2p_port" "$enode" <<'PY'
+    register_body=$(python3 - "$node_id" "$CHAIN_ID" "$index" "$EXT_IP" "$eth_port" "$metrics_port" "$p2p_port" "$discovery_port" "$enode" <<'PY'
 import json
 import sys
 
@@ -785,7 +785,7 @@ for i in $(seq 0 $((NODES - 1))); do
         echo "Initializing Reth node $i from the generated genesis..."
         $COMPOSE_CMD -f "$COMPOSE_FILE" run --rm --no-deps "el-node-$i" db init --datadir /app/data --chain /app/startup/genesis.json 2>/dev/null || true
         $COMPOSE_CMD -f "$COMPOSE_FILE" up -d "el-node-$i"
-        register_reth_node "$i" "$ETH_PORT" "$P2P_PORT" "$METRICS_PORT"
+        register_reth_node "$i" "$ETH_PORT" "$P2P_PORT" "$DISC_PORT" "$METRICS_PORT"
         CL_SERVICES="cl-node-$i"
         if [ "$IS_VAL" = "true" ]; then
             CL_SERVICES="$CL_SERVICES vc-node-$i"

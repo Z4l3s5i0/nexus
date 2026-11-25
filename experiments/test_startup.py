@@ -37,7 +37,7 @@ class StartupBenchmarkTests(unittest.TestCase):
         run = metadata.build_metadata("run-1", 12345, 2, ["geth", "nexus-wasmer"])
 
         self.assertEqual(value["config"]["chainId"], 12345)
-        self.assertEqual(value["config"]["terminalTotalDifficulty"], "0x0")
+        self.assertEqual(value["config"]["terminalTotalDifficulty"], 0)
         self.assertTrue(value["config"]["terminalTotalDifficultyPassed"])
         self.assertEqual(value["config"]["mergeNetsplitBlock"], 0)
         self.assertNotIn("ethash", value["config"])
@@ -73,7 +73,7 @@ class StartupBenchmarkTests(unittest.TestCase):
             value = json.loads(output.read_text(encoding="utf-8"))
 
         self.assertEqual(value["config"]["chainId"], 23456)
-        self.assertEqual(value["config"]["terminalTotalDifficulty"], "0xa")
+        self.assertEqual(value["config"]["terminalTotalDifficulty"], 10)
         self.assertEqual(value["gasLimit"], "0x1000000")
         self.assertEqual(value["baseFeePerGas"], "0x77359400")
         self.assertEqual(value["alloc"], {"0x0000000000000000000000000000000000000001": {"balance": "0x1f4"}})

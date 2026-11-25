@@ -33,7 +33,7 @@ def genesis(
             "muirGlacierBlock": 0,
             "berlinBlock": 0,
             "londonBlock": 0,
-            "terminalTotalDifficulty": hex(terminal_total_difficulty),
+            "terminalTotalDifficulty": terminal_total_difficulty,
             "terminalTotalDifficultyPassed": True,
             "mergeNetsplitBlock": 0,
             "shanghaiTime": 0,
