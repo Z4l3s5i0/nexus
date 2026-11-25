@@ -26,6 +26,7 @@ METRICS_INTERVAL=0.2
 CONFIGS=""
 OUTPUT_DIR=""
 KEEP_FAILED_CONTAINERS=false
+RESET_NETWORK=false
 METRICS_STARTED=false
 SYSTEM_COLLECTOR_PID=""
 CURRENT_STATE_FILE=""
@@ -54,6 +55,7 @@ Options:
   --results-dir DIR       Parent output directory (default: $RESULTS_PARENT)
   --configs LIST          Comma-separated client configs; default selects available Docker configs
   --keep-failed-containers Preserve failed Docker clients for manual RPC/log inspection
+  --reset-network         Clear stopped shared-network data before this run
   --help                  Show this help
 
 Available configs: geth, reth, nexus-linux, nexus-wasix-docker, nexus-wasmer
@@ -80,6 +82,7 @@ while [[ "$#" -gt 0 ]]; do
         --results-dir) RESULTS_PARENT="$2"; shift 2 ;;
         --configs) CONFIGS="$2"; shift 2 ;;
         --keep-failed-containers) KEEP_FAILED_CONTAINERS=true; shift ;;
+        --reset-network) RESET_NETWORK=true; shift ;;
         --help|-h) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -140,6 +143,10 @@ if [[ -n "${SEEN_CONFIGS[nexus-wasmer]:-}" ]]; then
         echo "Error: Wasmer executable not found: $WASMER_BIN" >&2
         exit 2
     }
+fi
+
+if [[ "$RESET_NETWORK" == true ]]; then
+    bash "$REPO_ROOT/experiments/shared/network/reset.sh"
 fi
 
 if [[ -z "${METRICS_INGEST_TOKEN:-}" ]]; then

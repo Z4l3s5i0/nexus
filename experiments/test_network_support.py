@@ -1,6 +1,7 @@
 import json
 import os
 import pathlib
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -11,7 +12,74 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 NETWORK_SUPPORT = ROOT / "experiments" / "shared" / "network"
 
 
+def bash_compatible_path(path):
+    path = pathlib.Path(path)
+    if os.name == "nt":
+        return f"/mnt/{path.drive[0].lower()}/{path.as_posix()[3:]}"
+    return str(path)
+
+
 class NetworkSupportTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "Docker cleanup integration requires a Linux filesystem")
+    def test_network_reset_removes_stopped_generated_data_and_preserves_running_network(self):
+        reset_script = NETWORK_SUPPORT / "reset.sh"
+        with tempfile.TemporaryDirectory(prefix="network-reset-test-") as temp:
+            temp_root = pathlib.Path(temp)
+            bin_dir = temp_root / "bin"
+            bin_dir.mkdir()
+            fake_docker = bin_dir / "docker"
+            docker_log = temp_root / "docker.log"
+            fake_docker.write_text(
+                "#!/usr/bin/env bash\n"
+                'printf "%s\\n" "$*" >> "$NETWORK_TEST_DOCKER_LOG"\n'
+                'case "$*" in\n'
+                '  "compose version") exit 0 ;;\n'
+                '  *" ps -q") printf "%s" "${NETWORK_TEST_RUNNING_CONTAINERS:-}" ;;\n'
+                '  *" down --volumes --remove-orphans") exit 0 ;;\n'
+                '  *) exit 99 ;;\n'
+                'esac\n',
+                encoding="utf-8",
+            )
+            fake_docker.chmod(0o755)
+            compose_file = temp_root / "docker-compose.v2.yml"
+            compose_file.write_text("services: {}\n", encoding="utf-8")
+            for name in ("startup_v2", "data_v2"):
+                (temp_root / name).mkdir()
+                (temp_root / name / "generated.txt").write_text("generated\n", encoding="utf-8")
+
+            def reset(active_containers=""):
+                assignments = {
+                    "EXPERIMENTS_NETWORK_REPO_ROOT": bash_compatible_path(temp_root),
+                    "NETWORK_TEST_DOCKER_LOG": bash_compatible_path(docker_log),
+                    "DOCKER_BIN": bash_compatible_path(fake_docker),
+                }
+                if active_containers:
+                    assignments["NETWORK_TEST_RUNNING_CONTAINERS"] = active_containers
+                command = " ".join(
+                    f"{name}={shlex.quote(value)}" for name, value in assignments.items()
+                )
+                command += f" exec bash {shlex.quote(bash_compatible_path(reset_script))}"
+                return subprocess.run(
+                    ["bash", "-c", command], text=True, capture_output=True, check=False
+                )
+
+            result = reset()
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((temp_root / "startup_v2").exists())
+            self.assertFalse((temp_root / "data_v2").exists())
+            self.assertIn("down --volumes --remove-orphans", docker_log.read_text(encoding="utf-8"))
+
+            for name in ("startup_v2", "data_v2"):
+                (temp_root / name).mkdir()
+                (temp_root / name / "generated.txt").write_text("generated\n", encoding="utf-8")
+            result = reset("active-container")
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("already running", result.stderr)
+            self.assertTrue((temp_root / "startup_v2" / "generated.txt").is_file())
+            self.assertTrue((temp_root / "data_v2" / "generated.txt").is_file())
+
     def test_experiment_network_modules_use_relocated_launcher(self):
         for module in ("runtime", "empty-block"):
             script = (ROOT / "experiments" / module / "network.sh").read_text(encoding="utf-8")

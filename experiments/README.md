@@ -8,7 +8,7 @@ bash experiments/run.sh
 
 Enter a comma-separated selection such as `3,1,5` to run startup, runtime, then size comparison. For reevaluation, enter `7` and then select `1–5`, a comma-separated list, or `6` for all module types. Evaluation regenerates reports for every saved run directory under the selected modules in `experiment-results/`; the saved samples and measurements are reused, and no clients, workloads, Hive suites, or source measurements are rerun. Missing/incomplete results are reported as errors while other selected runs are still checked. `bash experiments/run.sh --help` displays the menu. `experiments/setup.sh` can also be run directly; without the runner’s selection it prepares dependencies for all five modules.
 
-Pass `--reset-network` to `experiments/run.sh` to allow runtime and empty-block runs to clear pre-existing generated network data, including when accepting their default configurations. For empty-block, this also skips the separate reset-consent prompt. It can be combined with `--detach`.
+Pass `--reset-network` to `experiments/run.sh` to allow runtime, empty-block, and startup runs to clear pre-existing generated network data, including when accepting their default configurations. Startup clears stopped shared-network data before its isolated client runs; it refuses to remove data while that network is running. For empty-block, the flag also skips the separate reset-consent prompt. It can be combined with `--detach`.
 
 Each experiment run writes result artifacts to `experiment-results/<module>/<run-id>/`. The runner exports a common base `EXPERIMENT_RUN_ID` and output root to all selected modules; empty-block derives a distinct run ID for each selected client. Generated result directories are ignored by Git; source scripts under `experiments/` are tracked.
 
@@ -30,7 +30,7 @@ After selecting experiments, the runner displays each selected module's proposed
 |---|---|
 | Runtime | Native, WASIX, Geth, and Reth node counts (the client mix); one or more Contender workload scenarios; spammer accounts and target TPS per workload node; workload and collection-wait durations; chain ID; runtime iterations; whether generated network state may be cleared. Every workload/iteration pair is saved under a distinct run ID. |
 | Empty block | Client selection, optional Diablo contract workload, chain ID, transaction-count groups, samples per group, maximum attempts, receipt/block timeouts, RPC poll interval, and network reset permission. The default runs native, WASIX, Geth, and Reth sequentially; customization can select one or more clients. Nonzero transaction groups use the local pre-funded Anvil test key by default; `EB_PRIVATE_KEY` or `--private-key` can override it. The key is passed only to empty-block runs, not shared setup. |
-| Startup | Client configurations, iterations per configuration, chain ID, readiness timeout, system sampling interval, client images, optional NEXUS WASIX module, and Wasmer executable. |
+| Startup | Client configurations, iterations per configuration, chain ID, readiness timeout, system sampling interval, client images, optional NEXUS WASIX module, Wasmer executable, and permission to clear stopped shared-network data. |
 | Compliance | Custom Hive clients, Hive image, parallelism, per-client timeout, and whether to build or reuse existing client/Hive images. |
 | Size | Comma-separated `LABEL=DIR` source trees and `LABEL=FILE` binaries; paths containing commas are not supported by this prompt format. |
 

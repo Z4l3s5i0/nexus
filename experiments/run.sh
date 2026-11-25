@@ -29,7 +29,7 @@ For each selected run, press Enter to use the module's defaults or choose
 custom values before the shared setup starts.
 
   --detach                 Continue the selected suite in a persistent session
-  --reset-network          Allow runtime and empty-block runs to clear generated network data
+  --reset-network          Allow runtime, empty-block, and startup runs to clear generated network data
   --attach SESSION_ID      Reattach to a session's console log
   --stop SESSION_ID        Stop a detached session and its child processes
 EOF
@@ -345,6 +345,7 @@ configure_module() {
                 result=$?
                 (( result == 1 )) || return "$result"
             fi
+            [[ "$RESET_NETWORK" == true ]] && module_args+=(--reset-network)
             ;;
         compliance)
             if prompt_customize compliance 'both custom Hive clients; hive-custom:latest; parallelism 20; timeout 3600 seconds; build images'; then
