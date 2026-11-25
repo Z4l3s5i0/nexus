@@ -176,13 +176,18 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, f"{result.stderr}\n{result.stdout}")
         self.assertEqual(
             calls,
-            ["setup:startup,runtime,size", "startup", "runtime", "args:runtime:--workload-type exp/uber", "size"],
+            [
+                "setup:startup,runtime,size", "startup", "runtime",
+                "args:runtime:--workload-type exp/uber", "run-id:test-run-runtime-1-1",
+                "runtime", "args:runtime:--workload-type exp/uber_v2", "run-id:test-run-runtime-1-2", "size",
+            ],
         )
         self.assertIn("runner.log", self.last_logs, self.last_logs)
         self.assertIn("Choose experiments by entering their numbers", self.last_logs["runner.log"])
         self.assertIn("setup-output", self.last_logs["setup.log"])
         self.assertIn("startup-output", self.last_logs["startup/run-test-run.log"], self.last_logs)
-        self.assertIn("runtime-output", self.last_logs["runtime/run-test-run.log"])
+        self.assertIn("runtime-output", self.last_logs["runtime/run-test-run-runtime-1-1.log"])
+        self.assertIn("runtime-output", self.last_logs["runtime/run-test-run-runtime-1-2.log"])
         self.assertIn("size-output", self.last_logs["size/run-test-run.log"])
         self.assertEqual(
             [path for path in self.last_logs if pathlib.PurePosixPath(path).name == "setup.log"],
@@ -250,13 +255,13 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertIn("empty-block/run-test-run-empty-block-reth.log", self.last_logs)
 
     def test_custom_empty_block_configuration_forwards_contract_workload(self):
-        answers = "y\ngeth\n23456\n1,5\n1\n2\n30\n20\n0.5\nn\nuber\n"
+        answers = "y\ngeth\n23456\n1,5\n1\n2\n30\n20\n0.5\nn\nuber_v2\n"
         result, calls = self.run_with_stubs("2", config_answers=answers)
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
             "args:empty-block:--client geth --chain-id 23456 --counts 1,5 --blocks-per-count 1 "
-            "--max-attempts 2 --receipt-timeout 30 --block-timeout 20 --poll-interval 0.5 --workload uber",
+            "--max-attempts 2 --receipt-timeout 30 --block-timeout 20 --poll-interval 0.5 --workload uber_v2",
             calls,
         )
 
@@ -265,6 +270,7 @@ class ExperimentRunnerTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, f"{result.stderr}\n{result.stdout}")
         self.assertIn("args:runtime:--reset-network --workload-type exp/uber", calls)
+        self.assertIn("args:runtime:--reset-network --workload-type exp/uber_v2", calls)
 
     def test_reset_network_option_is_forwarded_to_empty_block_defaults(self):
         result, calls = self.run_with_stubs("2", runner_args=["--reset-network"])
@@ -314,6 +320,10 @@ class ExperimentRunnerTests(unittest.TestCase):
                 "setup:runtime,empty-block,startup",
                 "runtime",
                 "args:runtime:--workload-type exp/uber",
+                "run-id:test-run-runtime-1-1",
+                "runtime",
+                "args:runtime:--workload-type exp/uber_v2",
+                "run-id:test-run-runtime-1-2",
                 "empty-block",
                 "args:empty-block:--client native",
                 "private-key-present",

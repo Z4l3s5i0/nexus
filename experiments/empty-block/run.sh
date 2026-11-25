@@ -35,7 +35,7 @@ Options:
   --receipt-timeout SECS   Receipt wait timeout (default: $RECEIPT_TIMEOUT)
   --block-timeout SECS     New block timeout (default: $BLOCK_TIMEOUT)
   --poll-interval SECS     RPC poll interval (default: $POLL_INTERVAL)
-  --workload TYPE         none, counter, dota, or uber contract calls (default: $WORKLOAD)
+  --workload TYPE         none, counter, dota, uber, or uber_v2 contract calls (default: $WORKLOAD)
   --private-key KEY        Override the default local Anvil key; EB_PRIVATE_KEY is also supported
   --reset-network          Allow the local launcher to remove pre-existing generated data
   --help                   Show this help
@@ -70,8 +70,8 @@ case "$CLIENT" in
     *) echo "Error: --client must be native, wasix, geth, or reth." >&2; exit 2 ;;
 esac
 case "$WORKLOAD" in
-    none|counter|dota|uber) ;;
-    *) echo "Error: --workload must be none, counter, dota, or uber." >&2; exit 2 ;;
+    none|counter|dota|uber|uber_v2) ;;
+    *) echo "Error: --workload must be none, counter, dota, uber, or uber_v2." >&2; exit 2 ;;
 esac
 [[ "$CHAIN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "Error: --chain-id must be a positive integer." >&2; exit 2; }
 [[ "$BLOCKS_PER_COUNT" =~ ^[1-9][0-9]*$ && "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || {

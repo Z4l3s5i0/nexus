@@ -82,7 +82,7 @@ def main():
     parser.add_argument("--chain-id", type=int, required=True)
     parser.add_argument("--client-label", required=True)
     parser.add_argument("--client-variant", required=True)
-    parser.add_argument("--workload", choices=("none", "counter", "dota", "uber"), default="none")
+    parser.add_argument("--workload", choices=("none", "counter", "dota", "uber", "uber_v2"), default="none")
     parser.add_argument("--counts", required=True)
     parser.add_argument("--blocks-per-count", type=int, required=True)
     parser.add_argument("--max-attempts", type=int, required=True)

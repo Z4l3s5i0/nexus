@@ -1,0 +1,9 @@
+[[spam]]
+[spam.tx]
+to = "0x9999999999999999999999999999999999999999"
+signature = "checkDistance()"
+gas_limit = 24000 #21700
+
+fuzz = [
+    { max_priority_fee_per_gas = true, min = "1", max = "2000000" },
+]

@@ -31,6 +31,7 @@ WORKLOAD_CALLS = {
     "counter": "Add()",
     "dota": "update()",
     "uber": "checkDistance()",
+    "uber_v2": "checkDistance()",
 }
 INCLUSION_COLUMNS = (
     "experiment_id", "client", "client_variant", "node_id", "transaction_type", "workload",

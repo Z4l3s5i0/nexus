@@ -57,15 +57,22 @@ class EmptyBlockExperimentTests(unittest.TestCase):
     def test_contract_workload_loads_bytecode_and_maps_calls(self):
         with tempfile.TemporaryDirectory() as temp:
             bytecode_file = pathlib.Path(temp) / "bytecode.csv"
-            bytecode_file.write_text("counter.sol,608060\ndota.sol,608061\n", encoding="utf-8")
+            bytecode_file.write_text("counter.sol,608060\ndota.sol,608061\nuber_v2.sol,608062\n", encoding="utf-8")
             with patch.object(run_experiment, "BYTECODE_FILE", bytecode_file):
                 self.assertEqual(run_experiment.load_workload_bytecode("counter"), "608060")
+                self.assertEqual(run_experiment.load_workload_bytecode("uber_v2"), "608062")
 
         self.assertEqual(run_experiment.WORKLOAD_CALLS, {
             "counter": "Add()",
             "dota": "update()",
             "uber": "checkDistance()",
+            "uber_v2": "checkDistance()",
         })
+
+    def test_uber_v2_contract_workload_is_selectable(self):
+        args = run_experiment.create_parser().parse_args(["--workload", "uber_v2"])
+
+        self.assertEqual(args.workload, "uber_v2")
 
     def test_contract_workload_requires_a_valid_key(self):
         args = run_experiment.create_parser().parse_args(["--counts", "0", "--workload", "counter"])

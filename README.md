@@ -101,7 +101,7 @@ CLI (wasix_eth_app)
 | `experiments/` | Modular runtime, empty-block, startup, Hive compliance, and size experiments; includes host and per-node-container Prometheus monitoring; start with `bash experiments/run.sh` |
 | `scripts/v2/` | Historical low-level deployment, workload, and analysis utilities; the modular experiment suite uses scripts under `experiments/` |
 | `hive/` | Custom HIVE test suite Docker setup for Ethereum engine client testing |
-| `diablo_workloads/` | Solidity contracts (counter, dota, uber) and workload YAML configs for benchmarking |
+| `diablo_workloads/` | Solidity contracts (counter, dota, uber, and uber_v2) and workload YAML configs for benchmarking |
 | `thesis_results/` | Benchmark result PDFs and failure reports (comparing wasix, rust, and wasm builds) |
 
 ## CI & Hive Testing

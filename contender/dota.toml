@@ -1,0 +1,10 @@
+[[spam]]
+[spam.tx]
+to = "0x9999999999999999999999999999999999999998"
+signature = "update()"
+gas_limit = 500000 #459740
+
+fuzz = [
+    { max_priority_fee_per_gas = true, min = "1", max = "2000000" },
+
+]

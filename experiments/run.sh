@@ -221,7 +221,7 @@ configure_module() {
 
     case "$experiment" in
         runtime)
-            if prompt_customize runtime '2 native, 2 WASIX, 0 Geth, 0 Reth nodes; exp/uber workload; 4 TPS; 4 accounts; 300 seconds; 1 iteration'; then
+            if prompt_customize runtime '2 native, 2 WASIX, 0 Geth, 0 Reth nodes; exp/uber and exp/uber_v2 workloads; 4 TPS; 4 accounts; 300 seconds; 1 iteration'; then
                 prompt_value linux_nodes 'Native/Linux nodes' 2 nonnegative || return $?
                 prompt_value wasix_nodes 'WASIX nodes' 2 nonnegative || return $?
                 prompt_value geth_nodes 'Geth nodes' 0 nonnegative || return $?
@@ -231,7 +231,7 @@ configure_module() {
                     return 2
                 fi
                 while true; do
-                    prompt_value workload_type 'Contender workload scenarios (comma-separated)' 'exp/uber' text || return $?
+                    prompt_value workload_type 'Contender workload scenarios (comma-separated)' 'exp/uber,exp/uber_v2' text || return $?
                     if validate_workload_types "$workload_type"; then break; fi
                     echo 'Use unique scenario paths with letters, numbers, dots, underscores, slashes, or hyphens.' >&2
                 done
@@ -252,7 +252,7 @@ configure_module() {
                 result=$?
                 (( result == 1 )) || return "$result"
                 runtime_iterations=1
-                runtime_workloads=(exp/uber)
+                runtime_workloads=(exp/uber exp/uber_v2)
             fi
             [[ "$reset_network" == true ]] && module_args+=(--reset-network)
             ;;
@@ -292,9 +292,9 @@ configure_module() {
                     prompt_yes_no eb_reset_network 'Allow clearing generated network state' no || return $?
                 fi
                 while true; do
-                    prompt_value eb_workload 'Contract workload (none, counter, dota, uber)' none text || return $?
-                    case "$eb_workload" in none|counter|dota|uber) break ;; esac
-                    echo 'Choose none, counter, dota, or uber.' >&2
+                    prompt_value eb_workload 'Contract workload (none, counter, dota, uber, uber_v2)' none text || return $?
+                    case "$eb_workload" in none|counter|dota|uber|uber_v2) break ;; esac
+                    echo 'Choose none, counter, dota, uber, or uber_v2.' >&2
                 done
                 module_args=(--chain-id "$eb_chain_id" --counts "$eb_counts"
                     --blocks-per-count "$eb_blocks" --max-attempts "$eb_attempts"
@@ -466,7 +466,7 @@ fi
 declare -a labels=(runtime empty-block startup compliance size)
 declare -a selected=()
 declare -a runtime_args=() empty_block_args=() startup_args=() compliance_args=() size_args=()
-declare -a runtime_workloads=(exp/uber)
+declare -a runtime_workloads=(exp/uber exp/uber_v2)
 declare -a empty_block_clients=(native wasix geth reth)
 runtime_iterations=1
 mode=run
