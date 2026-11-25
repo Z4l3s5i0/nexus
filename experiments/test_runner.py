@@ -201,19 +201,53 @@ class ExperimentRunnerTests(unittest.TestCase):
         result, calls = self.run_with_stubs("6")
 
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls[0], "setup:runtime,empty-block,startup,compliance,size")
+        self.assertEqual(calls.count("empty-block"), 4)
         self.assertEqual(
-            calls,
+            [call for call in calls if call.startswith("args:empty-block:")],
             [
-                "setup:runtime,empty-block,startup,compliance,size",
-                "runtime",
-                "args:runtime:--workload-type exp/uber",
-                "empty-block",
-                "private-key-present",
-                "startup",
-                "compliance",
-                "size",
+                "args:empty-block:--client native",
+                "args:empty-block:--client wasix",
+                "args:empty-block:--client geth",
+                "args:empty-block:--client reth",
             ],
         )
+        self.assertLess(calls.index("runtime"), calls.index("empty-block"))
+        self.assertLess(calls.index("empty-block"), calls.index("startup"))
+        self.assertIn("startup", calls)
+        self.assertIn("compliance", calls)
+        self.assertIn("size", calls)
+
+    def test_empty_block_defaults_run_every_client_with_distinct_run_ids(self):
+        result, calls = self.run_with_stubs("2", config_answers="n\n")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [call for call in calls if call.startswith("args:empty-block:")],
+            [
+                "args:empty-block:--client native",
+                "args:empty-block:--client wasix",
+                "args:empty-block:--client geth",
+                "args:empty-block:--client reth",
+            ],
+        )
+        for client in ("native", "wasix", "geth", "reth"):
+            self.assertIn(f"empty-block/run-test-run-empty-block-{client}.log", self.last_logs)
+
+    def test_custom_empty_block_configuration_can_run_multiple_clients(self):
+        answers = "y\ngeth,reth\n23456\n0,1,5\n2\n3\n30\n20\n0.5\nn\n"
+        result, calls = self.run_with_stubs("2", config_answers=answers)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [call for call in calls if call.startswith("args:empty-block:")],
+            [
+                "args:empty-block:--client geth --chain-id 23456 --counts 0,1,5 --blocks-per-count 2 --max-attempts 3 --receipt-timeout 30 --block-timeout 20 --poll-interval 0.5",
+                "args:empty-block:--client reth --chain-id 23456 --counts 0,1,5 --blocks-per-count 2 --max-attempts 3 --receipt-timeout 30 --block-timeout 20 --poll-interval 0.5",
+            ],
+        )
+        self.assertIn("empty-block/run-test-run-empty-block-geth.log", self.last_logs)
+        self.assertIn("empty-block/run-test-run-empty-block-reth.log", self.last_logs)
 
     def test_reset_network_option_is_forwarded_to_runtime_defaults(self):
         result, calls = self.run_with_stubs("1", runner_args=["--reset-network"])
@@ -225,7 +259,17 @@ class ExperimentRunnerTests(unittest.TestCase):
         result, calls = self.run_with_stubs("0\n1,1\n2\n")
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(calls, ["setup:empty-block", "empty-block", "private-key-present"])
+        self.assertEqual(calls[0], "setup:empty-block")
+        self.assertEqual(calls.count("empty-block"), 4)
+        self.assertEqual(
+            [call for call in calls if call.startswith("args:empty-block:")],
+            [
+                "args:empty-block:--client native",
+                "args:empty-block:--client wasix",
+                "args:empty-block:--client geth",
+                "args:empty-block:--client reth",
+            ],
+        )
         self.assertIn("Invalid selection", result.stderr)
         self.assertIn("selected more than once", result.stderr)
 
@@ -240,12 +284,14 @@ class ExperimentRunnerTests(unittest.TestCase):
                 "runtime",
                 "args:runtime:--workload-type exp/uber",
                 "empty-block",
+                "args:empty-block:--client native",
                 "private-key-present",
             ],
         )
         self.assertIn("later experiments were not started", result.stderr)
-        self.assertIn("empty-block-output", self.last_logs["empty-block/run-test-run.log"])
-        self.assertIn("Exit status: 1", self.last_logs["empty-block/run-test-run.log"])
+        empty_block_log = self.last_logs["empty-block/run-test-run-empty-block-native.log"]
+        self.assertIn("empty-block-output", empty_block_log)
+        self.assertIn("Exit status: 1", empty_block_log)
 
     def test_custom_runtime_configuration_is_forwarded_and_repeats_get_unique_run_ids(self):
         answers = "y\n1\n0\n1\n0\nexp/uber,exp/dota\n3\n8\n45\n0\n99\n2\nn\n"

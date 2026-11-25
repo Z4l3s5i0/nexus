@@ -215,7 +215,7 @@ validate_counts() {
 
 configure_module() {
     local experiment="$1" customize result reset_network="${RESET_NETWORK:-false}"
-    local has_nonzero_count=false startup_configs_default startup_wasix_eth_root startup_wasix_wasm_default
+    local has_nonzero_count=false eb_clients eb_clients_normalized eb_client startup_configs_default startup_wasix_eth_root startup_wasix_wasm_default
     local -n module_args="${experiment//-/_}_args"
     module_args=()
 
@@ -258,9 +258,24 @@ configure_module() {
             ;;
         empty-block)
             source "$REPO_ROOT/experiments/empty-block/defaults.sh"
-            if prompt_customize empty-block 'wasix client; counts 0,1,5,10,20,50,100; 3 samples per count; max 5 attempts'; then
-                prompt_value eb_client 'Client (native, wasix, geth, reth)' wasix text || return $?
-                case "$eb_client" in native|linux|wasix|geth|reth) ;; *) echo 'Choose native, wasix, geth, or reth.' >&2; return 2 ;; esac
+            empty_block_clients=(native wasix geth reth)
+            if prompt_customize empty-block 'native, wasix, geth, and reth clients; counts 0,1,5,10,20,50,100; 3 samples per count; max 5 attempts'; then
+                while true; do
+                    prompt_value eb_clients 'Clients (comma-separated: native, wasix, geth, reth)' 'native,wasix,geth,reth' text || return $?
+                    eb_clients="${eb_clients//[[:space:]]/}"
+                    IFS=',' read -r -a empty_block_clients <<< "$eb_clients"
+                    eb_clients_normalized=""
+                    for eb_client in "${empty_block_clients[@]}"; do
+                        if [[ "$eb_client" == linux ]]; then eb_client=native; fi
+                        if [[ -n "$eb_clients_normalized" ]]; then eb_clients_normalized+=,; fi
+                        eb_clients_normalized+="$eb_client"
+                    done
+                    if validate_csv_choices "$eb_clients_normalized" 'native,wasix,geth,reth'; then
+                        IFS=',' read -r -a empty_block_clients <<< "$eb_clients_normalized"
+                        break
+                    fi
+                    echo 'Choose unique clients from native, wasix, geth, and reth.' >&2
+                done
                 prompt_value eb_chain_id 'Network chain ID' 23456 positive || return $?
                 while true; do
                     prompt_value eb_counts 'Transactions per block-count group (comma-separated)' '0,1,5,10,20,50,100' text || return $?
@@ -273,7 +288,7 @@ configure_module() {
                 prompt_value eb_block_timeout 'Block timeout in seconds' 120 positive || return $?
                 prompt_value eb_poll_interval 'RPC poll interval in seconds' 1 positive_decimal || return $?
                 prompt_yes_no eb_reset_network 'Allow clearing generated network state' no || return $?
-                module_args=(--client "$eb_client" --chain-id "$eb_chain_id" --counts "$eb_counts"
+                module_args=(--chain-id "$eb_chain_id" --counts "$eb_counts"
                     --blocks-per-count "$eb_blocks" --max-attempts "$eb_attempts"
                     --receipt-timeout "$eb_receipt_timeout" --block-timeout "$eb_block_timeout"
                     --poll-interval "$eb_poll_interval")
@@ -442,6 +457,7 @@ declare -a labels=(runtime empty-block startup compliance size)
 declare -a selected=()
 declare -a runtime_args=() empty_block_args=() startup_args=() compliance_args=() size_args=()
 declare -a runtime_workloads=(exp/uber)
+declare -a empty_block_clients=(native wasix geth reth)
 runtime_iterations=1
 mode=run
 
@@ -627,7 +643,7 @@ if [[ -z "$RESUME_SESSION" ]]; then
         (
             umask 077
             {
-                declare -p selected runtime_args empty_block_args startup_args compliance_args size_args runtime_workloads
+                declare -p selected runtime_args empty_block_args startup_args compliance_args size_args runtime_workloads empty_block_clients
                 printf 'runtime_iterations=%q\n' "$runtime_iterations"
                 printf 'mode=%q\n' "$mode"
                 printf 'EXPERIMENTS_SELECTED=%q\n' "$EXPERIMENTS_SELECTED"
@@ -666,37 +682,52 @@ for experiment in "${selected[@]}"; do
     declare -n module_args="$args_name"
     iterations=1
     workload_count=1
+    client_count=1
     if [[ "$experiment" == runtime ]]; then iterations="$runtime_iterations"; fi
     if [[ "$experiment" == runtime ]]; then workload_count="${#runtime_workloads[@]}"; fi
+    if [[ "$experiment" == empty-block ]]; then client_count="${#empty_block_clients[@]}"; fi
     for ((iteration = 1; iteration <= iterations; iteration++)); do
         for ((workload_index = 1; workload_index <= workload_count; workload_index++)); do
-            export EXPERIMENT_RUN_ID="$BASE_EXPERIMENT_RUN_ID"
-            if [[ "$experiment" == runtime && ( "$iterations" -gt 1 || "$workload_count" -gt 1 ) ]]; then
-                EXPERIMENT_RUN_ID="${BASE_EXPERIMENT_RUN_ID}-runtime-${iteration}-${workload_index}"
-                if (( ${#EXPERIMENT_RUN_ID} > 128 )); then
-                    echo "Error: runtime workload/iteration run ID exceeds the 128-character limit." >&2
-                    exit 2
+            for ((client_index = 1; client_index <= client_count; client_index++)); do
+                export EXPERIMENT_RUN_ID="$BASE_EXPERIMENT_RUN_ID"
+                if [[ "$experiment" == runtime && ( "$iterations" -gt 1 || "$workload_count" -gt 1 ) ]]; then
+                    EXPERIMENT_RUN_ID="${BASE_EXPERIMENT_RUN_ID}-runtime-${iteration}-${workload_index}"
+                    if (( ${#EXPERIMENT_RUN_ID} > 128 )); then
+                        echo "Error: runtime workload/iteration run ID exceeds the 128-character limit." >&2
+                        exit 2
+                    fi
+                    export EXPERIMENT_RUN_ID
                 fi
-                export EXPERIMENT_RUN_ID
-            fi
-            if [[ "$experiment" == runtime ]]; then
-                echo "--- Workload $workload_index of $workload_count: ${runtime_workloads[$((workload_index - 1))]} (iteration $iteration of $iterations) ---"
-                module_command=(bash "$module_script" "${module_args[@]}" --workload-type "${runtime_workloads[$((workload_index - 1))]}")
-            else
-                module_command=(bash "$module_script" "${module_args[@]}")
-            fi
-            if (( iterations > 1 )) && [[ "$experiment" != runtime ]]; then echo "--- Iteration $iteration of $iterations ---"; fi
-            if [[ "$experiment" == empty-block && -v EB_PRIVATE_KEY ]]; then export EB_PRIVATE_KEY; fi
-            module_log_file="$RUN_LOG_DIR/$experiment/run-${EXPERIMENT_RUN_ID}.log"
-            if run_logged "$module_log_file" "Run $experiment experiment (run ID $EXPERIMENT_RUN_ID)" \
-                "${module_command[@]}"; then
-                :
-            else
-                status=$?
-                echo "Error: $experiment experiment failed; later experiments were not started." >&2
-                exit "$status"
-            fi
-            if [[ "$experiment" == empty-block && -v EB_PRIVATE_KEY ]]; then export -n EB_PRIVATE_KEY; fi
+                if [[ "$experiment" == empty-block ]]; then
+                    empty_block_client="${empty_block_clients[$((client_index - 1))]}"
+                    EXPERIMENT_RUN_ID="${BASE_EXPERIMENT_RUN_ID}-empty-block-${empty_block_client}"
+                    if (( ${#EXPERIMENT_RUN_ID} > 128 )); then
+                        echo "Error: empty-block client run ID exceeds the 128-character limit." >&2
+                        exit 2
+                    fi
+                    export EXPERIMENT_RUN_ID
+                    echo "--- Empty-block client $client_index of $client_count: $empty_block_client ---"
+                    module_command=(bash "$module_script" --client "$empty_block_client" "${module_args[@]}")
+                fi
+                if [[ "$experiment" == runtime ]]; then
+                    echo "--- Workload $workload_index of $workload_count: ${runtime_workloads[$((workload_index - 1))]} (iteration $iteration of $iterations) ---"
+                    module_command=(bash "$module_script" "${module_args[@]}" --workload-type "${runtime_workloads[$((workload_index - 1))]}")
+                elif [[ "$experiment" != empty-block ]]; then
+                    module_command=(bash "$module_script" "${module_args[@]}")
+                fi
+                if (( iterations > 1 )) && [[ "$experiment" != runtime ]]; then echo "--- Iteration $iteration of $iterations ---"; fi
+                if [[ "$experiment" == empty-block && -v EB_PRIVATE_KEY ]]; then export EB_PRIVATE_KEY; fi
+                module_log_file="$RUN_LOG_DIR/$experiment/run-${EXPERIMENT_RUN_ID}.log"
+                if run_logged "$module_log_file" "Run $experiment experiment (run ID $EXPERIMENT_RUN_ID)" \
+                    "${module_command[@]}"; then
+                    :
+                else
+                    status=$?
+                    echo "Error: $experiment experiment failed; later experiments were not started." >&2
+                    exit "$status"
+                fi
+                if [[ "$experiment" == empty-block && -v EB_PRIVATE_KEY ]]; then export -n EB_PRIVATE_KEY; fi
+            done
         done
     done
     unset -n module_args

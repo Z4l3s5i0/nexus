@@ -10,7 +10,7 @@ Enter a comma-separated selection such as `3,1,5` to run startup, runtime, then 
 
 Pass `--reset-network` to `experiments/run.sh` to allow runtime runs to clear pre-existing generated network data, including when accepting the default runtime configuration. It can be combined with `--detach`.
 
-Each experiment run writes result artifacts to `experiment-results/<module>/<run-id>/`. The runner exports a common `EXPERIMENT_RUN_ID` and output root to all selected modules. Generated result directories are ignored by Git; source scripts under `experiments/` are tracked.
+Each experiment run writes result artifacts to `experiment-results/<module>/<run-id>/`. The runner exports a common base `EXPERIMENT_RUN_ID` and output root to all selected modules; empty-block derives a distinct run ID for each selected client. Generated result directories are ignored by Git; source scripts under `experiments/` are tracked.
 
 Every invocation of `experiments/run.sh` also creates `experiment-results/logs/<session-id>/`. `runner.log` records the menu, selected modules, configuration messages, dispatch messages, and terminal output. A run invocation records shared setup output and its exit status in the single `setup.log`; each selected experiment has its own subfolder and `run-<run-id>.log`, so one module's output cannot be mistaken for another's. Evaluation-only runs write each report invocation to that experiment's `evaluation-<number>.log` and do not create a setup log. Standard output and errors remain visible in the terminal while being captured; command arguments are intentionally omitted from log headers to avoid recording secrets such as the empty-block private key. Detailed client, workload, Hive, and collector logs remain in their experiment result folders.
 
@@ -29,12 +29,12 @@ After selecting experiments, the runner displays each selected module's proposed
 | Module | Configurable run settings |
 |---|---|
 | Runtime | Native, WASIX, Geth, and Reth node counts (the client mix); one or more Contender workload scenarios; spammer accounts and target TPS per workload node; workload and collection-wait durations; chain ID; runtime iterations; whether generated network state may be cleared. Every workload/iteration pair is saved under a distinct run ID. |
-| Empty block | Client, chain ID, transaction-count groups, samples per group, maximum attempts, receipt/block timeouts, RPC poll interval, and network reset permission. Nonzero transaction groups use the local pre-funded Anvil test key by default; `EB_PRIVATE_KEY` or `--private-key` can override it. The key is passed only to the empty-block run, not shared setup. |
+| Empty block | Client selection, chain ID, transaction-count groups, samples per group, maximum attempts, receipt/block timeouts, RPC poll interval, and network reset permission. The default runs native, WASIX, Geth, and Reth sequentially; customization can select one or more clients. Nonzero transaction groups use the local pre-funded Anvil test key by default; `EB_PRIVATE_KEY` or `--private-key` can override it. The key is passed only to empty-block runs, not shared setup. |
 | Startup | Client configurations, iterations per configuration, chain ID, readiness timeout, system sampling interval, client images, optional NEXUS WASIX module, and Wasmer executable. |
 | Compliance | Custom Hive clients, Hive image, parallelism, per-client timeout, and whether to build or reuse existing client/Hive images. |
 | Size | Comma-separated `LABEL=DIR` source trees and `LABEL=FILE` binaries; paths containing commas are not supported by this prompt format. |
 
-The runtime scenario field accepts comma-separated Contender scenario paths such as `exp/uber,exp/counter,exp/dota`; each workload scenario runs separately for every requested runtime iteration, with its own network lifecycle, metadata, and result directory. Startup and empty-block iteration settings retain their module-specific meanings (repetitions per client configuration and samples per transaction-count group respectively).
+The runtime scenario field accepts comma-separated Contender scenario paths such as `exp/uber,exp/counter,exp/dota`; each workload scenario runs separately for every requested runtime iteration, with its own network lifecycle, metadata, and result directory. Empty-block runs each selected client separately with the same sweep settings and a distinct run ID; startup and empty-block iteration settings retain their module-specific meanings (repetitions per client configuration and samples per transaction-count group respectively).
 
 ## Modules
 
@@ -56,7 +56,7 @@ Prometheus keeps host node-exporter data under `job="node-exporter-host",scope="
 
 ### Empty block
 
-The empty-block module defaults to the `wasix` client and transaction counts `0,1,5,10,20,50,100`. Nonzero counts use the pre-funded default Anvil account unless overridden with `EB_PRIVATE_KEY` or `--private-key`. This is a publicly known development key; never use it on a live network or with real funds. `--reset-network` explicitly permits removal of pre-existing generated `data_v2/` and `startup_v2/` state. On successful archival, the module removes only its generated network state so the next selected module can start cleanly; failed runs retain state for diagnosis.
+The suite's empty-block defaults run native, WASIX, Geth, and Reth sequentially with transaction counts `0,1,5,10,20,50,100`; customize the module to select one or more clients instead. Each client run gets its own result directory and run ID. Running `experiments/empty-block/run.sh` directly still defaults to the `wasix` client. Nonzero counts use the pre-funded default Anvil account unless overridden with `EB_PRIVATE_KEY` or `--private-key`. This is a publicly known development key; never use it on a live network or with real funds. `--reset-network` explicitly permits removal of pre-existing generated `data_v2/` and `startup_v2/` state. On successful archival, the module removes only its generated network state so the next selected module or client can start cleanly; failed runs retain state for diagnosis.
 
 ### Startup
 
