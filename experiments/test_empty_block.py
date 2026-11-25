@@ -180,9 +180,10 @@ class EmptyBlockExperimentTests(unittest.TestCase):
         self.assertEqual(result, (tx_hash, sent_at))
         arguments = cast.call_args.args[1]
         self.assertEqual(arguments[-2:], ["--create", "0x608060"])
-        self.assertNotIn("--legacy", arguments)
+        legacy_index = arguments.index("--legacy")
         gas_price_index = arguments.index("--gas-price")
         create_index = arguments.index("--create")
+        self.assertLess(legacy_index, create_index)
         self.assertLess(gas_price_index, create_index)
         self.assertEqual(arguments[gas_price_index + 1], "7")
 

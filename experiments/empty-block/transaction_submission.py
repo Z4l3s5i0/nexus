@@ -190,6 +190,7 @@ def submit_contract_deployment(
         cast_bin,
         [
             "send",
+            "--legacy",
             "--gas-price",
             str(gas_price),
             "--nonce",
