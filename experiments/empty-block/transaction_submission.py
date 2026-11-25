@@ -190,8 +190,6 @@ def submit_contract_deployment(
         cast_bin,
         [
             "send",
-            "--create",
-            "0x" + bytecode.removeprefix("0x"),
             "--gas-price",
             str(gas_price),
             "--nonce",
@@ -201,6 +199,8 @@ def submit_contract_deployment(
             rpc_url,
             "--private-key",
             private_key,
+            "--create",
+            "0x" + bytecode.removeprefix("0x"),
         ],
         timeout,
         cast_network,
