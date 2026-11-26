@@ -200,6 +200,29 @@ class ExperimentRunnerTests(unittest.TestCase):
             ["setup.log"],
         )
 
+    def test_info_verbosity_keeps_child_output_in_logs_only(self):
+        result, calls = self.run_with_stubs("1")
+
+        self.assertEqual(result.returncode, 0, f"{result.stderr}\n{result.stdout}")
+        console = result.stdout + result.stderr
+        self.assertIn("Running shared setup once", console)
+        self.assertIn("=== Starting runtime experiment ===", console)
+        self.assertNotIn("setup-output", console)
+        self.assertNotIn("runtime-output", console)
+        self.assertIn("setup-output", self.last_logs["setup.log"])
+        self.assertIn("runtime-output", self.last_logs["runtime/run-test-run-runtime-1-1.log"])
+        self.assertIn("=== Starting runtime experiment ===", self.last_logs["runner.log"])
+
+    def test_debug_verbosity_streams_child_output_and_keeps_logs(self):
+        result, calls = self.run_with_stubs("1", runner_args=["--verbosity", "debug"])
+
+        self.assertEqual(result.returncode, 0, f"{result.stderr}\n{result.stdout}")
+        console = result.stdout + result.stderr
+        self.assertIn("setup-output", console)
+        self.assertIn("runtime-output", console)
+        self.assertIn("setup-output", self.last_logs["setup.log"])
+        self.assertIn("runtime-output", self.last_logs["runtime/run-test-run-runtime-1-1.log"])
+
     def test_setup_failure_is_logged_and_preserves_exit_status(self):
         result, calls = self.run_with_stubs("1", fail_setup_status=7)
 

@@ -11,7 +11,7 @@ export PATH="$CARGO_HOME/bin:$WASMER_DIR/bin:$PATH"
 
 usage() {
     cat <<EOF
-Usage: bash experiments/run.sh [--detach] [--reset-network]
+Usage: bash experiments/run.sh [--detach] [--reset-network] [--verbosity info|debug]
 
 Choose experiments by entering their numbers separated by commas, in the order
 they should run. Enter 6 to run the full suite in standard order, or 7 to
@@ -30,6 +30,7 @@ custom values before the shared setup starts.
 
   --detach                 Continue the selected suite in a persistent session
   --reset-network          Allow runtime, empty-block, and startup runs to clear generated network data
+  --verbosity LEVEL        Console output level: info (default) or debug
   --attach SESSION_ID      Reattach to a session's console log
   --stop SESSION_ID        Stop a detached session and its child processes
 EOF
@@ -104,10 +105,18 @@ run_logged() {
     shift 2
     mkdir -p "$(dirname "$log_file")"
     printf '\n[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$description" | tee -a "$log_file"
-    if "$@" 2>&1 | tee -a "$log_file"; then
-        status=0
+    if [[ "$VERBOSITY" == debug ]]; then
+        if "$@" 2>&1 | tee -a "$log_file"; then
+            status=0
+        else
+            status="${PIPESTATUS[0]}"
+        fi
     else
-        status="${PIPESTATUS[0]}"
+        if "$@" >> "$log_file" 2>&1; then
+            status=0
+        else
+            status=$?
+        fi
     fi
     printf '[%s] Exit status: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$status" | tee -a "$log_file"
     return "$status"
@@ -531,6 +540,7 @@ export EXPERIMENTS_OUTPUT_ROOT
 
 DETACH_MODE=false
 RESET_NETWORK=false
+VERBOSITY=info
 RESUME_SESSION=""
 CONTROL_ACTION=""
 CONTROL_SESSION=""
@@ -546,6 +556,15 @@ while [[ "$#" -gt 0 ]]; do
             RESET_NETWORK=true
             shift
             ;;
+        --verbosity)
+            [[ "$#" -ge 2 ]] || { echo "Error: --verbosity requires info or debug." >&2; exit 2; }
+            VERBOSITY="$2"
+            shift 2
+            ;;
+        --verbosity=*)
+            VERBOSITY="${1#*=}"
+            shift
+            ;;
         --attach|--stop|--resume)
             [[ -z "$CONTROL_ACTION" && "$#" -eq 2 ]] || { usage >&2; exit 2; }
             CONTROL_ACTION="$1"
@@ -559,6 +578,11 @@ while [[ "$#" -gt 0 ]]; do
             ;;
     esac
 done
+
+case "$VERBOSITY" in
+    info|debug) ;;
+    *) echo "Error: unsupported verbosity '$VERBOSITY'; choose info or debug." >&2; exit 2 ;;
+esac
 
 if [[ -n "$CONTROL_ACTION" ]]; then
     [[ "$DETACH_MODE" == false && "$RESET_NETWORK" == false ]] || {
@@ -791,6 +815,7 @@ if [[ -z "$RESUME_SESSION" ]]; then
                 printf 'runtime_iterations=%q\n' "$runtime_iterations"
                 printf 'ALL_EXPERIMENTS_SELECTED=%q\n' "$ALL_EXPERIMENTS_SELECTED"
                 printf 'mode=%q\n' "$mode"
+                printf 'VERBOSITY=%q\n' "$VERBOSITY"
                 printf 'EXPERIMENTS_SELECTED=%q\n' "$EXPERIMENTS_SELECTED"
                 printf 'EXPERIMENT_RUN_ID=%q\n' "$EXPERIMENT_RUN_ID"
                 printf 'BASE_EXPERIMENT_RUN_ID=%q\n' "$BASE_EXPERIMENT_RUN_ID"
