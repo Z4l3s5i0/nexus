@@ -10,6 +10,13 @@ CONTRACT_CALL_GAS_LIMIT = 250_000
 CONTRACT_DEPLOYMENT_GAS_LIMIT = 600_000_000
 
 
+def docker_shell_command(cast_network, cast_image):
+    return [
+        "docker", "run", "-i", "--rm", "--network", cast_network,
+        "--entrypoint", "/bin/sh", cast_image, "-s",
+    ]
+
+
 def transaction_hash(output):
     hashes = TX_HASH.findall(output)
     if not hashes:
@@ -19,6 +26,7 @@ def transaction_hash(output):
 
 def run_cast(cast_bin, arguments, timeout, cast_network, cast_image, capture_timestamp=False):
     submitted_at = {"monotonic": time.monotonic(), "epoch": time.time()} if capture_timestamp else None
+    docker_script = None
     if cast_bin:
         command = [cast_bin, *arguments]
     else:
@@ -36,8 +44,16 @@ def run_cast(cast_bin, arguments, timeout, cast_network, cast_image, capture_tim
             )
         else:
             script = cast_command
-        command = ["docker", "run", "--rm", "--network", cast_network, cast_image, script]
-    result = subprocess.run(command, text=True, capture_output=True, timeout=timeout, check=False)
+        command = docker_shell_command(cast_network, cast_image)
+        docker_script = script
+    result = subprocess.run(
+        command,
+        input=docker_script,
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+    )
     if result.returncode:
         message = result.stderr.strip() or result.stdout.strip() or "unknown cast error"
         for index, value in enumerate(arguments[:-1]):
@@ -136,7 +152,8 @@ def submit_burst(
             shlex.join(["cast", *arguments(first_nonce + offset)]) for offset in range(count)
         )
     result = subprocess.run(
-        ["docker", "run", "--rm", "--network", cast_network, cast_image, script],
+        docker_shell_command(cast_network, cast_image),
+        input=script,
         text=True,
         capture_output=True,
         timeout=max(timeout, 30) * max(count, 1),

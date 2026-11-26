@@ -187,8 +187,25 @@ class EmptyBlockExperimentTests(unittest.TestCase):
         self.assertEqual(submitted, tx_hashes)
         self.assertEqual(docker_run.call_count, 1)
         self.assertIn("--network", docker_run.call_args.args[0])
-        self.assertIn("--legacy", docker_run.call_args.args[0][-1])
-        self.assertIn("--gas-price 2500000000", docker_run.call_args.args[0][-1])
+        self.assertIn("-i", docker_run.call_args.args[0])
+        self.assertEqual(docker_run.call_args.args[0][-2:], ["foundry:test", "-s"])
+        self.assertIn("--legacy", docker_run.call_args.kwargs["input"])
+        self.assertIn("--gas-price 2500000000", docker_run.call_args.kwargs["input"])
+
+    def test_docker_cast_streams_large_deployment_bytecode_over_stdin(self):
+        bytecode = "0x" + "ab" * 70_000
+        tx_hash = "0x" + "a" * 64
+        result = subprocess.CompletedProcess([], 0, stdout=tx_hash, stderr="")
+        with patch.object(transaction_submission.shutil, "which", return_value="docker"):
+            with patch.object(transaction_submission.subprocess, "run", return_value=result) as docker_run:
+                output = transaction_submission.run_cast(
+                    None, ["send", "--create", bytecode], 30, "suite-net", "foundry:test",
+                )
+
+        command = docker_run.call_args.args[0]
+        self.assertEqual(output, tx_hash)
+        self.assertLess(max(map(len, command)), 128_000)
+        self.assertEqual(docker_run.call_args.kwargs["input"], f"cast send --create {bytecode}")
 
     def test_docker_cast_burst_captures_each_container_submission_time(self):
         tx_hash = "0x" + "a" * 64
@@ -209,7 +226,7 @@ class EmptyBlockExperimentTests(unittest.TestCase):
 
         self.assertEqual(submitted[0]["hash"], tx_hash)
         self.assertEqual(submitted[0]["submitted_at"], {"monotonic": 20.5, "epoch": 1000.5})
-        self.assertIn("date +%s.%N", docker_run.call_args.args[0][-1])
+        self.assertIn("date +%s.%N", docker_run.call_args.kwargs["input"])
 
     def test_contract_deployment_submits_bytecode_with_cast_create(self):
         tx_hash = "0x" + "a" * 64
