@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NODE_INDEX=""
 CHAIN_ID=""
 SCENARIO="exp/uber"
@@ -43,6 +44,11 @@ done
 MNEMONIC="sleep moment list remain like wall lake industry canvas wonder ecology elite duck salad naive syrup frame brass utility club odor country obey pudding"
 RPC_URL="http://el-node-$NODE_INDEX:$((8545 + NODE_INDEX))"
 SCENARIO_REF="/scenarios/$SCENARIO.toml"
+SCENARIO_VOLUME=""
+if [[ "$SCENARIO" == "exp/value-transfer" ]]; then
+    SCENARIO_REF="/tmp/wasix-value-transfer.toml"
+    SCENARIO_VOLUME="$SCRIPT_DIR/value-transfer.toml:$SCENARIO_REF:ro"
+fi
 mkdir -p "$STATE_DIR"
 STATE_DIR="$(cd "$STATE_DIR" && pwd)"
 
@@ -59,6 +65,9 @@ CONTAINER_OPTIONS=(
     -v "$STATE_DIR:/root/.local/state/contender"
     -w /
 )
+if [[ -n "$SCENARIO_VOLUME" ]]; then
+    CONTAINER_OPTIONS+=( -v "$SCENARIO_VOLUME" )
+fi
 
 docker run -i "${CONTAINER_OPTIONS[@]}" "$CONTENDER_IMAGE" setup "$SCENARIO_REF" \
     -r "$RPC_URL" -p "$PRIVATE_KEY" -a "$ACCOUNTS" --seed "$SEED" \

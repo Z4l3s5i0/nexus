@@ -57,6 +57,19 @@ class ExperimentRunnerTests(unittest.TestCase):
                     result.stderr.decode("utf-8", errors="replace"),
                 )
 
+    def test_runtime_value_transfer_uses_local_contender_scenario(self):
+        workload_script = (ROOT / "experiments" / "runtime" / "workload.sh").read_text(encoding="utf-8")
+        scenario = (ROOT / "experiments" / "runtime" / "value-transfer.toml").read_text(encoding="utf-8")
+
+        self.assertIn('if [[ "$SCENARIO" == "exp/value-transfer" ]]; then', workload_script)
+        self.assertIn('SCENARIO_VOLUME="$SCRIPT_DIR/value-transfer.toml:$SCENARIO_REF:ro"', workload_script)
+        self.assertIn('CONTAINER_OPTIONS+=( -v "$SCENARIO_VOLUME" )', workload_script)
+        self.assertIn('setup "$SCENARIO_REF"', workload_script)
+        self.assertIn('spam "$SCENARIO_REF"', workload_script)
+        self.assertIn('[spam.tx]', scenario)
+        self.assertIn('value = "1"', scenario)
+        self.assertIn('gas_limit = 21000', scenario)
+
     def run_with_stubs(
         self, selection, fail_module=None, config_answers=None, fail_setup_status=None,
         runner_args=None, private_key="0" * 64, fail_empty_block_count=None,
@@ -306,46 +319,67 @@ class ExperimentRunnerTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(calls[0], "setup:runtime,empty-block,startup,compliance,size")
-        self.assertEqual(calls.count("runtime"), 200)
-        self.assertEqual(calls.count("empty-block"), 900)
+        self.assertEqual(calls.count("runtime"), 250)
+        self.assertEqual(calls.count("empty-block"), 1000)
         runtime_args = [call for call in calls if call.startswith("args:runtime:")]
-        self.assertEqual(len(runtime_args), 200)
-        self.assertTrue(all("--accounts 4 --tps 100 --duration 10" in call for call in runtime_args))
-        for contract in ("counter", "dota", "uber", "uber_v2"):
-            self.assertEqual(sum(call.endswith(f"--workload-type exp/{contract}") for call in runtime_args), 50)
-        profile_ids = {
-            call.partition("-runtime-")[2].rsplit("-", 1)[0]
-            for call in calls if call.startswith("run-id:")
+        self.assertEqual(len(runtime_args), 250)
+        runtime_workloads = {
+            "counter": "--accounts 17 --tps 17 --duration 180 --wait-duration 900 --chain-id 12345",
+            "dota": "--accounts 66 --tps 66 --duration 280 --wait-duration 900 --chain-id 12345",
+            "uber": "--accounts 4 --tps 4 --duration 120 --wait-duration 900 --chain-id 12345",
+            "uber_v2": "--accounts 4 --tps 4 --duration 120 --wait-duration 900 --chain-id 12345",
+            "value-transfer": "--accounts 10 --tps 100 --duration 10 --wait-duration 900 --chain-id 12345",
         }
-        self.assertEqual(len(profile_ids), 50)
+        for workload, args in runtime_workloads.items():
+            matching_runs = [
+                call for call in runtime_args
+                if call.endswith(f"--workload-type exp/{workload}") and args in call
+            ]
+            self.assertEqual(len(matching_runs), 50, workload)
+        runtime_run_ids = [call for call in calls if call.startswith("run-id:")]
+        self.assertEqual(len(runtime_run_ids), 250)
+        for total in (4, 8, 16, 32, 64):
+            for mix in (
+                "native-only", "wasix-only", "geth-only", "reth-only",
+                "wasix-native-half", "wasix-reth-half", "wasix-geth-half",
+                "native-reth-half", "native-geth-half", "all-quarter",
+            ):
+                profile = f"{total}-{mix}"
+                self.assertEqual(
+                    sum(run_id.startswith(f"run-id:test-run-runtime-{profile}-") for run_id in runtime_run_ids),
+                    5,
+                    profile,
+                )
         self.assertTrue(any(
-            "--linux-nodes 8 --wasix-nodes 8 --geth-nodes 8 --reth-nodes 7 --workload-type exp/counter" in call
+            "--linux-nodes 8 --wasix-nodes 8 --geth-nodes 8 --reth-nodes 8" in call
             for call in runtime_args
         ))
         empty_args = [call for call in calls if call.startswith("args:empty-block:")]
-        self.assertEqual(len(empty_args), 900)
+        self.assertEqual(len(empty_args), 1000)
         self.assertEqual(
             {re.search(r"--counts (\d+)", call).group(1) for call in empty_args},
-            {"0", "1", "5", "10", "50", "100", "200", "500", "1000"},
+            {"0", "1", "5", "10", "20", "50", "100", "200", "500", "1000"},
         )
         submitted_counts = [re.search(r"--counts (\d+)", call).group(1) for call in empty_args]
         self.assertTrue(all(submitted_counts.count(count) == 100 for count in (
-            "0", "1", "5", "10", "50", "100", "200", "500", "1000",
+            "0", "1", "5", "10", "20", "50", "100", "200", "500", "1000",
         )))
         self.assertTrue(all("--receipt-timeout 300 --block-timeout 120" in call for call in empty_args))
-        self.assertEqual(sum("--workload " not in call for call in empty_args), 180)
+        self.assertEqual(sum("--workload " not in call for call in empty_args), 200)
         self.assertTrue(any("--parallelism 5" in call for call in calls if call.startswith("args:compliance:")))
         self.assertIn(
             "args:startup:--configs geth,reth,nexus-linux,nexus-wasix-docker,nexus-wasmer --iterations 5",
             calls,
         )
         self.assertIn("5 iterations", result.stdout)
-        self.assertIn("step 4 of 9: transaction spam (10 transactions)", result.stdout)
+        self.assertIn("step 4 of 10: transaction spam (10 transactions)", result.stdout)
         rows = list(csv.DictReader(io.StringIO(self.last_logs["overview.csv"])))
-        self.assertEqual(len(rows), 1104)
+        self.assertEqual(len(rows), 1254)
+        runtime_rows = [row for row in rows if row["experiment"].startswith("runtime/")]
+        self.assertEqual(len(runtime_rows), 250)
         empty_rows = [row for row in rows if row["experiment"].startswith("empty-block/")]
-        self.assertEqual(len(empty_rows), 900)
-        for count in ("0", "1", "5", "10", "50", "100", "200", "500", "1000"):
+        self.assertEqual(len(empty_rows), 1000)
+        for count in ("0", "1", "5", "10", "20", "50", "100", "200", "500", "1000"):
             for repeat in range(1, 6):
                 suffix = f"-count-{count}-repeat-{repeat}"
                 self.assertEqual(sum(row["run_id"].endswith(suffix) for row in empty_rows), 20)

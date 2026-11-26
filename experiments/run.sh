@@ -238,7 +238,7 @@ add_runtime_profile() {
 configure_full_runtime_matrix() {
     local total native_half wasix_half native_quarter wasix_quarter geth_quarter reth_quarter remainder
     runtime_profiles=()
-    for total in 4 8 16 31 64; do
+    for total in 4 8 16 32 64; do
         add_runtime_profile "$total-native-only" "$total" 0 0 0
         add_runtime_profile "$total-wasix-only" 0 "$total" 0 0
         add_runtime_profile "$total-geth-only" 0 0 "$total" 0
@@ -289,7 +289,7 @@ configure_module() {
     case "$experiment" in
         runtime)
             if [[ "$ALL_EXPERIMENTS_SELECTED" == true ]]; then
-                if prompt_customize runtime '50 client mixes across 4, 8, 16, 31, and 64 nodes; counter, dota, uber, and uber_v2; 100 TPS per node for 10 seconds (1,000 transactions per node)'; then
+                if prompt_customize runtime '50 client mixes across 4, 8, 16, 32, and 64 nodes; counter (17 TPS, 17 accounts, 180 seconds), dota (66 TPS, 66 accounts, 280 seconds), uber and uber_v2 (4 TPS, 4 accounts, 120 seconds), and value transfers (100 TPS, 10 accounts, 10 seconds); 900-second collection wait'; then
                     runtime_profiles=()
                     prompt_value linux_nodes 'Native/Linux nodes' 2 nonnegative || return $?
                     prompt_value wasix_nodes 'WASIX nodes' 2 nonnegative || return $?
@@ -300,7 +300,7 @@ configure_module() {
                         return 2
                     fi
                     while true; do
-                        prompt_value workload_type 'Contender workload scenarios (comma-separated)' 'exp/counter,exp/dota,exp/uber,exp/uber_v2' text || return $?
+                        prompt_value workload_type 'Contender workload scenarios (comma-separated)' 'exp/counter,exp/dota,exp/uber,exp/uber_v2,exp/value-transfer' text || return $?
                         if validate_workload_types "$workload_type"; then break; fi
                         echo 'Use unique scenario paths with letters, numbers, dots, underscores, slashes, or hyphens.' >&2
                     done
@@ -321,9 +321,10 @@ configure_module() {
                     result=$?
                     (( result == 1 )) || return "$result"
                     configure_full_runtime_matrix
-                    runtime_workloads=(exp/counter exp/dota exp/uber exp/uber_v2)
+                    FULL_RUNTIME_DEFAULTS=true
+                    runtime_workloads=(exp/counter exp/dota exp/uber exp/uber_v2 exp/value-transfer)
                     runtime_iterations=1
-                    module_args=(--accounts 4 --tps 100 --duration 10 --wait-duration 10 --chain-id 12345)
+                    module_args=(--chain-id 12345)
                 fi
             elif prompt_customize runtime '2 native, 2 WASIX, 0 Geth, 0 Reth nodes; exp/uber and exp/uber_v2 workloads; 4 TPS; 4 accounts; 300 seconds; 1 iteration'; then
                 prompt_value linux_nodes 'Native/Linux nodes' 2 nonnegative || return $?
@@ -366,8 +367,8 @@ configure_module() {
             empty_block_clients=(native wasix geth reth)
             if [[ "$ALL_EXPERIMENTS_SELECTED" == true ]]; then
                 eb_clients_default='native,wasix,geth,reth'
-                eb_counts_default='0,1,5,10,50,100,200,500,1000'
-                empty_block_counts=(0 1 5 10 50 100 200 500 1000)
+                eb_counts_default='0,1,5,10,20,50,100,200,500,1000'
+                empty_block_counts=(0 1 5 10 20 50 100 200 500 1000)
                 eb_workloads_default='none,counter,dota,uber,uber_v2'
                 eb_blocks_default=1
                 eb_attempts_default=2
@@ -376,7 +377,7 @@ configure_module() {
                 eb_poll_default=1
                 has_nonzero_count=true
                 empty_block_workloads=(none counter dota uber uber_v2)
-                customize_description='all four clients; value transfers and counter, dota, uber, uber_v2 contract calls; bursts 0,1,5,10,50,100,200,500,1000; one sample; max 2 attempts; bounded submission timeout 300 seconds'
+                customize_description='all four clients; value transfers and counter, dota, uber, uber_v2 contract calls; bursts 0,1,5,10,20,50,100,200,500,1000; one sample; max 2 attempts; bounded submission timeout 300 seconds'
             else
                 eb_clients_default='native,wasix,geth,reth'
                 eb_counts_default='0,1,5,10,20,50,100'
@@ -628,6 +629,7 @@ declare -a selected=()
 declare -a runtime_args=() empty_block_args=() startup_args=() compliance_args=() size_args=()
 declare -a runtime_workloads=(exp/uber exp/uber_v2)
 declare -a runtime_profiles=()
+FULL_RUNTIME_DEFAULTS=false
 declare -a empty_block_clients=(native wasix geth reth)
 declare -a empty_block_workloads=(none)
 declare -a empty_block_counts=()
@@ -836,6 +838,7 @@ if [[ -z "$RESUME_SESSION" ]]; then
                 declare -p selected runtime_args empty_block_args startup_args compliance_args size_args runtime_workloads runtime_profiles empty_block_clients empty_block_workloads empty_block_counts
                 printf 'runtime_iterations=%q\n' "$runtime_iterations"
                 printf 'ALL_EXPERIMENTS_SELECTED=%q\n' "$ALL_EXPERIMENTS_SELECTED"
+                printf 'FULL_RUNTIME_DEFAULTS=%q\n' "$FULL_RUNTIME_DEFAULTS"
                 printf 'mode=%q\n' "$mode"
                 printf 'VERBOSITY=%q\n' "$VERBOSITY"
                 printf 'EXPERIMENTS_SELECTED=%q\n' "$EXPERIMENTS_SELECTED"
@@ -911,6 +914,7 @@ for experiment in "${selected[@]}"; do
         for ((profile_index = 1; profile_index <= profile_count; profile_index++)); do
             profile_name=''
             profile_nodes=()
+            runtime_workload_args=()
             if [[ "$experiment" == runtime && ${#runtime_profiles[@]} -gt 0 ]]; then
                 IFS='|' read -r profile_name linux_nodes wasix_nodes geth_nodes reth_nodes \
                     <<< "${runtime_profiles[$((profile_index - 1))]}"
@@ -925,14 +929,23 @@ for experiment in "${selected[@]}"; do
                     if [[ "$experiment" == runtime ]]; then
                         workload="${runtime_workloads[$((workload_index - 1))]}"
                         workload_slug="${workload##*/}"
+                        runtime_workload_args=("${module_args[@]}")
+                        if [[ "$FULL_RUNTIME_DEFAULTS" == true ]]; then
+                            case "$workload_slug" in
+                                counter) runtime_workload_args=(--accounts 17 --tps 17 --duration 180 --wait-duration 900 --chain-id 12345) ;;
+                                dota) runtime_workload_args=(--accounts 66 --tps 66 --duration 280 --wait-duration 900 --chain-id 12345) ;;
+                                uber|uber_v2) runtime_workload_args=(--accounts 4 --tps 4 --duration 120 --wait-duration 900 --chain-id 12345) ;;
+                                value-transfer) runtime_workload_args=(--accounts 10 --tps 100 --duration 10 --wait-duration 900 --chain-id 12345) ;;
+                            esac
+                        fi
                         task_name="runtime/$workload_slug"
                         if [[ -n "$profile_name" ]]; then
                             task_name="runtime/$profile_name/$workload_slug"
                             EXPERIMENT_RUN_ID="${BASE_EXPERIMENT_RUN_ID}-runtime-${profile_name}-${workload_slug}"
-                            module_command=(bash "$module_script" "${module_args[@]}" "${profile_nodes[@]}" --workload-type "$workload")
+                            module_command=(bash "$module_script" "${runtime_workload_args[@]}" "${profile_nodes[@]}" --workload-type "$workload")
                         else
                             EXPERIMENT_RUN_ID="${BASE_EXPERIMENT_RUN_ID}-runtime-${iteration}-${workload_index}"
-                            module_command=(bash "$module_script" "${module_args[@]}" --workload-type "$workload")
+                            module_command=(bash "$module_script" "${runtime_workload_args[@]}" --workload-type "$workload")
                         fi
                     elif [[ "$experiment" == empty-block ]]; then
                         empty_block_client="${empty_block_clients[$((client_index - 1))]}"
