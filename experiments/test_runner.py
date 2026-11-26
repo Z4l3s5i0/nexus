@@ -1,3 +1,5 @@
+import csv
+import io
 import os
 import pathlib
 import re
@@ -57,7 +59,7 @@ class ExperimentRunnerTests(unittest.TestCase):
 
     def run_with_stubs(
         self, selection, fail_module=None, config_answers=None, fail_setup_status=None,
-        runner_args=None, private_key="0" * 64,
+        runner_args=None, private_key="0" * 64, fail_empty_block_count=None,
     ):
         with tempfile.TemporaryDirectory(prefix="experiment-runner-test-", dir=ROOT) as temp:
             temp_root = pathlib.Path(temp)
@@ -83,6 +85,8 @@ class ExperimentRunnerTests(unittest.TestCase):
                     'if [[ "${EXPERIMENT_RUN_ID:-}" == *-runtime-* ]]; then printf "run-id:%s\\n" "$EXPERIMENT_RUN_ID" >> "$TEST_LOG"; fi\n'
                     f'if [[ "{name}" == empty-block && -n "${{EB_PRIVATE_KEY:-}}" ]]; then printf "private-key-present\\n" >> "$TEST_LOG"; fi\n'
                     f'if [[ "{name}" == empty-block && "${{EB_PRIVATE_KEY:-}}" == "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" ]]; then printf "private-key-default\\n" >> "$TEST_LOG"; fi\n'
+                    f'if [[ {exit_status} -ne 0 ]]; then printf "Error: stubbed failure of {name}\\n" >&2; exit {exit_status}; fi\n'
+                    f'if [[ "{name}" == empty-block && -n "${{FAIL_EMPTY_BLOCK_COUNT:-}}" && " $* " == *" --counts ${{FAIL_EMPTY_BLOCK_COUNT}} "* ]]; then printf "Error: simulated failure for burst count\\n" >&2; exit 1; fi\n'
                     f'exit {exit_status}\n'
                 ).encode("utf-8"))
                 (module_dir / "report.py").write_text(
@@ -115,6 +119,7 @@ class ExperimentRunnerTests(unittest.TestCase):
                     "EXPERIMENT_RUN_ID": "test-run",
                     "TEST_LOG": bash_compatible_path(log_path),
                     "EB_PRIVATE_KEY": private_key,
+                    "FAIL_EMPTY_BLOCK_COUNT": fail_empty_block_count or "",
                 }
             )
             forward_wsl_environment(
@@ -126,6 +131,7 @@ class ExperimentRunnerTests(unittest.TestCase):
                     "EXPERIMENT_RUN_ID",
                     "TEST_LOG",
                     "EB_PRIVATE_KEY",
+                    "FAIL_EMPTY_BLOCK_COUNT",
                 ),
             )
             input_text = selection if selection.endswith("\n") else f"{selection}\n"
@@ -201,22 +207,58 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertEqual(calls, ["setup:runtime"])
         self.assertIn("Exit status: 7", self.last_logs["setup.log"])
         self.assertNotIn("runtime/run-test-run.log", self.last_logs)
+        rows = list(csv.DictReader(io.StringIO(self.last_logs["overview.csv"])))
+        self.assertEqual([row["status"] for row in rows], ["failed", "skipped"])
+        self.assertIn("shared setup failed", rows[1]["problem"])
 
     def test_all_selection_uses_standard_order_after_one_setup(self):
         result, calls = self.run_with_stubs("6")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(calls[0], "setup:runtime,empty-block,startup,compliance,size")
-        self.assertEqual(calls.count("empty-block"), 4)
+        self.assertEqual(calls.count("runtime"), 200)
+        self.assertEqual(calls.count("empty-block"), 900)
+        runtime_args = [call for call in calls if call.startswith("args:runtime:")]
+        self.assertEqual(len(runtime_args), 200)
+        self.assertTrue(all("--accounts 4 --tps 100 --duration 10" in call for call in runtime_args))
+        for contract in ("counter", "dota", "uber", "uber_v2"):
+            self.assertEqual(sum(call.endswith(f"--workload-type exp/{contract}") for call in runtime_args), 50)
+        profile_ids = {
+            call.partition("-runtime-")[2].rsplit("-", 1)[0]
+            for call in calls if call.startswith("run-id:")
+        }
+        self.assertEqual(len(profile_ids), 50)
+        self.assertTrue(any(
+            "--linux-nodes 8 --wasix-nodes 8 --geth-nodes 8 --reth-nodes 7 --workload-type exp/counter" in call
+            for call in runtime_args
+        ))
+        empty_args = [call for call in calls if call.startswith("args:empty-block:")]
+        self.assertEqual(len(empty_args), 900)
         self.assertEqual(
-            [call for call in calls if call.startswith("args:empty-block:")],
-            [
-                "args:empty-block:--client native",
-                "args:empty-block:--client wasix",
-                "args:empty-block:--client geth",
-                "args:empty-block:--client reth",
-            ],
+            {re.search(r"--counts (\d+)", call).group(1) for call in empty_args},
+            {"0", "1", "5", "10", "50", "100", "200", "500", "1000"},
         )
+        submitted_counts = [re.search(r"--counts (\d+)", call).group(1) for call in empty_args]
+        self.assertTrue(all(submitted_counts.count(count) == 100 for count in (
+            "0", "1", "5", "10", "50", "100", "200", "500", "1000",
+        )))
+        self.assertTrue(all("--receipt-timeout 300 --block-timeout 120" in call for call in empty_args))
+        self.assertEqual(sum("--workload " not in call for call in empty_args), 180)
+        self.assertTrue(any("--parallelism 5" in call for call in calls if call.startswith("args:compliance:")))
+        self.assertIn(
+            "args:startup:--configs geth,reth,nexus-linux,nexus-wasix-docker,nexus-wasmer --iterations 5",
+            calls,
+        )
+        self.assertIn("5 iterations", result.stdout)
+        rows = list(csv.DictReader(io.StringIO(self.last_logs["overview.csv"])))
+        self.assertEqual(len(rows), 1104)
+        empty_rows = [row for row in rows if row["experiment"].startswith("empty-block/")]
+        self.assertEqual(len(empty_rows), 900)
+        for count in ("0", "1", "5", "10", "50", "100", "200", "500", "1000"):
+            for repeat in range(1, 6):
+                suffix = f"-count-{count}-repeat-{repeat}"
+                self.assertEqual(sum(row["run_id"].endswith(suffix) for row in empty_rows), 20)
+        self.assertTrue(all(row["status"] == "passed" for row in rows))
         self.assertLess(calls.index("runtime"), calls.index("empty-block"))
         self.assertLess(calls.index("empty-block"), calls.index("startup"))
         self.assertIn("startup", calls)
@@ -310,29 +352,37 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertIn("Invalid selection", result.stderr)
         self.assertIn("selected more than once", result.stderr)
 
-    def test_failure_stops_later_experiments(self):
+    def test_module_failures_are_recorded_and_later_experiments_continue(self):
         result, calls = self.run_with_stubs("1,2,3", fail_module="empty-block")
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(
-            calls,
-            [
-                "setup:runtime,empty-block,startup",
-                "runtime",
-                "args:runtime:--workload-type exp/uber",
-                "run-id:test-run-runtime-1-1",
-                "runtime",
-                "args:runtime:--workload-type exp/uber_v2",
-                "run-id:test-run-runtime-1-2",
-                "empty-block",
-                "args:empty-block:--client native",
-                "private-key-present",
-            ],
-        )
-        self.assertIn("later experiments were not started", result.stderr)
+        self.assertEqual(calls[0], "setup:runtime,empty-block,startup")
+        self.assertEqual(calls.count("empty-block"), 4)
+        self.assertIn("startup", calls)
+        self.assertIn("continuing with the remaining experiments", result.stderr)
         empty_block_log = self.last_logs["empty-block/run-test-run-empty-block-native.log"]
         self.assertIn("empty-block-output", empty_block_log)
         self.assertIn("Exit status: 1", empty_block_log)
+        rows = list(csv.DictReader(io.StringIO(self.last_logs["overview.csv"])))
+        failed = [row for row in rows if row["status"] == "failed"]
+        self.assertEqual(len(failed), 4)
+        self.assertTrue(all("stubbed failure of empty-block" in row["problem"] for row in failed))
+        self.assertTrue(any(row["experiment"] == "startup" and row["status"] == "passed" for row in rows))
+
+    def test_full_suite_continues_after_an_empty_block_count_fails(self):
+        result, calls = self.run_with_stubs("6", fail_empty_block_count="5")
+
+        self.assertNotEqual(result.returncode, 0)
+        empty_block_args = [call for call in calls if call.startswith("args:empty-block:")]
+        self.assertEqual(len(empty_block_args), 900)
+        self.assertIn("--counts 1000", empty_block_args[-1])
+        self.assertIn("startup", calls)
+        self.assertIn("compliance", calls)
+        rows = list(csv.DictReader(io.StringIO(self.last_logs["overview.csv"])))
+        failed = [row for row in rows if row["status"] == "failed"]
+        self.assertEqual(len(failed), 100)
+        self.assertTrue(all("/count-5/repeat-" in row["experiment"] for row in failed))
+        self.assertTrue(any("/count-1000/repeat-" in row["experiment"] for row in rows))
 
     def test_custom_runtime_configuration_is_forwarded_and_repeats_get_unique_run_ids(self):
         answers = "y\n1\n0\n1\n0\nexp/uber,exp/dota\n3\n8\n45\n0\n99\n2\nn\n"

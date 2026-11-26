@@ -175,6 +175,33 @@ class EmptyBlockExperimentTests(unittest.TestCase):
         gas_price_index = cast_arguments.index("--gas-price")
         self.assertEqual(cast_arguments[gas_price_index + 1], "2500000000")
 
+    def test_value_transfer_burst_sends_one_wei(self):
+        tx_hash = "0x" + "a" * 64
+        with patch.object(transaction_submission, "run_cast", return_value=f"sent {tx_hash}") as cast:
+            submitted = transaction_submission.submit_burst(
+                "cast", "network", "image", "http://localhost:8545", "0xsender", "0xkey", 10, 1, 30,
+                "2500000000",
+            )
+
+        arguments = cast.call_args.args[1]
+        self.assertEqual(submitted, [tx_hash])
+        self.assertEqual(arguments[arguments.index("--value") + 1], "1")
+        self.assertEqual(arguments[arguments.index("--gas-limit") + 1], "21000")
+
+    def test_docker_burst_has_a_finite_submission_timeout(self):
+        tx_hash = "0x" + "a" * 64
+        result = subprocess.CompletedProcess([], 0, stdout=tx_hash, stderr="")
+        with patch.object(transaction_submission.shutil, "which", return_value="docker"):
+            with patch.object(transaction_submission.time, "monotonic", return_value=0.0):
+                with patch.object(transaction_submission.subprocess, "run", return_value=result) as docker_run:
+                    submitted = transaction_submission.submit_burst(
+                        None, "suite-net", "foundry:test", "http://el-node-0:8545",
+                        "0xsender", "0x" + "1" * 64, 5, 1, 3600, "2500000000",
+                    )
+
+        self.assertEqual(submitted, [tx_hash])
+        self.assertEqual(docker_run.call_args.kwargs["timeout"], transaction_submission.MAX_BURST_TIMEOUT_SECONDS)
+
     def test_docker_cast_uses_one_container_for_a_burst(self):
         tx_hashes = ["0x" + "a" * 64, "0x" + "b" * 64]
         result = subprocess.CompletedProcess([], 0, stdout="\n".join(tx_hashes), stderr="")

@@ -8,6 +8,7 @@ import time
 TX_HASH = re.compile(r"0x[0-9a-fA-F]{64}")
 CONTRACT_CALL_GAS_LIMIT = 250_000
 CONTRACT_DEPLOYMENT_GAS_LIMIT = 600_000_000
+MAX_BURST_TIMEOUT_SECONDS = 300
 
 
 def docker_shell_command(cast_network, cast_image):
@@ -98,7 +99,7 @@ def submit_burst(
         if function_signature:
             command.extend([function_signature, "--gas-limit", str(contract_gas_limit)])
         else:
-            command.extend(["--value", "0", "--gas-limit", "21000"])
+            command.extend(["--value", "1", "--gas-limit", "21000"])
         command.extend(
             [
                 "--legacy",
@@ -115,13 +116,19 @@ def submit_burst(
         )
         return command
 
+    deadline = time.monotonic() + min(max(timeout, 30) * max(count, 1), MAX_BURST_TIMEOUT_SECONDS)
     if cast_bin:
         submitted = []
         for offset in range(count):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"transaction burst exceeded the {MAX_BURST_TIMEOUT_SECONDS}-second submission timeout"
+                )
             result = run_cast(
                 cast_bin,
                 arguments(first_nonce + offset),
-                timeout,
+                min(timeout, remaining),
                 cast_network,
                 cast_image,
                 capture_timestamp=include_timestamps,
@@ -156,7 +163,7 @@ def submit_burst(
         input=script,
         text=True,
         capture_output=True,
-        timeout=max(timeout, 30) * max(count, 1),
+        timeout=max(0.1, deadline - time.monotonic()),
         check=False,
     )
     if result.returncode:

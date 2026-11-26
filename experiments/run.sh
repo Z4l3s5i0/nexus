@@ -14,7 +14,7 @@ usage() {
 Usage: bash experiments/run.sh [--detach] [--reset-network]
 
 Choose experiments by entering their numbers separated by commas, in the order
-they should run. Enter 6 to run all five in the standard order, or 7 to
+they should run. Enter 6 to run the full suite in standard order, or 7 to
 reevaluate reports from saved results without rerunning experiments.
 
   1) Runtime
@@ -197,6 +197,54 @@ validate_workload_types() {
     done
 }
 
+validate_empty_block_workloads() {
+    local value="$1" workload
+    local -A workload_seen=()
+    empty_block_workloads=()
+    IFS=',' read -r -a workload_items <<< "$value"
+    (( ${#workload_items[@]} > 0 )) || return 1
+    for workload in "${workload_items[@]}"; do
+        workload="${workload//[[:space:]]/}"
+        case "$workload" in none|counter|dota|uber|uber_v2) ;; *) return 1 ;; esac
+        [[ -z "${workload_seen[$workload]:-}" ]] || return 1
+        workload_seen[$workload]=1
+        empty_block_workloads+=("$workload")
+    done
+}
+
+add_runtime_profile() {
+    runtime_profiles+=("$1|$2|$3|$4|$5")
+}
+
+configure_full_runtime_matrix() {
+    local total native_half wasix_half native_quarter wasix_quarter geth_quarter reth_quarter remainder
+    runtime_profiles=()
+    for total in 4 8 16 31 64; do
+        add_runtime_profile "$total-native-only" "$total" 0 0 0
+        add_runtime_profile "$total-wasix-only" 0 "$total" 0 0
+        add_runtime_profile "$total-geth-only" 0 0 "$total" 0
+        add_runtime_profile "$total-reth-only" 0 0 0 "$total"
+
+        wasix_half=$(((total + 1) / 2))
+        native_half=$((total - wasix_half))
+        add_runtime_profile "$total-wasix-native-half" "$native_half" "$wasix_half" 0 0
+        add_runtime_profile "$total-wasix-reth-half" 0 "$wasix_half" 0 "$((total - wasix_half))"
+        add_runtime_profile "$total-wasix-geth-half" 0 "$wasix_half" "$((total - wasix_half))" 0
+        add_runtime_profile "$total-native-reth-half" "$wasix_half" 0 0 "$((total - wasix_half))"
+        add_runtime_profile "$total-native-geth-half" "$wasix_half" 0 "$((total - wasix_half))" 0
+
+        native_quarter=$((total / 4))
+        wasix_quarter=$native_quarter
+        geth_quarter=$native_quarter
+        reth_quarter=$native_quarter
+        remainder=$((total % 4))
+        (( remainder == 0 )) || native_quarter=$((native_quarter + 1))
+        (( remainder < 2 )) || wasix_quarter=$((wasix_quarter + 1))
+        (( remainder < 3 )) || geth_quarter=$((geth_quarter + 1))
+        add_runtime_profile "$total-all-quarter" "$native_quarter" "$wasix_quarter" "$geth_quarter" "$reth_quarter"
+    done
+}
+
 validate_counts() {
     local value="$1" item normalized
     local -A list_seen=()
@@ -221,7 +269,44 @@ configure_module() {
 
     case "$experiment" in
         runtime)
-            if prompt_customize runtime '2 native, 2 WASIX, 0 Geth, 0 Reth nodes; exp/uber and exp/uber_v2 workloads; 4 TPS; 4 accounts; 300 seconds; 1 iteration'; then
+            if [[ "$ALL_EXPERIMENTS_SELECTED" == true ]]; then
+                if prompt_customize runtime '50 client mixes across 4, 8, 16, 31, and 64 nodes; counter, dota, uber, and uber_v2; 100 TPS per node for 10 seconds (1,000 transactions per node)'; then
+                    runtime_profiles=()
+                    prompt_value linux_nodes 'Native/Linux nodes' 2 nonnegative || return $?
+                    prompt_value wasix_nodes 'WASIX nodes' 2 nonnegative || return $?
+                    prompt_value geth_nodes 'Geth nodes' 0 nonnegative || return $?
+                    prompt_value reth_nodes 'Reth nodes' 0 nonnegative || return $?
+                    if (( 10#$linux_nodes + 10#$wasix_nodes + 10#$geth_nodes + 10#$reth_nodes == 0 )); then
+                        echo 'At least one runtime node is required.' >&2
+                        return 2
+                    fi
+                    while true; do
+                        prompt_value workload_type 'Contender workload scenarios (comma-separated)' 'exp/counter,exp/dota,exp/uber,exp/uber_v2' text || return $?
+                        if validate_workload_types "$workload_type"; then break; fi
+                        echo 'Use unique scenario paths with letters, numbers, dots, underscores, slashes, or hyphens.' >&2
+                    done
+                    prompt_value accounts 'Spamming accounts per workload node' 4 positive || return $?
+                    prompt_value tps 'Target TPS per workload node' 100 positive || return $?
+                    prompt_value duration 'Workload duration in seconds' 10 positive || return $?
+                    prompt_value wait_duration 'Post-workload collection wait in seconds' 60 nonnegative || return $?
+                    prompt_value chain_id 'Network chain ID' 12345 positive || return $?
+                    prompt_value runtime_iterations 'Number of independent runtime iterations' 1 positive || return $?
+                    if [[ "$RESET_NETWORK" != true ]]; then
+                        prompt_yes_no reset_network 'Allow clearing generated network state' no || return $?
+                    fi
+                    module_args=(--linux-nodes "$linux_nodes" --wasix-nodes "$wasix_nodes"
+                        --geth-nodes "$geth_nodes" --reth-nodes "$reth_nodes"
+                        --accounts "$accounts" --tps "$tps"
+                        --duration "$duration" --wait-duration "$wait_duration" --chain-id "$chain_id")
+                else
+                    result=$?
+                    (( result == 1 )) || return "$result"
+                    configure_full_runtime_matrix
+                    runtime_workloads=(exp/counter exp/dota exp/uber exp/uber_v2)
+                    runtime_iterations=1
+                    module_args=(--accounts 4 --tps 100 --duration 10 --wait-duration 10 --chain-id 12345)
+                fi
+            elif prompt_customize runtime '2 native, 2 WASIX, 0 Geth, 0 Reth nodes; exp/uber and exp/uber_v2 workloads; 4 TPS; 4 accounts; 300 seconds; 1 iteration'; then
                 prompt_value linux_nodes 'Native/Linux nodes' 2 nonnegative || return $?
                 prompt_value wasix_nodes 'WASIX nodes' 2 nonnegative || return $?
                 prompt_value geth_nodes 'Geth nodes' 0 nonnegative || return $?
@@ -260,9 +345,34 @@ configure_module() {
             eb_reset_network="$reset_network"
             source "$REPO_ROOT/experiments/empty-block/defaults.sh"
             empty_block_clients=(native wasix geth reth)
-            if prompt_customize empty-block 'native, wasix, geth, and reth clients; counts 0,1,5,10,20,50,100; 3 samples per count; max 5 attempts'; then
+            if [[ "$ALL_EXPERIMENTS_SELECTED" == true ]]; then
+                eb_clients_default='native,wasix,geth,reth'
+                eb_counts_default='0,1,5,10,50,100,200,500,1000'
+                empty_block_counts=(0 1 5 10 50 100 200 500 1000)
+                eb_workloads_default='none,counter,dota,uber,uber_v2'
+                eb_blocks_default=1
+                eb_attempts_default=2
+                eb_receipt_timeout_default=300
+                eb_block_timeout_default=120
+                eb_poll_default=1
+                has_nonzero_count=true
+                empty_block_workloads=(none counter dota uber uber_v2)
+                customize_description='all four clients; value transfers and counter, dota, uber, uber_v2 contract calls; bursts 0,1,5,10,50,100,200,500,1000; one sample; max 2 attempts; bounded submission timeout 300 seconds'
+            else
+                eb_clients_default='native,wasix,geth,reth'
+                eb_counts_default='0,1,5,10,20,50,100'
+                eb_workloads_default='none'
+                eb_blocks_default=3
+                eb_attempts_default=5
+                eb_receipt_timeout_default=180
+                eb_block_timeout_default=120
+                eb_poll_default=1
+                empty_block_workloads=(none)
+                customize_description='native, wasix, geth, and reth clients; counts 0,1,5,10,20,50,100; 3 samples per count; max 5 attempts'
+            fi
+            if prompt_customize empty-block "$customize_description"; then
                 while true; do
-                    prompt_value eb_clients 'Clients (comma-separated: native, wasix, geth, reth)' 'native,wasix,geth,reth' text || return $?
+                    prompt_value eb_clients 'Clients (comma-separated: native, wasix, geth, reth)' "$eb_clients_default" text || return $?
                     eb_clients="${eb_clients//[[:space:]]/}"
                     IFS=',' read -r -a empty_block_clients <<< "$eb_clients"
                     eb_clients_normalized=""
@@ -279,31 +389,39 @@ configure_module() {
                 done
                 prompt_value eb_chain_id 'Network chain ID' 23456 positive || return $?
                 while true; do
-                    prompt_value eb_counts 'Transactions per block-count group (comma-separated)' '0,1,5,10,20,50,100' text || return $?
+                    prompt_value eb_counts 'Transactions per block-count group (comma-separated)' "$eb_counts_default" text || return $?
                     if validate_counts "$eb_counts"; then break; fi
                     echo 'Use unique, comma-separated nonnegative integers.' >&2
                 done
-                prompt_value eb_blocks 'Samples/iterations per transaction count' 3 positive || return $?
-                prompt_value eb_attempts 'Maximum attempts per transaction count' 5 positive || return $?
-                prompt_value eb_receipt_timeout 'Receipt timeout in seconds' 180 positive || return $?
-                prompt_value eb_block_timeout 'Block timeout in seconds' 120 positive || return $?
-                prompt_value eb_poll_interval 'RPC poll interval in seconds' 1 positive_decimal || return $?
+                if [[ "$ALL_EXPERIMENTS_SELECTED" == true ]]; then
+                    eb_counts="${eb_counts//[[:space:]]/}"
+                    IFS=',' read -r -a empty_block_counts <<< "$eb_counts"
+                fi
+                prompt_value eb_blocks 'Samples/iterations per transaction count' "$eb_blocks_default" positive || return $?
+                prompt_value eb_attempts 'Maximum attempts per transaction count' "$eb_attempts_default" positive || return $?
+                prompt_value eb_receipt_timeout 'Receipt timeout in seconds' "$eb_receipt_timeout_default" positive || return $?
+                prompt_value eb_block_timeout 'Block timeout in seconds' "$eb_block_timeout_default" positive || return $?
+                prompt_value eb_poll_interval 'RPC poll interval in seconds' "$eb_poll_default" positive_decimal || return $?
                 if [[ "$reset_network" != true ]]; then
                     prompt_yes_no eb_reset_network 'Allow clearing generated network state' no || return $?
                 fi
                 while true; do
-                    prompt_value eb_workload 'Contract workload (none, counter, dota, uber, uber_v2)' none text || return $?
-                    case "$eb_workload" in none|counter|dota|uber|uber_v2) break ;; esac
-                    echo 'Choose none, counter, dota, uber, or uber_v2.' >&2
+                    prompt_value eb_workloads 'Workloads (comma-separated: none, counter, dota, uber, uber_v2)' "$eb_workloads_default" text || return $?
+                    if validate_empty_block_workloads "$eb_workloads"; then break; fi
+                    echo 'Choose unique workloads from none, counter, dota, uber, and uber_v2.' >&2
                 done
-                module_args=(--chain-id "$eb_chain_id" --counts "$eb_counts"
-                    --blocks-per-count "$eb_blocks" --max-attempts "$eb_attempts"
+                module_args=(--chain-id "$eb_chain_id")
+                [[ "$ALL_EXPERIMENTS_SELECTED" == true ]] || module_args+=(--counts "$eb_counts")
+                module_args+=(--blocks-per-count "$eb_blocks" --max-attempts "$eb_attempts"
                     --receipt-timeout "$eb_receipt_timeout" --block-timeout "$eb_block_timeout"
                     --poll-interval "$eb_poll_interval")
-                [[ "$eb_workload" == none ]] || module_args+=(--workload "$eb_workload")
             else
                 result=$?
                 (( result == 1 )) || return "$result"
+                if [[ "$ALL_EXPERIMENTS_SELECTED" == true ]]; then
+                    module_args=(--chain-id 23456 --blocks-per-count 1 --max-attempts 2
+                        --receipt-timeout 300 --block-timeout 120 --poll-interval 1)
+                fi
             fi
             [[ "$eb_reset_network" == true ]] && module_args+=(--reset-network)
             if [[ -z "${EB_PRIVATE_KEY:-}" && ( ${#module_args[@]} -eq 0 || "$has_nonzero_count" == true ) ]]; then
@@ -344,11 +462,16 @@ configure_module() {
             else
                 result=$?
                 (( result == 1 )) || return "$result"
+                if [[ "$ALL_EXPERIMENTS_SELECTED" == true ]]; then
+                    module_args=(--configs geth,reth,nexus-linux,nexus-wasix-docker,nexus-wasmer --iterations 5)
+                fi
             fi
             [[ "$RESET_NETWORK" == true ]] && module_args+=(--reset-network)
             ;;
         compliance)
-            if prompt_customize compliance 'both custom Hive clients; hive-custom:latest; parallelism 20; timeout 3600 seconds; build images'; then
+            compliance_parallelism_default=20
+            if [[ "$ALL_EXPERIMENTS_SELECTED" == true ]]; then compliance_parallelism_default=5; fi
+            if prompt_customize compliance "both custom Hive clients; hive-custom:latest; parallelism $compliance_parallelism_default; timeout 3600 seconds; build images"; then
                 while true; do
                     prompt_value hive_clients 'Hive clients (comma-separated)' 'wasix-r-eth,wasix-w-eth' text || return $?
                     if validate_csv_choices "$hive_clients" 'wasix-r-eth,wasix-w-eth'; then break; fi
@@ -356,7 +479,7 @@ configure_module() {
                 done
                 hive_clients="${hive_clients//[[:space:]]/}"
                 prompt_value hive_image 'Hive runner image' 'hive-custom:latest' text || return $?
-                prompt_value hive_parallelism 'Hive parallelism' 20 positive || return $?
+                prompt_value hive_parallelism 'Hive parallelism' "$compliance_parallelism_default" positive || return $?
                 prompt_value hive_timeout 'Per-client timeout in seconds' 3600 positive || return $?
                 prompt_yes_no skip_base_build 'Skip custom client image builds (verify existing images)' no || return $?
                 prompt_yes_no skip_hive_build 'Skip Hive runner image build (verify existing image)' no || return $?
@@ -367,6 +490,9 @@ configure_module() {
             else
                 result=$?
                 (( result == 1 )) || return "$result"
+                if [[ "$ALL_EXPERIMENTS_SELECTED" == true ]]; then
+                    module_args=(--clients wasix-r-eth,wasix-w-eth --parallelism 5 --timeout 3600)
+                fi
             fi
             ;;
         size)
@@ -467,8 +593,12 @@ declare -a labels=(runtime empty-block startup compliance size)
 declare -a selected=()
 declare -a runtime_args=() empty_block_args=() startup_args=() compliance_args=() size_args=()
 declare -a runtime_workloads=(exp/uber exp/uber_v2)
+declare -a runtime_profiles=()
 declare -a empty_block_clients=(native wasix geth reth)
+declare -a empty_block_workloads=(none)
+declare -a empty_block_counts=()
 runtime_iterations=1
+ALL_EXPERIMENTS_SELECTED=false
 mode=run
 
 if [[ -n "$RESUME_SESSION" ]]; then
@@ -532,6 +662,7 @@ while true; do
     fi
     if [[ "$selection" == "6" || "${selection,,}" == "all" ]]; then
         selected=("${labels[@]}")
+        ALL_EXPERIMENTS_SELECTED=true
         break
     fi
 
@@ -554,6 +685,9 @@ while true; do
         selected+=("${labels[$((choice - 1))]}")
     done
     if [[ "$valid" == true ]]; then
+        if (( ${#selected[@]} == ${#labels[@]} )); then
+            ALL_EXPERIMENTS_SELECTED=true
+        fi
         break
     fi
 done
@@ -628,7 +762,7 @@ for experiment in "${selected[@]}"; do
     module_script="$MODULE_ROOT/$experiment/run.sh"
     if [[ ! -f "$module_script" ]]; then
         echo "Error: entry point not found for '$experiment': $module_script" >&2
-        exit 1
+        continue
     fi
     if configure_module "$experiment"; then
         :
@@ -653,8 +787,9 @@ if [[ -z "$RESUME_SESSION" ]]; then
         (
             umask 077
             {
-                declare -p selected runtime_args empty_block_args startup_args compliance_args size_args runtime_workloads empty_block_clients
+                declare -p selected runtime_args empty_block_args startup_args compliance_args size_args runtime_workloads runtime_profiles empty_block_clients empty_block_workloads empty_block_counts
                 printf 'runtime_iterations=%q\n' "$runtime_iterations"
+                printf 'ALL_EXPERIMENTS_SELECTED=%q\n' "$ALL_EXPERIMENTS_SELECTED"
                 printf 'mode=%q\n' "$mode"
                 printf 'EXPERIMENTS_SELECTED=%q\n' "$EXPERIMENTS_SELECTED"
                 printf 'EXPERIMENT_RUN_ID=%q\n' "$EXPERIMENT_RUN_ID"
@@ -676,67 +811,137 @@ fi
 if [[ -v EB_PRIVATE_KEY ]]; then export -n EB_PRIVATE_KEY; fi
 echo "Run ID: $EXPERIMENT_RUN_ID"
 echo "Output root: $EXPERIMENTS_OUTPUT_ROOT"
+record_result() {
+    local experiment_name="$1" run_id="$2" result_status="$3" result_code="$4" log_file="$5" problem="${6:-}"
+    python3 "$REPO_ROOT/experiments/record_status.py" \
+        --overview "$RUN_LOG_DIR/overview.csv" --experiment "$experiment_name" \
+        --run-id "$run_id" --status "$result_status" --exit-code "$result_code" \
+        --log-file "$log_file" --problem "$problem"
+}
+
 echo "Running shared setup once..."
 if run_logged "$RUN_LOG_DIR/setup.log" "Shared setup (single invocation)" bash "$SETUP_SCRIPT"; then
-    :
+    record_result 'shared setup' "$BASE_EXPERIMENT_RUN_ID" passed 0 "$RUN_LOG_DIR/setup.log"
 else
     status=$?
+    record_result 'shared setup' "$BASE_EXPERIMENT_RUN_ID" failed "$status" "$RUN_LOG_DIR/setup.log"
+    for experiment in "${selected[@]}"; do
+        record_result "$experiment" "$BASE_EXPERIMENT_RUN_ID" skipped "$status" '' "Not started because shared setup failed with exit status $status."
+    done
     echo "Error: shared setup failed (exit $status); no experiments were started." >&2
     exit "$status"
 fi
 
+suite_status=0
 for experiment in "${selected[@]}"; do
     module_script="$MODULE_ROOT/$experiment/run.sh"
+    if [[ ! -f "$module_script" ]]; then
+        echo "Error: entry point not found for '$experiment': $module_script" >&2
+        record_result "$experiment" "$BASE_EXPERIMENT_RUN_ID" failed 127 '' "Entry point not found: $module_script"
+        suite_status=1
+        continue
+    fi
     echo "=== Starting $experiment experiment ==="
     args_name="${experiment//-/_}_args"
     declare -n module_args="$args_name"
     iterations=1
     workload_count=1
     client_count=1
+    profile_count=1
+    count_count=1
     if [[ "$experiment" == runtime ]]; then iterations="$runtime_iterations"; fi
     if [[ "$experiment" == runtime ]]; then workload_count="${#runtime_workloads[@]}"; fi
-    if [[ "$experiment" == empty-block ]]; then client_count="${#empty_block_clients[@]}"; fi
+    if [[ "$experiment" == runtime && ${#runtime_profiles[@]} -gt 0 ]]; then profile_count="${#runtime_profiles[@]}"; fi
+    if [[ "$experiment" == empty-block ]]; then
+        client_count="${#empty_block_clients[@]}"
+        workload_count="${#empty_block_workloads[@]}"
+        if [[ "$ALL_EXPERIMENTS_SELECTED" == true ]]; then
+            count_count="${#empty_block_counts[@]}"
+            iterations=5
+        fi
+    fi
     for ((iteration = 1; iteration <= iterations; iteration++)); do
-        for ((workload_index = 1; workload_index <= workload_count; workload_index++)); do
-            for ((client_index = 1; client_index <= client_count; client_index++)); do
-                export EXPERIMENT_RUN_ID="$BASE_EXPERIMENT_RUN_ID"
-                if [[ "$experiment" == runtime && ( "$iterations" -gt 1 || "$workload_count" -gt 1 ) ]]; then
-                    EXPERIMENT_RUN_ID="${BASE_EXPERIMENT_RUN_ID}-runtime-${iteration}-${workload_index}"
+        for ((profile_index = 1; profile_index <= profile_count; profile_index++)); do
+            profile_name=''
+            profile_nodes=()
+            if [[ "$experiment" == runtime && ${#runtime_profiles[@]} -gt 0 ]]; then
+                IFS='|' read -r profile_name linux_nodes wasix_nodes geth_nodes reth_nodes \
+                    <<< "${runtime_profiles[$((profile_index - 1))]}"
+                profile_nodes=(--linux-nodes "$linux_nodes" --wasix-nodes "$wasix_nodes"
+                    --geth-nodes "$geth_nodes" --reth-nodes "$reth_nodes")
+            fi
+            for ((workload_index = 1; workload_index <= workload_count; workload_index++)); do
+                for ((client_index = 1; client_index <= client_count; client_index++)); do
+                  for ((count_index = 1; count_index <= count_count; count_index++)); do
+                    export EXPERIMENT_RUN_ID="$BASE_EXPERIMENT_RUN_ID"
+                    task_name="$experiment"
+                    if [[ "$experiment" == runtime ]]; then
+                        workload="${runtime_workloads[$((workload_index - 1))]}"
+                        workload_slug="${workload##*/}"
+                        task_name="runtime/$workload_slug"
+                        if [[ -n "$profile_name" ]]; then
+                            task_name="runtime/$profile_name/$workload_slug"
+                            EXPERIMENT_RUN_ID="${BASE_EXPERIMENT_RUN_ID}-runtime-${profile_name}-${workload_slug}"
+                            module_command=(bash "$module_script" "${module_args[@]}" "${profile_nodes[@]}" --workload-type "$workload")
+                        else
+                            EXPERIMENT_RUN_ID="${BASE_EXPERIMENT_RUN_ID}-runtime-${iteration}-${workload_index}"
+                            module_command=(bash "$module_script" "${module_args[@]}" --workload-type "$workload")
+                        fi
+                    elif [[ "$experiment" == empty-block ]]; then
+                        empty_block_client="${empty_block_clients[$((client_index - 1))]}"
+                        empty_block_workload="${empty_block_workloads[$((workload_index - 1))]}"
+                        if [[ "$ALL_EXPERIMENTS_SELECTED" == true ]]; then
+                            burst_count="${empty_block_counts[$((count_index - 1))]}"
+                        else
+                            burst_count=''
+                        fi
+                        workload_slug="$empty_block_workload"
+                        [[ "$empty_block_workload" == none ]] && workload_slug=value-transfer
+                        task_name="empty-block/$empty_block_client/$workload_slug"
+                        EXPERIMENT_RUN_ID="${BASE_EXPERIMENT_RUN_ID}-empty-block-${empty_block_client}"
+                        if (( workload_count > 1 )); then
+                            EXPERIMENT_RUN_ID+="-${workload_slug}"
+                        fi
+                        if [[ "$ALL_EXPERIMENTS_SELECTED" == true ]]; then
+                            task_name+="/count-$burst_count"
+                            EXPERIMENT_RUN_ID+="-count-$burst_count"
+                            task_name+="/repeat-$iteration"
+                            EXPERIMENT_RUN_ID+="-repeat-$iteration"
+                        fi
+                        module_command=(bash "$module_script" --client "$empty_block_client" "${module_args[@]}")
+                        [[ "$empty_block_workload" == none ]] || module_command+=(--workload "$empty_block_workload")
+                        [[ "$ALL_EXPERIMENTS_SELECTED" == true ]] && module_command+=(--counts "$burst_count")
+                        echo "--- Empty-block $empty_block_client / $workload_slug${burst_count:+ / $burst_count transactions} (repeat $iteration of $iterations; $client_index of $client_count; $workload_index of $workload_count) ---"
+                    else
+                        module_command=(bash "$module_script" "${module_args[@]}")
+                    fi
                     if (( ${#EXPERIMENT_RUN_ID} > 128 )); then
-                        echo "Error: runtime workload/iteration run ID exceeds the 128-character limit." >&2
-                        exit 2
+                        echo "Error: run ID exceeds the 128-character limit: $EXPERIMENT_RUN_ID" >&2
+                        record_result "$task_name" "$EXPERIMENT_RUN_ID" failed 2 '' 'Generated run ID exceeds the 128-character limit.'
+                        suite_status=1
+                        continue
                     fi
                     export EXPERIMENT_RUN_ID
-                fi
-                if [[ "$experiment" == empty-block ]]; then
-                    empty_block_client="${empty_block_clients[$((client_index - 1))]}"
-                    EXPERIMENT_RUN_ID="${BASE_EXPERIMENT_RUN_ID}-empty-block-${empty_block_client}"
-                    if (( ${#EXPERIMENT_RUN_ID} > 128 )); then
-                        echo "Error: empty-block client run ID exceeds the 128-character limit." >&2
-                        exit 2
+                    if [[ "$experiment" == runtime && -n "$profile_name" ]]; then
+                        echo "--- Runtime mix $profile_name, workload $workload_slug ($profile_index of $profile_count; $workload_index of $workload_count) ---"
+                    elif [[ "$experiment" == runtime ]]; then
+                        echo "--- Workload $workload_index of $workload_count: $workload (iteration $iteration of $iterations) ---"
+                    elif (( iterations > 1 )); then
+                        echo "--- Iteration $iteration of $iterations ---"
                     fi
-                    export EXPERIMENT_RUN_ID
-                    echo "--- Empty-block client $client_index of $client_count: $empty_block_client ---"
-                    module_command=(bash "$module_script" --client "$empty_block_client" "${module_args[@]}")
-                fi
-                if [[ "$experiment" == runtime ]]; then
-                    echo "--- Workload $workload_index of $workload_count: ${runtime_workloads[$((workload_index - 1))]} (iteration $iteration of $iterations) ---"
-                    module_command=(bash "$module_script" "${module_args[@]}" --workload-type "${runtime_workloads[$((workload_index - 1))]}")
-                elif [[ "$experiment" != empty-block ]]; then
-                    module_command=(bash "$module_script" "${module_args[@]}")
-                fi
-                if (( iterations > 1 )) && [[ "$experiment" != runtime ]]; then echo "--- Iteration $iteration of $iterations ---"; fi
-                if [[ "$experiment" == empty-block && -v EB_PRIVATE_KEY ]]; then export EB_PRIVATE_KEY; fi
-                module_log_file="$RUN_LOG_DIR/$experiment/run-${EXPERIMENT_RUN_ID}.log"
-                if run_logged "$module_log_file" "Run $experiment experiment (run ID $EXPERIMENT_RUN_ID)" \
-                    "${module_command[@]}"; then
-                    :
-                else
-                    status=$?
-                    echo "Error: $experiment experiment failed; later experiments were not started." >&2
-                    exit "$status"
-                fi
-                if [[ "$experiment" == empty-block && -v EB_PRIVATE_KEY ]]; then export -n EB_PRIVATE_KEY; fi
+                    if [[ "$experiment" == empty-block && -v EB_PRIVATE_KEY ]]; then export EB_PRIVATE_KEY; fi
+                    module_log_file="$RUN_LOG_DIR/$experiment/run-${EXPERIMENT_RUN_ID}.log"
+                    if run_logged "$module_log_file" "Run $task_name (run ID $EXPERIMENT_RUN_ID)" "${module_command[@]}"; then
+                        record_result "$task_name" "$EXPERIMENT_RUN_ID" passed 0 "$module_log_file"
+                    else
+                        status=$?
+                        record_result "$task_name" "$EXPERIMENT_RUN_ID" failed "$status" "$module_log_file"
+                        echo "Error: $task_name failed with exit status $status; continuing with the remaining experiments." >&2
+                        suite_status=1
+                    fi
+                    if [[ "$experiment" == empty-block && -v EB_PRIVATE_KEY ]]; then export -n EB_PRIVATE_KEY; fi
+                  done
+                done
             done
         done
     done
@@ -745,4 +950,9 @@ for experiment in "${selected[@]}"; do
 done
 
 export EXPERIMENT_RUN_ID="$BASE_EXPERIMENT_RUN_ID"
+echo "Experiment overview: $RUN_LOG_DIR/overview.csv"
+if (( suite_status != 0 )); then
+    echo "The suite completed with one or more failures; see the overview and run logs."
+    exit "$suite_status"
+fi
 echo "All selected experiments completed successfully."
