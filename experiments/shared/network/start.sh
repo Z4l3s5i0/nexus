@@ -294,6 +294,7 @@ for i in $(seq 0 $((NODES - 1))); do
       - --http
       - --http.addr=0.0.0.0
       - --http.port=$ETH_PORT
+      - --http.api=admin,eth,net,web3
       - --authrpc.addr=0.0.0.0
       - --authrpc.port=$AUTH_PORT
       - --authrpc.jwtsecret=/app/startup/jwt_$i.hex
@@ -615,14 +616,13 @@ register_reth_node() {
         --data-binary '{"jsonrpc":"2.0","method":"admin_nodeInfo","params":[],"id":1}' \
         "http://127.0.0.1:$eth_port" 2>/dev/null || true)
     local node_id
-    local enr
-    node_id=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1])["result"]; print(d.get("enr","").split("id=")[1].split(",")[0] if "id=" in d.get("enr","") else "")' "$node_info" 2>/dev/null || true)
-    # If we can't extract from ENR, try admin_node record
+    node_id=$(python3 -c 'import json,re,sys; d=json.loads(sys.argv[1])["result"]; node_id=d.get("id",""); match=re.fullmatch(r"[0-9a-fA-F]{128}", node_id); print(match.group(0).lower() if match else "")' "$node_info" 2>/dev/null || true)
     if [ -z "$node_id" ]; then
-        node_id=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1])["result"]; print(d.get("enode","").split("@")[0].split("//")[1] if "enode" in d else "")' "$node_info" 2>/dev/null || true)
+        node_id=$(python3 -c 'import json,re,sys; d=json.loads(sys.argv[1])["result"]; match=re.search(r"enode://([0-9a-fA-F]{128})@", d.get("enode","")); print(match.group(1).lower() if match else "")' "$node_info" 2>/dev/null || true)
     fi
     if [ -z "$node_id" ]; then
         echo "Error: Could not obtain a valid Reth node identity from $service." >&2
+        echo "Reth admin_nodeInfo response: ${node_info:-<empty>}" >&2
         $COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail=100 "$service" >&2 || true
         return 1
     fi

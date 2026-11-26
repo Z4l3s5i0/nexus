@@ -174,6 +174,15 @@ class NetworkSupportTests(unittest.TestCase):
             launcher,
         )
 
+    def test_reth_registration_exposes_admin_rpc_and_reads_node_id(self):
+        launcher = (NETWORK_SUPPORT / "start.sh").read_text(encoding="utf-8")
+        reth_config = launcher.split('elif [ "$TYPE" = "reth" ]; then', 1)[1].split(
+            'elif [ "$TYPE" = "wasix" ]; then', 1
+        )[0]
+
+        self.assertIn("- --http.api=admin,eth,net,web3", reth_config)
+        self.assertIn('d.get("id"', launcher)
+
     def test_target_generator_labels_per_node_exporter_and_execution_metrics(self):
         with tempfile.TemporaryDirectory(prefix="node-exporter-targets-test-") as temp:
             node_exporter_output = pathlib.Path(temp) / "node-exporter-targets.json"
