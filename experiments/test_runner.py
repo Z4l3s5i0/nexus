@@ -81,6 +81,8 @@ class ExperimentRunnerTests(unittest.TestCase):
                 exit_status = 1 if name == fail_module else 0
                 (module_dir / "run.sh").write_bytes((
                     f'printf "{name}-output\\n"\n'
+                    f'case "{name}" in runtime) printf "Runtime progress: Workload exp/uber spam starting.\\n" ;; startup) printf "Startup progress: Starting geth iteration 1 of 1.\\n" ;; compliance) printf "Compliance progress: Starting Hive ethereum/engine for wasix-r-eth.\\n" ;; size) printf "Size progress: Source size measurements starting.\\n" ;; esac\n'
+                    f'if [[ "{name}" == empty-block ]]; then printf "Empty-block progress: step 1 of 7 - transaction spam (10 transactions)\\n"; fi\n'
                     f'printf "{name}\\n" >> "$TEST_LOG"\n'
                     f'if [[ "$#" -gt 0 ]]; then printf "args:{name}:%s\\n" "$*" >> "$TEST_LOG"; fi\n'
                     'if [[ "${EXPERIMENT_RUN_ID:-}" == *-runtime-* ]]; then printf "run-id:%s\\n" "$EXPERIMENT_RUN_ID" >> "$TEST_LOG"; fi\n'
@@ -255,6 +257,29 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertIn("runtime-output", self.last_logs["runtime/run-test-run-runtime-1-1.log"])
         self.assertIn("=== Starting runtime experiment ===", self.last_logs["runner.log"])
 
+    def test_progress_is_visible_without_child_diagnostics_at_info_verbosity(self):
+        result, calls = self.run_with_stubs("1,3,4,5")
+
+        self.assertEqual(result.returncode, 0, f"{result.stderr}\n{result.stdout}")
+        console = result.stdout + result.stderr
+        for progress in (
+            "Runtime progress: Workload exp/uber spam starting.",
+            "Startup progress: Starting geth iteration 1 of 1.",
+            "Compliance progress: Starting Hive ethereum/engine for wasix-r-eth.",
+            "Size progress: Source size measurements starting.",
+        ):
+            self.assertIn(progress, console)
+        for diagnostic in ("runtime-output", "startup-output", "compliance-output", "size-output"):
+            self.assertNotIn(diagnostic, console)
+
+    def test_progress_filter_preserves_child_failure_status(self):
+        result, calls = self.run_with_stubs("1", fail_module="runtime")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Runtime progress: Workload exp/uber spam starting.", result.stdout)
+        rows = list(csv.DictReader(io.StringIO(self.last_logs["overview.csv"])))
+        self.assertEqual(rows[-1]["status"], "failed")
+
     def test_debug_verbosity_streams_child_output_and_keeps_logs(self):
         result, calls = self.run_with_stubs("1", runner_args=["--verbosity", "debug"])
 
@@ -315,6 +340,7 @@ class ExperimentRunnerTests(unittest.TestCase):
             calls,
         )
         self.assertIn("5 iterations", result.stdout)
+        self.assertIn("step 4 of 9: transaction spam (10 transactions)", result.stdout)
         rows = list(csv.DictReader(io.StringIO(self.last_logs["overview.csv"])))
         self.assertEqual(len(rows), 1104)
         empty_rows = [row for row in rows if row["experiment"].startswith("empty-block/")]
@@ -345,6 +371,15 @@ class ExperimentRunnerTests(unittest.TestCase):
         )
         for client in ("native", "wasix", "geth", "reth"):
             self.assertIn(f"empty-block/run-test-run-empty-block-{client}.log", self.last_logs)
+        self.assertIn(
+            "Empty-block run (client: native; workload: value-transfer) (repeat 1 of 1; client 1 of 4; workload 1 of 1) ---",
+            result.stdout,
+        )
+        self.assertIn(
+            "Empty-block progress: step 1 of 7 - transaction spam (10 transactions)",
+            result.stdout,
+        )
+        self.assertNotIn("empty-block-output", result.stdout)
 
     def test_custom_empty_block_configuration_can_run_multiple_clients(self):
         answers = "y\ngeth,reth\n23456\n0,1,5\n2\n3\n30\n20\n0.5\nn\nnone\n"

@@ -35,6 +35,14 @@ empty_block_report = load_experiment_module("empty_block_report", "report.py")
 class EmptyBlockExperimentTests(unittest.TestCase):
     def test_sweep_parsing_and_remote_rpc_guard(self):
         self.assertEqual(run_experiment.parse_counts("0, 1,5,10"), [0, 1, 5, 10])
+        self.assertEqual(
+            run_experiment.count_progress_message(1, 7, 0),
+            "Empty-block progress: step 1 of 7 - empty-block baseline (0 transactions)",
+        )
+        self.assertEqual(
+            run_experiment.count_progress_message(4, 7, 10),
+            "Empty-block progress: step 4 of 7 - transaction spam (10 transactions)",
+        )
         for value in ("", "1,-1", "1,one", "1,1"):
             with self.subTest(value=value), self.assertRaises(ArgumentTypeError):
                 run_experiment.parse_counts(value)

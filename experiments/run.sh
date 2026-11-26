@@ -101,8 +101,12 @@ prompt_customize() {
 }
 
 run_logged() {
-    local log_file="$1" description="$2" status
+    local log_file="$1" description="$2" status stream_progress=false
     shift 2
+    if [[ "${1:-}" == --stream-progress ]]; then
+        stream_progress=true
+        shift
+    fi
     mkdir -p "$(dirname "$log_file")"
     printf '\n[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$description" | tee -a "$log_file"
     if [[ "$VERBOSITY" == debug ]]; then
@@ -110,6 +114,12 @@ run_logged() {
             status=0
         else
             status="${PIPESTATUS[0]}"
+        fi
+    elif [[ "$stream_progress" == true ]]; then
+        if "$@" 2>&1 | tee -a "$log_file" | { grep --line-buffered -E '^(Empty-block|Runtime|Compliance|Startup|Size) progress:' || true; }; then
+            status=0
+        else
+            status=$?
         fi
     else
         if "$@" >> "$log_file" 2>&1; then
@@ -932,6 +942,14 @@ for experiment in "${selected[@]}"; do
                         else
                             burst_count=''
                         fi
+                        count_progress=''
+                        if [[ "$ALL_EXPERIMENTS_SELECTED" == true ]]; then
+                            if (( 10#$burst_count == 0 )); then
+                                count_progress="; step $count_index of $count_count: empty-block baseline (0 transactions)"
+                            else
+                                count_progress="; step $count_index of $count_count: transaction spam ($burst_count transactions)"
+                            fi
+                        fi
                         workload_slug="$empty_block_workload"
                         [[ "$empty_block_workload" == none ]] && workload_slug=value-transfer
                         task_name="empty-block/$empty_block_client/$workload_slug"
@@ -948,7 +966,7 @@ for experiment in "${selected[@]}"; do
                         module_command=(bash "$module_script" --client "$empty_block_client" "${module_args[@]}")
                         [[ "$empty_block_workload" == none ]] || module_command+=(--workload "$empty_block_workload")
                         [[ "$ALL_EXPERIMENTS_SELECTED" == true ]] && module_command+=(--counts "$burst_count")
-                        echo "--- Empty-block $empty_block_client / $workload_slug${burst_count:+ / $burst_count transactions} (repeat $iteration of $iterations; $client_index of $client_count; $workload_index of $workload_count) ---"
+                        echo "--- Empty-block run (client: $empty_block_client; workload: $workload_slug${count_progress}) (repeat $iteration of $iterations; client $client_index of $client_count; workload $workload_index of $workload_count) ---"
                     else
                         module_command=(bash "$module_script" "${module_args[@]}")
                     fi
@@ -968,7 +986,11 @@ for experiment in "${selected[@]}"; do
                     fi
                     if [[ "$experiment" == empty-block && -v EB_PRIVATE_KEY ]]; then export EB_PRIVATE_KEY; fi
                     module_log_file="$RUN_LOG_DIR/$experiment/run-${EXPERIMENT_RUN_ID}.log"
-                    if run_logged "$module_log_file" "Run $task_name (run ID $EXPERIMENT_RUN_ID)" "${module_command[@]}"; then
+                    run_options=()
+                    case "$experiment" in
+                        runtime|empty-block|startup|compliance|size) run_options=(--stream-progress) ;;
+                    esac
+                    if run_logged "$module_log_file" "Run $task_name (run ID $EXPERIMENT_RUN_ID)" "${run_options[@]}" "${module_command[@]}"; then
                         record_result "$task_name" "$EXPERIMENT_RUN_ID" passed 0 "$module_log_file"
                     else
                         status=$?

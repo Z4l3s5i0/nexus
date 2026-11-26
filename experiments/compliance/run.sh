@@ -13,6 +13,10 @@ SKIP_BASE_BUILD=false
 SKIP_HIVE_BUILD=false
 OUTPUT_DIR=""
 
+compliance_progress() {
+    printf 'Compliance progress: %s\n' "$*"
+}
+
 usage() {
     cat <<EOF
 Usage: bash experiments/compliance/run.sh [options]
@@ -80,10 +84,14 @@ trap record_run_status EXIT
 PREPARE_ARGS=(--output-dir "$OUTPUT_DIR" --clients "$CLIENTS" --hive-image "$HIVE_IMAGE")
 if [[ "$SKIP_BASE_BUILD" == true ]]; then PREPARE_ARGS+=(--skip-base-build); fi
 if [[ "$SKIP_HIVE_BUILD" == true ]]; then PREPARE_ARGS+=(--skip-hive-build); fi
+compliance_progress "Preparing the Hive clients and runner image."
 bash "$SCRIPT_DIR/prepare.sh" "${PREPARE_ARGS[@]}"
+compliance_progress "Hive client and runner preparation finished."
 
+compliance_progress "Recording Hive image metadata."
 python3 "$SCRIPT_DIR/capture_images.py" \
     --output "$OUTPUT_DIR/metadata.json" --clients "$CLIENTS" --hive-image "$HIVE_IMAGE"
+compliance_progress "Hive image metadata recorded."
 
 RUN_STATUS=0
 python3 "$SCRIPT_DIR/run_suite.py" \
@@ -91,7 +99,9 @@ python3 "$SCRIPT_DIR/run_suite.py" \
     --workspace-root "$OUTPUT_DIR/workspace" --logs-dir "$OUTPUT_DIR/logs" \
     --results "$OUTPUT_DIR/results.jsonl" --parallelism "$PARALLELISM" --timeout "$TIMEOUT" \
     || RUN_STATUS=$?
+compliance_progress "Hive client runs finished; generating the compliance report."
 python3 "$SCRIPT_DIR/report.py" --output-dir "$OUTPUT_DIR" --run-id "$RUN_ID"
+compliance_progress "Compliance report generated."
 echo "Compliance results: $OUTPUT_DIR"
 if (( RUN_STATUS != 0 )); then
     exit "$RUN_STATUS"

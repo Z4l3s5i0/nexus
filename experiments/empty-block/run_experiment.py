@@ -62,6 +62,12 @@ def parse_counts(value):
     return counts
 
 
+def count_progress_message(index, total, target):
+    activity = "empty-block baseline" if target == 0 else "transaction spam"
+    transaction_label = "transaction" if target == 1 else "transactions"
+    return f"Empty-block progress: step {index} of {total} - {activity} ({target} {transaction_label})"
+
+
 def verify_rpc_url(rpc_url, allow_remote):
     parsed = urlparse(rpc_url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
@@ -445,7 +451,8 @@ def run(args):
                 metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             print(f"Deployed {args.workload} contract at {contract_address} in block {deployment_metadata['block_number']}")
 
-        for target in args.counts:
+        for count_index, target in enumerate(args.counts, start=1):
+            print(count_progress_message(count_index, len(args.counts), target), flush=True)
             successful = 0
             if target == 0:
                 seen_blocks = set()

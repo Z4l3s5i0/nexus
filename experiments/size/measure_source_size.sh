@@ -54,9 +54,11 @@ for entry in "${SOURCES[@]}"; do
     label="${entry%%=*}"
     path="${entry#*=}"
     if [[ ! -d "$path" ]]; then
+        printf 'Size progress: Source size measurement unavailable for %s; source directory was not found.\n' "$label" >&2
         printf 'source_code\t%s\t\tlines\t%s\tunavailable\n' "$label" "$path"
         continue
     fi
+    printf 'Size progress: Measuring source-code size for %s.\n' "$label" >&2
     code_lines="$(scc --format csv --no-cocomo --no-complexity --no-size \
         --no-config --no-scc-ignore --no-gitignore --no-ignore --no-gen \
         --exclude-dir=.git,node_modules,target,build,dist,coverage,generated,vendor,.venv,venv \
@@ -79,4 +81,5 @@ total = sum(
 print(total)
 ')"
     printf 'source_code\t%s\t%s\tlines\t%s\tmeasured\n' "$label" "$code_lines" "$path"
+    printf 'Size progress: Source-code size measurement finished for %s.\n' "$label" >&2
 done

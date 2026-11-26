@@ -42,3 +42,4 @@ results/
 /exp/
 /.junie/
 /venv/
+/experiment-**/

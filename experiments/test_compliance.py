@@ -49,22 +49,26 @@ class ComplianceExperimentTests(unittest.TestCase):
                 MagicMock(stdout=io.StringIO(), wait=MagicMock(return_value=1)),
             ]
             with patch.object(run_suite.subprocess, "Popen", side_effect=processes) as docker_run:
-                results = run_suite.run_clients(
-                    ["wasix-r-eth", "wasix-w-eth"],
-                    "hive-custom:latest",
-                    root / "workspace",
-                    root / "logs",
-                    root / "results.jsonl",
-                    "run-1",
-                    5,
-                    3600,
-                )
+                console = io.StringIO()
+                with redirect_stdout(console):
+                    results = run_suite.run_clients(
+                        ["wasix-r-eth", "wasix-w-eth"],
+                        "hive-custom:latest",
+                        root / "workspace",
+                        root / "logs",
+                        root / "results.jsonl",
+                        "run-1",
+                        5,
+                        3600,
+                    )
             saved = [json.loads(line) for line in (root / "results.jsonl").read_text(encoding="utf-8").splitlines()]
 
         self.assertEqual(docker_run.call_count, 2)
         self.assertEqual([result["status"] for result in results], ["passed", "failed"])
         self.assertEqual([result["client"] for result in saved], ["wasix-r-eth", "wasix-w-eth"])
         self.assertEqual(results[0]["simulation"], "ethereum/engine")
+        self.assertIn("Compliance progress: Starting Hive ethereum/engine for wasix-r-eth (client 1 of 2).", console.getvalue())
+        self.assertIn("Compliance progress: Hive ethereum/engine for wasix-w-eth finished with a failure (client 2 of 2).", console.getvalue())
 
     def test_hive_output_is_visible_in_console_and_client_log(self):
         with tempfile.TemporaryDirectory() as temp:

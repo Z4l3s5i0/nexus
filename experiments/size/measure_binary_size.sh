@@ -48,9 +48,12 @@ for entry in "${BINARIES[@]}"; do
     label="${entry%%=*}"
     path="${entry#*=}"
     if [[ ! -f "$path" ]]; then
+        printf 'Size progress: Compiled binary size measurement unavailable for %s; file was not found.\n' "$label" >&2
         printf 'compiled_binary\t%s\t\tbytes\t%s\tunavailable\n' "$label" "$path"
         continue
     fi
+    printf 'Size progress: Measuring compiled binary size for %s.\n' "$label" >&2
     bytes="$(wc -c < "$path" | tr -d '[:space:]')"
     printf 'compiled_binary\t%s\t%s\tbytes\t%s\tmeasured\n' "$label" "$bytes" "$path"
+    printf 'Size progress: Compiled binary size measurement finished for %s.\n' "$label" >&2
 done

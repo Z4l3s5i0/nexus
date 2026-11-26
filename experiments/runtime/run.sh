@@ -21,6 +21,10 @@ NETWORK_STARTED=false
 SYSTEM_COLLECTOR_PID=""
 OUTPUT_DIR=""
 
+runtime_progress() {
+    printf 'Runtime progress: %s\n' "$*"
+}
+
 usage() {
     cat <<EOF
 Usage: bash experiments/runtime/run.sh [options]
@@ -101,11 +105,18 @@ cleanup() {
             --output "$OUTPUT_DIR/run_status.json" --exit-code "$status" || true
     fi
     if [[ -n "$SYSTEM_COLLECTOR_PID" ]] && kill -0 "$SYSTEM_COLLECTOR_PID" 2>/dev/null; then
+        runtime_progress "Stopping system metrics collection."
         kill "$SYSTEM_COLLECTOR_PID" 2>/dev/null || true
         wait "$SYSTEM_COLLECTOR_PID" 2>/dev/null || true
+        runtime_progress "System metrics collection stopped."
     fi
     if [[ "$NETWORK_STARTED" == true ]]; then
-        bash "$NETWORK_SCRIPT" stop || true
+        runtime_progress "Tearing down the runtime network."
+        if bash "$NETWORK_SCRIPT" stop; then
+            runtime_progress "Runtime network teardown finished."
+        else
+            runtime_progress "Runtime network teardown could not be confirmed."
+        fi
     fi
     return "$status"
 }
@@ -114,8 +125,9 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 NETWORK_STARTED=true
-echo "Starting runtime network for run $RUN_ID..."
+runtime_progress "Starting the runtime network."
 bash "$NETWORK_SCRIPT" start
+runtime_progress "Runtime network started; waiting for nodes and metrics to become ready."
 
 NODE_COUNT=$((LINUX_NODES + WASIX_NODES + GETH_NODES + RETH_NODES))
 READY=false
@@ -149,6 +161,7 @@ for ((index = 0; index < NODE_COUNT; index++)); do
         exit 1
     fi
 done
+runtime_progress "Runtime network and execution nodes are ready."
 
 python3 "$SCRIPT_DIR/capture_metadata.py" \
     --output "$OUTPUT_DIR/metadata.json" \
@@ -157,6 +170,7 @@ python3 "$SCRIPT_DIR/capture_metadata.py" \
     --geth-nodes "$GETH_NODES" --reth-nodes "$RETH_NODES" \
     --workload-type "$WORKLOAD_TYPE" --duration "$DURATION" \
     --wait-duration "$WAIT_DURATION" --tps "$TPS" --accounts "$ACCOUNTS"
+runtime_progress "Run metadata recorded."
 
 MONITOR_DURATION=$((DURATION + WAIT_DURATION + 60))
 python3 "$SCRIPT_DIR/collect_system_metrics.py" \
@@ -166,6 +180,7 @@ python3 "$SCRIPT_DIR/collect_system_metrics.py" \
     --duration "$MONITOR_DURATION" --interval 1 \
     > "$OUTPUT_DIR/system_collector.stdout" 2> "$OUTPUT_DIR/system_collector.stderr" &
 SYSTEM_COLLECTOR_PID=$!
+runtime_progress "System metrics collection started."
 
 FIRST_NODE="$(docker compose -f "$REPO_ROOT/docker-compose.v2.yml" ps -q el-node-0)"
 NETWORK_NAME="$(docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' "$FIRST_NODE")"
@@ -175,6 +190,7 @@ if [[ -z "$NETWORK_NAME" ]]; then
 fi
 
 WORKLOAD_PIDS=()
+runtime_progress "Workload $WORKLOAD_TYPE spam starting on $NODE_COUNT nodes ($DURATION seconds at $TPS TPS per node)."
 for ((index = 0; index < NODE_COUNT; index++)); do
     bash "$SCRIPT_DIR/workload.sh" \
         --node-index "$index" --chain-id "$CHAIN_ID" --network "$NETWORK_NAME" \
@@ -196,26 +212,35 @@ for pid in "${WORKLOAD_PIDS[@]}"; do
     fi
 done
 if [[ "$WORKLOAD_FAILED" == true ]]; then
+    runtime_progress "Workload $WORKLOAD_TYPE spam failed on at least one node."
     exit 1
 fi
+runtime_progress "Workload $WORKLOAD_TYPE spam finished on all $NODE_COUNT nodes."
 if (( WAIT_DURATION > 0 )); then
-    echo "Waiting $WAIT_DURATION seconds for the final blocks and metrics to settle..."
+    runtime_progress "Workload finished; commencing wait time of $WAIT_DURATION seconds for blocks and metrics."
     sleep "$WAIT_DURATION"
+    runtime_progress "Wait time achieved."
+else
+    runtime_progress "No post-workload wait configured; continuing to collection."
 fi
 
 if [[ -n "$SYSTEM_COLLECTOR_PID" ]]; then
     if kill -0 "$SYSTEM_COLLECTOR_PID" 2>/dev/null; then
+        runtime_progress "Stopping system metrics collection."
         kill "$SYSTEM_COLLECTOR_PID" 2>/dev/null || true
         wait "$SYSTEM_COLLECTOR_PID" 2>/dev/null || true
         SYSTEM_COLLECTOR_PID=""
+        runtime_progress "System metrics collection stopped."
     elif wait "$SYSTEM_COLLECTOR_PID"; then
         SYSTEM_COLLECTOR_PID=""
+        runtime_progress "System metrics collection finished."
     else
         echo "Warning: system metrics collector exited unexpectedly; local samples are preserved." >&2
         SYSTEM_COLLECTOR_PID=""
     fi
 fi
 
+runtime_progress "Collecting execution logs and node metrics."
 bash "$SCRIPT_DIR/capture_logs.sh" --output-dir "$OUTPUT_DIR/logs" --nodes "$NODE_COUNT"
 python3 "$SCRIPT_DIR/collect_logs.py" \
     --metadata "$OUTPUT_DIR/metadata.json" --logs-dir "$OUTPUT_DIR/logs" \
@@ -224,7 +249,9 @@ python3 "$SCRIPT_DIR/collect_logs.py" \
 python3 "$SCRIPT_DIR/collect_node_metrics.py" \
     --metadata "$OUTPUT_DIR/metadata.json" \
     --output "$OUTPUT_DIR/node_metric_coverage.json" --experiment-id "$RUN_ID"
+runtime_progress "Execution logs and node metrics collected."
 
+runtime_progress "Archiving runtime metrics data."
 bash "$NETWORK_SCRIPT" stop-metrics
 if [[ -f "$REPO_ROOT/data_v2/metrics-server/metrics.redb" ]]; then
     mkdir -p "$OUTPUT_DIR/metrics_server_data"
@@ -233,10 +260,15 @@ else
     echo "Error: metrics-server database was not found; runtime metrics were not archived." >&2
     exit 1
 fi
+runtime_progress "Runtime metrics data archived."
+runtime_progress "Generating the runtime report."
 python3 "$SCRIPT_DIR/report.py" --output-dir "$OUTPUT_DIR"
+runtime_progress "Runtime report generated."
 EXPERIMENT_NETWORK_CLEAN_DATA=true
 export EXPERIMENT_NETWORK_CLEAN_DATA
+runtime_progress "Tearing down the runtime network."
 bash "$NETWORK_SCRIPT" stop
 NETWORK_STARTED=false
+runtime_progress "Runtime network teardown finished."
 
 echo "Runtime experiment results: $OUTPUT_DIR"

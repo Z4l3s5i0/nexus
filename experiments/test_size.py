@@ -60,11 +60,13 @@ class SizeExperimentTests(unittest.TestCase):
                 env=env,
                 check=False,
             )
+            self.assertEqual(result.returncode, 0, result.stderr)
             with output.open(newline="", encoding="utf-8") as source:
                 rows = list(csv.DictReader(source, delimiter="\t"))
             scc_args = args_path.read_text(encoding="utf-8")
 
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Size progress: Measuring source-code size for nexus.", result.stderr)
+        self.assertIn("Size progress: Source size measurement unavailable for missing", result.stderr)
         self.assertEqual(rows[0]["value"], "42")
         self.assertEqual(rows[0]["status"], "measured")
         self.assertEqual(rows[1]["value"], "")
@@ -95,10 +97,12 @@ class SizeExperimentTests(unittest.TestCase):
                 capture_output=True,
                 check=False,
             )
+            self.assertEqual(result.returncode, 0, result.stderr)
             with output.open(newline="", encoding="utf-8") as source:
                 rows = list(csv.DictReader(source, delimiter="\t"))
 
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Size progress: Measuring compiled binary size for present.", result.stderr)
+        self.assertIn("Size progress: Compiled binary size measurement unavailable for missing", result.stderr)
         self.assertEqual(rows[0]["value"], "5")
         self.assertEqual(rows[0]["status"], "measured")
         self.assertEqual(rows[1]["status"], "unavailable")

@@ -40,7 +40,7 @@ def forward_output(stream, log_file):
 
 def run_clients(clients, image, workspace_root, logs_dir, results_path, run_id, parallelism, timeout):
     results = []
-    for client in clients:
+    for client_index, client in enumerate(clients, start=1):
         workspace = Path(workspace_root) / client
         log_path = Path(logs_dir) / f"{client}.log"
         command_path = Path(logs_dir) / f"{client}.command.json"
@@ -52,7 +52,11 @@ def run_clients(clients, image, workspace_root, logs_dir, results_path, run_id, 
         started = datetime.now(timezone.utc).isoformat()
         status = 1
         error = None
-        print(f"Starting Hive ethereum/engine for {client}; live output is also saved to {log_path}.", flush=True)
+        print(
+            f"Compliance progress: Starting Hive ethereum/engine for {client} "
+            f"(client {client_index} of {len(clients)}).",
+            flush=True,
+        )
         try:
             with log_path.open("w", encoding="utf-8") as output:
                 process = subprocess.Popen(
@@ -82,7 +86,12 @@ def run_clients(clients, image, workspace_root, logs_dir, results_path, run_id, 
                 output_thread.join()
         except OSError as exc:
             error = str(exc)
-        print(f"Hive {client} finished with exit code {status}; log: {log_path}", flush=True)
+        outcome = "passed" if status == 0 else "finished with a failure"
+        print(
+            f"Compliance progress: Hive ethereum/engine for {client} {outcome} "
+            f"(client {client_index} of {len(clients)}).",
+            flush=True,
+        )
         result = {
             "client": client,
             "simulation": "ethereum/engine",

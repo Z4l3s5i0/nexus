@@ -32,6 +32,10 @@ SYSTEM_COLLECTOR_PID=""
 CURRENT_STATE_FILE=""
 RUN_STATUS=0
 
+startup_progress() {
+    printf 'Startup progress: %s\n' "$*"
+}
+
 usage() {
     cat <<EOF
 Usage: bash experiments/startup/run.sh [options]
@@ -169,14 +173,26 @@ cleanup() {
             --output "$OUTPUT_DIR/run_status.json" --exit-code "$status" || true
     fi
     if [[ -n "$SYSTEM_COLLECTOR_PID" ]] && kill -0 "$SYSTEM_COLLECTOR_PID" 2>/dev/null; then
+        startup_progress "Stopping system metrics collection."
         kill "$SYSTEM_COLLECTOR_PID" 2>/dev/null || true
         wait "$SYSTEM_COLLECTOR_PID" 2>/dev/null || true
+        startup_progress "System metrics collection stopped."
     fi
     if [[ -n "$CURRENT_STATE_FILE" && -f "$CURRENT_STATE_FILE" ]]; then
-        python3 "$SCRIPT_DIR/stop_client.py" --state "$CURRENT_STATE_FILE" || true
+        startup_progress "Stopping the active startup client."
+        if python3 "$SCRIPT_DIR/stop_client.py" --state "$CURRENT_STATE_FILE"; then
+            startup_progress "Active startup client teardown finished."
+        else
+            startup_progress "Active startup client teardown could not be confirmed."
+        fi
     fi
     if [[ "$METRICS_STARTED" == true ]]; then
-        bash "$SCRIPT_DIR/metrics_server.sh" stop "$RUN_ID" "$OUTPUT_DIR/metrics_server_data" || true
+        startup_progress "Stopping the startup metrics server."
+        if bash "$SCRIPT_DIR/metrics_server.sh" stop "$RUN_ID" "$OUTPUT_DIR/metrics_server_data"; then
+            startup_progress "Startup metrics server stopped."
+        else
+            startup_progress "Startup metrics server stop could not be confirmed."
+        fi
     fi
     return "$status"
 }
@@ -184,11 +200,14 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-echo "Starting startup benchmark metrics server for run $RUN_ID..."
+startup_progress "Starting the startup metrics server."
 bash "$SCRIPT_DIR/metrics_server.sh" start "$RUN_ID" "$OUTPUT_DIR/metrics_server_data" > "$OUTPUT_DIR/metrics_server.container"
 METRICS_STARTED=true
+startup_progress "Startup metrics server started."
+startup_progress "Recording startup run metadata."
 python3 "$SCRIPT_DIR/metadata.py" --scope run --run-id "$RUN_ID" --chain-id "$CHAIN_ID" \
     --iterations "$ITERATIONS" --configs "$CONFIGS" --output "$OUTPUT_DIR/metadata.json"
+startup_progress "Startup run metadata recorded."
 
 COLLECT_DURATION="$(python3 -c 'import math,sys; print(math.ceil(float(sys.argv[1]) + 10))' "$TIMEOUT")"
 
@@ -196,11 +215,13 @@ print_iteration_result() {
     local config="$1" iteration="$2" result_file="$3" client_log="$4"
     local startup_time error
     startup_time="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); print(d.get("startup_time_ms") if d.get("ready") and d.get("startup_time_ms") is not None else "unavailable")' "$result_file")"
-    echo "$config iteration $iteration: $startup_time ms"
     if [[ "$startup_time" == unavailable ]]; then
+        startup_progress "$config iteration $iteration of $ITERATIONS finished; startup time unavailable."
         error="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); print(d.get("error") or "No failure reason was recorded.")' "$result_file")"
         echo "  Failure: $error"
         echo "  Client log: $client_log"
+    else
+        startup_progress "$config iteration $iteration of $ITERATIONS finished in $startup_time ms."
     fi
 }
 
@@ -217,6 +238,7 @@ for config in "${CONFIG_LIST[@]}"; do
         mkdir -p "$work_dir" "$logs_dir"
         CURRENT_STATE_FILE="$state_file"
 
+        startup_progress "Preparing $config startup benchmark (iteration $iteration of $ITERATIONS)."
         python3 "$SCRIPT_DIR/generate_genesis.py" --chain-id "$CHAIN_ID" \
             --gas-limit "$GENESIS_GAS_LIMIT" --base-fee-per-gas "$GENESIS_BASE_FEE_PER_GAS" \
             --terminal-total-difficulty "$TERMINAL_TOTAL_DIFFICULTY" \
@@ -234,15 +256,18 @@ for config in "${CONFIG_LIST[@]}"; do
             --nexus-wasix-wasm "$NEXUS_WASIX_WASM" --wasmer-bin "$WASMER_BIN" --prepare-only \
             || PREPARE_STATUS=$?
         if (( PREPARE_STATUS != 0 )); then
+            startup_progress "$config client preparation did not complete; recording the result."
             RUN_STATUS=1
             python3 "$SCRIPT_DIR/collect_startup_metrics.py" \
                 --result "$result_file" --samples "$OUTPUT_DIR/startup_metric_samples.jsonl" \
                 --coverage "$OUTPUT_DIR/startup_time_coverage.json"
             print_iteration_result "$config" "$iteration" "$result_file" "$client_log"
+            startup_progress "$config iteration $iteration result recorded."
             CURRENT_STATE_FILE=""
             continue
         fi
 
+        startup_progress "$config client preparation finished; starting the startup measurement."
         RPC_PORT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["rpc_port"])' "$state_file")"
         python3 "$SCRIPT_DIR/collect_system_metrics.py" \
             --identity "$identity_file" --state-file "$state_file" \
@@ -250,6 +275,7 @@ for config in "${CONFIG_LIST[@]}"; do
             --interval "$METRICS_INTERVAL" \
             > "$iteration_dir/system_collector.stdout" 2> "$iteration_dir/system_collector.stderr" &
         SYSTEM_COLLECTOR_PID=$!
+        startup_progress "System metrics collection started for $config iteration $iteration."
 
         BENCHMARK_STATUS=0
         python3 "$SCRIPT_DIR/benchmark_client.py" \
@@ -262,8 +288,10 @@ for config in "${CONFIG_LIST[@]}"; do
             || BENCHMARK_STATUS=$?
         if (( BENCHMARK_STATUS != 0 )); then
             RUN_STATUS=1
+            startup_progress "$config startup measurement finished with a failure."
         else
             sleep 0.5
+            startup_progress "$config startup measurement finished."
         fi
 
         CONTAINER_NAME="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("container_name") or "")' "$state_file")"
@@ -275,13 +303,17 @@ for config in "${CONFIG_LIST[@]}"; do
             STOP_CLIENT_ARGS+=(--keep-failed)
         fi
         STOP_STATUS=0
+        startup_progress "Tearing down the $config startup client."
         python3 "$SCRIPT_DIR/stop_client.py" "${STOP_CLIENT_ARGS[@]}" || STOP_STATUS=$?
         if (( STOP_STATUS != 0 )); then
             RUN_STATUS=1
+            startup_progress "$config startup client teardown finished with a failure."
         else
+            startup_progress "$config startup client teardown finished."
             CURRENT_STATE_FILE=""
         fi
         if [[ -n "$SYSTEM_COLLECTOR_PID" ]]; then
+            startup_progress "Stopping system metrics collection for $config iteration $iteration."
             if kill -0 "$SYSTEM_COLLECTOR_PID" 2>/dev/null; then
                 kill "$SYSTEM_COLLECTOR_PID" 2>/dev/null || true
                 wait "$SYSTEM_COLLECTOR_PID" 2>/dev/null || true
@@ -289,21 +321,29 @@ for config in "${CONFIG_LIST[@]}"; do
                 wait "$SYSTEM_COLLECTOR_PID" || true
             fi
             SYSTEM_COLLECTOR_PID=""
+            startup_progress "System metrics collection stopped for $config iteration $iteration."
         fi
+        startup_progress "Recording startup metrics for $config iteration $iteration."
         python3 "$SCRIPT_DIR/collect_startup_metrics.py" \
             --result "$result_file" --samples "$OUTPUT_DIR/startup_metric_samples.jsonl" \
             --coverage "$OUTPUT_DIR/startup_time_coverage.json"
+        startup_progress "Startup metrics recorded for $config iteration $iteration."
         print_iteration_result "$config" "$iteration" "$result_file" "$client_log"
+        startup_progress "$config iteration $iteration result recorded."
     done
 done
 
+startup_progress "Stopping the startup metrics server."
 bash "$SCRIPT_DIR/metrics_server.sh" stop "$RUN_ID" "$OUTPUT_DIR/metrics_server_data"
 METRICS_STARTED=false
+startup_progress "Startup metrics server stopped."
 if [[ ! -f "$OUTPUT_DIR/metrics_server_data/metrics.redb" ]]; then
     echo "Error: startup metrics database was not archived." >&2
     exit 1
 fi
+startup_progress "Generating the startup benchmark report."
 python3 "$SCRIPT_DIR/report.py" --output-dir "$OUTPUT_DIR" --iterations "$ITERATIONS"
+startup_progress "Startup benchmark report generated."
 echo "Startup benchmark results: $OUTPUT_DIR"
 if (( RUN_STATUS != 0 )); then
     exit 1

@@ -8,6 +8,10 @@ OUTPUT_ROOT="${EXPERIMENTS_OUTPUT_ROOT:-$REPO_ROOT/experiment-results}/size"
 SOURCES=()
 BINARIES=()
 
+size_progress() {
+    printf 'Size progress: %s\n' "$*"
+}
+
 usage() {
     cat <<EOF
 Usage: bash experiments/size/run.sh [options]
@@ -68,7 +72,13 @@ SOURCE_ARGS=()
 for source in "${SOURCES[@]}"; do SOURCE_ARGS+=(--source "$source"); done
 BINARY_ARGS=()
 for binary in "${BINARIES[@]}"; do BINARY_ARGS+=(--binary "$binary"); done
+size_progress "Source size measurements starting."
 bash "$SCRIPT_DIR/measure_source_size.sh" "${SOURCE_ARGS[@]}" --output "$OUTPUT_DIR/source_size.tsv"
+size_progress "Source size measurements finished."
+size_progress "Compiled binary size measurements starting."
 bash "$SCRIPT_DIR/measure_binary_size.sh" "${BINARY_ARGS[@]}" --output "$OUTPUT_DIR/binary_size.tsv"
+size_progress "Compiled binary size measurements finished."
+size_progress "Generating the size comparison report."
 python3 "$SCRIPT_DIR/report.py" --output-dir "$OUTPUT_DIR" --run-id "$RUN_ID"
+size_progress "Size comparison report generated."
 echo "Size comparison results: $OUTPUT_DIR"
