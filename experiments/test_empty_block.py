@@ -117,7 +117,7 @@ class EmptyBlockExperimentTests(unittest.TestCase):
             "RPC eth_getTransactionReceipt failed: transaction indexing is in progress"
         )
         with patch.object(block_collection, "rpc_call", side_effect=[indexing_error, receipt]) as rpc:
-            with patch.object(block_collection.time, "monotonic", side_effect=[0.0, 0.1, 0.2]):
+            with patch.object(block_collection.time, "monotonic", side_effect=[0.0, 0.1, 0.2, 0.3, 0.4]):
                 with patch.object(block_collection.time, "time", return_value=100.25):
                     with patch.object(block_collection.time, "sleep") as sleep:
                         receipts = block_collection.wait_for_receipts(
@@ -127,6 +127,82 @@ class EmptyBlockExperimentTests(unittest.TestCase):
         self.assertEqual(receipts, {tx_hash: receipt})
         self.assertEqual(rpc.call_count, 2)
         sleep.assert_called_once_with(0.1)
+
+    def test_receipt_timeout_preserves_partial_receipts_and_bounds_each_rpc(self):
+        included_hash = "0x" + "a" * 64
+        pending_hash = "0x" + "b" * 64
+        receipt = {"status": "0x1", "blockNumber": "0x2"}
+        clock = {"now": 0.0}
+        rpc_timeouts = []
+
+        def fake_rpc(_rpc_url, _method, params, timeout):
+            rpc_timeouts.append(timeout)
+            if params[0] == included_hash:
+                clock["now"] += 3.0
+                return receipt
+            clock["now"] += timeout
+            return None
+
+        with patch.object(block_collection.time, "monotonic", side_effect=lambda: clock["now"]):
+            with patch.object(block_collection.time, "time", return_value=100.25):
+                with patch.object(block_collection, "rpc_call", side_effect=fake_rpc):
+                    with self.assertRaises(block_collection.ReceiptWaitTimeout) as raised:
+                        block_collection.wait_for_receipts(
+                            "http://localhost", [included_hash, pending_hash], 5, 0.1,
+                            include_observation_times=True,
+                        )
+
+        self.assertEqual(raised.exception.receipts, {included_hash: receipt})
+        self.assertEqual(raised.exception.missing_hashes, [pending_hash])
+        self.assertEqual(rpc_timeouts, [5, 2])
+
+    def test_partial_burst_writer_persists_receipts_before_timeout(self):
+        included_hash = "0x" + "a" * 64
+        pending_hash = "0x" + "b" * 64
+        submitted = [
+            {"hash": included_hash, "submitted_at": {"monotonic": 1.0, "epoch": 100.0}},
+            {"hash": pending_hash, "submitted_at": {"monotonic": 2.0, "epoch": 101.0}},
+        ]
+        receipts = {
+            included_hash: {"status": "0x1", "blockNumber": "0x2", "gasUsed": "0x5208"},
+        }
+        observed = {included_hash: {"monotonic": 1.5, "epoch": 100.5}}
+
+        class RowWriter:
+            def __init__(self):
+                self.rows = []
+
+            def writerow(self, row):
+                self.rows.append(row)
+
+        inclusion_writer = RowWriter()
+        burst_writer = RowWriter()
+        block_writer = RowWriter()
+        output_file = io.StringIO()
+        inclusion_file = io.StringIO()
+        burst_file = io.StringIO()
+        args = run_experiment.create_parser().parse_args(["--counts", "2", "--experiment-id", "run-1"])
+
+        with patch.object(
+            block_collection,
+            "rpc_call",
+            return_value={"transactions": [included_hash], "timestamp": "0x10"},
+        ):
+            completed, actual_counts, hashes_by_block = run_experiment.write_observed_burst(
+                args, "value_transfer", 2, 1, 1, submitted, receipts, observed,
+                "0xsender", None, inclusion_writer, inclusion_file, burst_writer,
+                burst_file, block_writer, output_file, {},
+            )
+
+        self.assertFalse(completed)
+        self.assertEqual(actual_counts, {2: 1})
+        self.assertEqual(hashes_by_block, {2: [included_hash]})
+        self.assertEqual(len(inclusion_writer.rows), 1)
+        self.assertEqual(inclusion_writer.rows[0]["tx_hash"], included_hash)
+        self.assertEqual(inclusion_writer.rows[0]["latency_basis"], run_experiment.LATENCY_BASIS)
+        self.assertEqual(burst_writer.rows[0]["included_tx_count"], 1)
+        self.assertEqual(burst_writer.rows[0]["completed"], "false")
+        self.assertEqual(block_writer.rows[0]["block_number"], 2)
 
     def test_receipt_polling_propagates_other_rpc_errors(self):
         error = RuntimeError("RPC eth_getTransactionReceipt failed: invalid params")
@@ -253,7 +329,21 @@ class EmptyBlockExperimentTests(unittest.TestCase):
 
         self.assertEqual(submitted[0]["hash"], tx_hash)
         self.assertEqual(submitted[0]["submitted_at"], {"monotonic": 20.5, "epoch": 1000.5})
-        self.assertIn("date +%s.%N", docker_run.call_args.kwargs["input"])
+        script = docker_run.call_args.kwargs["input"]
+        self.assertLess(script.index("output=$(cast send"), script.index("submitted_at=$(date +%s.%N)"))
+
+    def test_host_cast_submission_timestamp_is_captured_after_cast_returns(self):
+        tx_hash = "0x" + "a" * 64
+        result = subprocess.CompletedProcess([], 0, stdout=tx_hash, stderr="")
+        with patch.object(transaction_submission.subprocess, "run", return_value=result):
+            with patch.object(transaction_submission.time, "monotonic", side_effect=[10.0, 11.0]):
+                with patch.object(transaction_submission.time, "time", side_effect=[100.0, 101.0]):
+                    output, submitted_at = transaction_submission.run_cast(
+                        "cast", ["send", "0xrecipient"], 30, "network", "image", capture_timestamp=True
+                    )
+
+        self.assertEqual(output, tx_hash)
+        self.assertEqual(submitted_at, {"monotonic": 11.0, "epoch": 101.0})
 
     def test_contract_deployment_submits_bytecode_with_cast_create(self):
         tx_hash = "0x" + "a" * 64
@@ -443,19 +533,22 @@ class EmptyBlockExperimentTests(unittest.TestCase):
                 "sweep": {"transaction_counts": [100], "blocks_per_count": 1},
             }
             (output_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+            (output_dir / "run_status.json").write_text('{"status":0}', encoding="utf-8")
             (output_dir / "samples.csv").write_text(
                 "target_tx_count,block_number,actual_tx_count,matched,execution_time_ms\n"
                 "100,22,78,false,\n100,23,22,false,\n",
                 encoding="utf-8",
             )
             (output_dir / "transaction_burst_samples.csv").write_text(
-                "transaction_type,target_tx_count,attempt,completed,blocks_spanned,burst_completion_latency_ms\n"
-                "contract_call,100,1,true,2,1300\n",
+                "transaction_type,target_tx_count,attempt,completed,blocks_spanned,burst_completion_latency_ms,"
+                "submitted_tx_count,included_tx_count,reverted_tx_count,latency_basis\n"
+                "contract_call,100,1,true,2,1300,2,2,1,send-ack-to-receipt\n",
                 encoding="utf-8",
             )
             (output_dir / "transaction_inclusion_samples.csv").write_text(
-                "transaction_type,target_tx_count,attempt,inclusion_latency_ms,status\n"
-                "contract_call,100,1,100,0x1\ncontract_call,100,1,1300,0x1\n",
+                "transaction_type,target_tx_count,attempt,inclusion_latency_ms,status,latency_basis\n"
+                "contract_call,100,1,100,0x0,send-ack-to-receipt\n"
+                "contract_call,100,1,1300,0x1,send-ack-to-receipt\n",
                 encoding="utf-8",
             )
 
@@ -466,6 +559,9 @@ class EmptyBlockExperimentTests(unittest.TestCase):
         self.assertEqual(target_summary["completed_bursts"], 1)
         self.assertEqual(target_summary["missing_bursts"], 0)
         self.assertEqual(target_summary["exact_block_matches"], 0)
+        self.assertEqual(target_summary["included_transactions"], 2)
+        self.assertEqual(target_summary["successful_transactions"], 1)
+        self.assertEqual(target_summary["reverted_transactions"], 1)
         self.assertEqual(spread_latency["observations"], 2)
         self.assertEqual(spread_latency["mean_ms"], 700)
         self.assertEqual(spread_latency["burst_completion_latency_ms"]["mean"], 1300)
@@ -555,6 +651,24 @@ class EmptyBlockExperimentTests(unittest.TestCase):
 
         self.assertEqual(samples, [])
         self.assertTrue(all(status == "unavailable" for status in coverage["fields"].values()))
+
+    def test_tps_is_omitted_when_sampled_block_numbers_are_not_consecutive(self):
+        rows = [
+            {
+                "block_number": "10", "actual_tx_count": "3", "block_timestamp": "1000",
+                "target_tx_count": "3", "attempt": "1",
+            },
+            {
+                "block_number": "12", "actual_tx_count": "5", "block_timestamp": "1020",
+                "target_tx_count": "5", "attempt": "1",
+            },
+        ]
+
+        samples, coverage = collect_block_metrics.derive_block_samples(rows, {"chain_id": 100}, "run-1")
+
+        self.assertNotIn("empty_block_tps", {sample["name"] for sample in samples})
+        self.assertEqual(coverage["consecutive_tps_intervals"], 0)
+        self.assertEqual(coverage["skipped_nonconsecutive_tps_intervals"], 1)
 
     def test_structured_logs_capture_sender_gas_execution_and_peer_fields(self):
         tx_hash = "0x" + "a" * 64

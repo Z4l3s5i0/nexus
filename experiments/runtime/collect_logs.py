@@ -74,6 +74,19 @@ def _number(attributes, key):
     return value if value >= 0 else None
 
 
+def _block_number(attributes):
+    value = attributes.get("number")
+    if value is None:
+        return None
+    try:
+        return int(value, 0)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+
 def _sample(event, name, value, labels=None):
     if value is None or event["timestamp_ms"] is None:
         return None
@@ -90,12 +103,15 @@ def _sample(event, name, value, labels=None):
     )
 
 
-def derive_samples(events, workload_duration):
+def derive_samples(events, workload_windows):
     samples = []
     submitted = defaultdict(set)
-    committed = defaultdict(int)
+    committed = defaultdict(set)
     transaction_receive_time = {}
     transaction_senders = {}
+    active_blocks = {}
+    block_transactions = {}
+    imported_blocks = defaultdict(int)
     event_counts = defaultdict(int)
 
     for event in events:
@@ -106,13 +122,23 @@ def derive_samples(events, workload_duration):
         if name == "TX_RPC_RECV":
             tx_hash = attributes.get("hash", "")
             if TRANSACTION_HASH.fullmatch(tx_hash):
-                submitted[node_id].add(tx_hash.lower())
+                tx_hash = tx_hash.lower()
+                window = workload_windows.get(node_id)
+                if (
+                    window is not None
+                    and event["timestamp_ms"] is not None
+                    and window["start_ms"] <= event["timestamp_ms"] <= window["end_ms"]
+                ):
+                    submitted[node_id].add(tx_hash)
                 if event["timestamp_ms"] is not None:
-                    transaction_receive_time[(node_id, tx_hash.lower())] = event["timestamp_ms"]
+                    transaction_receive_time[(node_id, tx_hash)] = event["timestamp_ms"]
         elif name == "TX_EXEC_START":
             tx_hash = attributes.get("hash", "")
             if TRANSACTION_HASH.fullmatch(tx_hash):
                 tx_hash = tx_hash.lower()
+                active = active_blocks.get(node_id)
+                if active is not None:
+                    active["transactions"].add(tx_hash)
                 transaction_senders[(node_id, tx_hash)] = attributes.get("sender", "unavailable")
                 received_at = transaction_receive_time.get((node_id, tx_hash))
                 if received_at is not None and event["timestamp_ms"] is not None:
@@ -149,6 +175,10 @@ def derive_samples(events, workload_duration):
                 if sample:
                     samples.append(sample)
         elif name == "BLOCK_EXEC_START":
+            active_blocks[node_id] = {
+                "number": _block_number(attributes),
+                "transactions": set(),
+            }
             sample = _sample(
                 event,
                 "log_block_number",
@@ -158,6 +188,11 @@ def derive_samples(events, workload_duration):
             if sample:
                 samples.append(sample)
         elif name == "BLOCK_EXEC_END":
+            active = active_blocks.pop(node_id, None)
+            if active is not None and active["number"] is not None:
+                ended_number = _block_number(attributes)
+                if ended_number is None or ended_number == active["number"]:
+                    block_transactions[(node_id, active["number"])] = active["transactions"]
             sample = _sample(
                 event,
                 "log_block_elapsed_ms",
@@ -168,9 +203,8 @@ def derive_samples(events, workload_duration):
                 samples.append(sample)
         elif name == "IMPORT_END":
             tx_count = _number(attributes, "txs")
-            block_number = _number(attributes, "number")
+            block_number = _block_number(attributes)
             if tx_count is not None:
-                committed[node_id] += int(tx_count)
                 sample = _sample(
                     event,
                     "log_block_transaction_count",
@@ -180,6 +214,10 @@ def derive_samples(events, workload_duration):
                 if sample:
                     samples.append(sample)
             if block_number is not None:
+                imported_blocks[node_id] += 1
+                committed[node_id].update(
+                    block_transactions.get((node_id, block_number), set()) & submitted[node_id]
+                )
                 sample = _sample(
                     event,
                     "log_block_number",
@@ -195,21 +233,30 @@ def derive_samples(events, workload_duration):
         node_events[event["node_id"]].append(event)
     for node_id, node_samples in node_events.items():
         representative = node_samples[-1]
-        tx_count = committed.get(node_id, 0)
+        tx_count = len(committed.get(node_id, set()))
         submitted_count = len(submitted.get(node_id, set()))
-        if workload_duration > 0 and tx_count > 0:
+        window = workload_windows.get(node_id)
+        workload_duration = (
+            (window["end_ms"] - window["start_ms"]) / 1000
+            if window is not None else 0
+        )
+        if workload_duration > 0 and submitted_count > 0 and imported_blocks.get(node_id, 0) > 0:
+            labels = {
+                "basis": "unique submitted workload transactions confirmed in imported blocks / recorded spam window",
+                "committed_transactions": tx_count,
+                "submitted_transactions": submitted_count,
+                "workload_window_seconds": workload_duration,
+                "runtime_variant": representative.get("client_variant", "unknown"),
+            }
             sample = _sample(
                 representative,
                 "log_tps",
                 tx_count / workload_duration,
-                {
-                    "basis": "IMPORT_END transaction count / configured workload duration",
-                    "runtime_variant": representative.get("client_variant", "unknown"),
-                },
+                labels,
             )
             if sample:
                 samples.append(sample)
-        if submitted_count > 0:
+        if submitted_count > 0 and imported_blocks.get(node_id, 0) > 0:
             sample = _sample(
                 representative,
                 "log_commit_to_submit_ratio",
@@ -217,6 +264,8 @@ def derive_samples(events, workload_duration):
                 {
                     "committed_transactions": tx_count,
                     "submitted_transactions": submitted_count,
+                    "basis": "unique workload hashes in imported blocks / unique workload hashes received during spam window",
+                    "workload_window_seconds": workload_duration,
                     "runtime_variant": representative.get("client_variant", "unknown"),
                 },
             )
@@ -238,6 +287,9 @@ def derive_samples(events, workload_duration):
         "download_type": sum(1 for event in events if event["event"].startswith("DOWNLOAD_")),
         "tps": sum(1 for sample in samples if sample["name"] == "log_tps"),
         "commit_to_submit_ratio": sum(1 for sample in samples if sample["name"] == "log_commit_to_submit_ratio"),
+        "workload_window_nodes": len(workload_windows),
+        "workload_submitted_transactions": sum(len(values) for values in submitted.values()),
+        "workload_committed_transactions": sum(len(values) for values in committed.values()),
         "event_counts": dict(sorted(event_counts.items())),
     }
     return samples, coverage
@@ -265,18 +317,45 @@ def capture_events(args, metadata):
     return events
 
 
+def load_workload_windows(directory, metadata, experiment_id):
+    windows = {}
+    directory = Path(directory)
+    for node in metadata.get("nodes", []):
+        index = node["index"]
+        node_id = node.get("node_id") or f"el-node-{index}"
+        path = directory / f"node_{index}.json"
+        try:
+            window = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"cannot read workload window {path}: {exc}") from exc
+        if not isinstance(window, dict):
+            raise ValueError(f"workload window {path} must contain a JSON object")
+        if window.get("experiment_id") != experiment_id or window.get("node_index") != index:
+            raise ValueError(f"workload window identity mismatch: {path}")
+        if window.get("exit_code") != 0:
+            raise ValueError(f"workload command failed for node {index} (exit {window.get('exit_code')})")
+        start_ms = window.get("start_ms")
+        end_ms = window.get("end_ms")
+        if (
+            isinstance(start_ms, bool) or not isinstance(start_ms, int)
+            or isinstance(end_ms, bool) or not isinstance(end_ms, int)
+            or end_ms <= start_ms
+        ):
+            raise ValueError(f"workload window has invalid bounds: {path}")
+        windows[node_id] = {"start_ms": start_ms, "end_ms": end_ms}
+    return windows
+
+
 def main():
     parser = argparse.ArgumentParser(description="Parse structured execution-client log events.")
     parser.add_argument("--metadata", required=True)
     parser.add_argument("--logs-dir", required=True)
+    parser.add_argument("--workload-windows", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--experiment-id", required=True)
-    parser.add_argument("--workload-duration", type=float, required=True)
     parser.add_argument("--api-url", default="http://127.0.0.1:9100")
     parser.add_argument("--token", default=None)
     args = parser.parse_args()
-    if args.workload_duration <= 0:
-        parser.error("workload duration must be positive")
     if args.token is None:
         args.token = os.environ.get("METRICS_INGEST_TOKEN", "")
 
@@ -284,7 +363,8 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     events = capture_events(args, metadata)
-    samples, coverage = derive_samples(events, args.workload_duration)
+    workload_windows = load_workload_windows(args.workload_windows, metadata, args.experiment_id)
+    samples, coverage = derive_samples(events, workload_windows)
 
     with (output_dir / "events.jsonl").open("w", encoding="utf-8") as event_file:
         for event in events:

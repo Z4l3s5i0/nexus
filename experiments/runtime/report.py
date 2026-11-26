@@ -37,11 +37,16 @@ def read_jsonl(path):
         return []
     rows = []
     with path.open(encoding="utf-8") as source:
-        for line in source:
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
+        for line_number, line in enumerate(source, 1):
+            if not line.strip():
                 continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{path.name}:{line_number} is not valid JSON: {exc}") from exc
+            if not isinstance(row, dict):
+                raise ValueError(f"{path.name}:{line_number} must be a JSON object")
+            rows.append(row)
     return rows
 
 
@@ -84,6 +89,45 @@ def system_coverage(metadata, samples):
     }
 
 
+def workload_outcomes(samples):
+    definitions = {
+        "log_tps": ("tps", "Confirmed workload transaction hashes per recorded spam-command window second."),
+        "log_commit_to_submit_ratio": (
+            "commit_to_submit_ratio",
+            "Unique workload hashes in imported blocks divided by unique workload hashes received during the spam window.",
+        ),
+    }
+    outcomes = {}
+    for metric_name, (key, definition) in definitions.items():
+        groups = {}
+        for sample in samples:
+            if sample.get("name") != metric_name:
+                continue
+            group_key = (sample.get("client", "unavailable"), sample.get("node_id", "unavailable"))
+            groups.setdefault(group_key, []).append(float(sample["value"]))
+        per_node = []
+        values = []
+        for (client, node_id), node_values in sorted(groups.items()):
+            values.extend(node_values)
+            per_node.append(
+                {
+                    "client": client,
+                    "node_id": node_id,
+                    "observations": len(node_values),
+                    "mean": sum(node_values) / len(node_values),
+                    "minimum": min(node_values),
+                    "maximum": max(node_values),
+                }
+            )
+        outcomes[key] = {
+            "definition": definition,
+            "observations": len(values),
+            "mean": sum(values) / len(values) if values else None,
+            "per_node": per_node,
+        }
+    return outcomes
+
+
 def build_report(output_dir):
     output_dir = Path(output_dir)
     metadata = json.loads((output_dir / "metadata.json").read_text(encoding="utf-8"))
@@ -96,6 +140,7 @@ def build_report(output_dir):
     system_status = system_coverage(metadata, system_samples)
     database_available = (output_dir / "metrics_server_data" / "metrics.redb").is_file()
     counts = Counter((sample["source"], sample["client"], sample["node_id"]) for sample in system_samples + log_samples)
+    workload_summary = workload_outcomes(log_samples)
     report = {
         "experiment_id": metadata["experiment_id"],
         "chain_id": metadata["chain_id"],
@@ -111,11 +156,13 @@ def build_report(output_dir):
         "log_coverage": log_coverage.get("requested_fields", {}),
         "node_metric_coverage": node_coverage,
         "system_coverage": system_status,
+        "workload_outcomes": workload_summary,
         "metrics_database_archived": database_available,
         "notes": [
             "Raw Prometheus and JSON-RPC observations are stored in the metrics-server database with experiment, client, and node identity.",
             "System samples distinguish host-scoped values from per-container values; missing readings are omitted rather than written as zero.",
             "Log coverage depends on structured [EXP] events emitted by each client; unavailable fields are listed explicitly.",
+            "Runtime TPS and commit-to-submit ratio use unique submitted workload hashes, imported-block confirmation, and recorded per-node spam-command windows.",
         ],
     }
     (output_dir / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -127,9 +174,27 @@ def build_report(output_dir):
         f"- Locally archived system samples: `{len(system_samples)}`",
         f"- Locally archived log-derived samples: `{len(log_samples)}`",
         "",
-        "## Log field availability",
+        "## Workload outcome summary",
         "",
     ]
+    for key, summary in workload_summary.items():
+        if summary["observations"]:
+            per_node = ", ".join(
+                f"`{row['node_id']}` ({row['client']}): {row['mean']:.4f}"
+                for row in summary["per_node"]
+            )
+            lines.append(
+                f"- `{key}`: mean `{summary['mean']:.4f}` across `{summary['observations']}` observation(s); {per_node}."
+            )
+        else:
+            lines.append(f"- `{key}`: unavailable; no confirmed workload observations were parsed.")
+    lines.extend([
+        "- TPS is based on unique workload transactions confirmed in imported blocks divided by each node's recorded spam-command window.",
+        "- Commit-to-submit ratio compares those confirmed workload hashes with hashes received during the same window; unrelated block transactions are excluded.",
+        "",
+        "## Log field availability",
+        "",
+    ])
     if log_coverage.get("requested_fields"):
         lines.extend(f"- `{field}`: {status}" for field, status in sorted(log_coverage["requested_fields"].items()))
     else:

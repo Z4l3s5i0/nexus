@@ -7,20 +7,27 @@ from pathlib import Path
 def read_results(path):
     results = []
     if not path.is_file():
-        return results
+        raise FileNotFoundError(f"required compliance results are missing: {path}")
     with path.open(encoding="utf-8") as source:
-        for line in source:
-            try:
-                results.append(json.loads(line))
-            except json.JSONDecodeError:
+        for line_number, line in enumerate(source, 1):
+            if not line.strip():
                 continue
+            try:
+                result = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{path.name}:{line_number} is not valid JSON: {exc}") from exc
+            if not isinstance(result, dict):
+                raise ValueError(f"{path.name}:{line_number} must be a JSON object")
+            results.append(result)
     return results
 
 
 def build_report(output_dir, run_id):
     output_dir = Path(output_dir)
     metadata_path = output_dir / "metadata.json"
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
+    if not metadata_path.is_file():
+        raise FileNotFoundError(f"required compliance metadata is missing: {metadata_path}")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     results = read_results(output_dir / "results.jsonl")
     report = {
         "experiment_id": run_id,

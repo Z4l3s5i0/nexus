@@ -16,7 +16,9 @@ def build_report(output_dir):
     output_dir = Path(output_dir)
     metadata = json.loads((output_dir / "metadata.json").read_text(encoding="utf-8"))
     run_status_path = output_dir / "run_status.json"
-    run_status = json.loads(run_status_path.read_text(encoding="utf-8")) if run_status_path.is_file() else {"status": 0}
+    if not run_status_path.is_file():
+        raise FileNotFoundError(f"required run status is missing: {run_status_path}")
+    run_status = json.loads(run_status_path.read_text(encoding="utf-8"))
     block_coverage_path = output_dir / "block_metric_coverage.json"
     block_coverage = json.loads(block_coverage_path.read_text(encoding="utf-8")) if block_coverage_path.is_file() else {}
     log_coverage_path = output_dir / "log_metrics_coverage.json"
@@ -48,7 +50,12 @@ def build_report(output_dir):
         target = row.get("target_tx_count", "unknown")
         summary = grouped.setdefault(
             target,
-            {"blocks": 0, "matched": 0, "actual_tx_counts": [], "execution_times_ms": [], "completed_bursts": 0},
+            {
+                "blocks": 0, "matched": 0, "actual_tx_counts": [], "execution_times_ms": [],
+                "completed_bursts": 0, "submitted_transactions": 0,
+                "included_transactions": 0, "reverted_transactions": 0,
+                "failed_burst_attempts": 0,
+            },
         )
         summary["blocks"] += 1
         summary["matched"] += row.get("matched") == "true"
@@ -67,11 +74,28 @@ def build_report(output_dir):
         target = row.get("target_tx_count", "unknown")
         summary = grouped.setdefault(
             target,
-            {"blocks": 0, "matched": 0, "actual_tx_counts": [], "execution_times_ms": [], "completed_bursts": 0},
+            {
+                "blocks": 0, "matched": 0, "actual_tx_counts": [], "execution_times_ms": [],
+                "completed_bursts": 0, "submitted_transactions": 0,
+                "included_transactions": 0, "reverted_transactions": 0,
+                "failed_burst_attempts": 0,
+            },
         )
         summary["burst_attempts"] = summary.get("burst_attempts", 0) + 1
         if row.get("completed", "").lower() == "true":
             summary["completed_bursts"] += 1
+        else:
+            summary["failed_burst_attempts"] += 1
+        for field in ("submitted_tx_count", "included_tx_count", "reverted_tx_count"):
+            try:
+                summary_field = {
+                    "submitted_tx_count": "submitted_transactions",
+                    "included_tx_count": "included_transactions",
+                    "reverted_tx_count": "reverted_transactions",
+                }[field]
+                summary[summary_field] += int(row.get(field, "0") or 0)
+            except (TypeError, ValueError):
+                continue
         try:
             latency = float(row["burst_completion_latency_ms"])
         except (KeyError, TypeError, ValueError):
@@ -85,6 +109,9 @@ def build_report(output_dir):
             "mean": statistics.mean(times) if times else None,
         }
         summary["exact_block_matches"] = summary["matched"]
+        summary["successful_transactions"] = max(
+            0, summary.get("included_transactions", 0) - summary.get("reverted_transactions", 0)
+        )
     latencies_by_type = {}
     burst_spread = {}
     burst_completion_by_attempt = {}
@@ -135,6 +162,10 @@ def build_report(output_dir):
         latencies = latency_data["values"]
         ordered = sorted(latencies)
         p95_index = max(0, (95 * len(ordered) + 99) // 100 - 1)
+        latency_bases = sorted({
+            row.get("latency_basis") for row in latency_rows
+            if (row.get("transaction_type") or "unknown") == transaction_type and row.get("latency_basis")
+        })
         transaction_inclusion_latency[transaction_type] = {
             "observations": len(ordered),
             "failed_observations": latency_data["failed_observations"],
@@ -142,6 +173,7 @@ def build_report(output_dir):
             "mean_ms": statistics.mean(ordered),
             "median_ms": statistics.median(ordered),
             "p95_ms": ordered[p95_index],
+            "latency_basis": latency_bases,
         }
     transaction_inclusion_latency_by_target = {}
     for transaction_type, targets in latency_by_target.items():
@@ -180,6 +212,12 @@ def build_report(output_dir):
                 "actual_tx_counts": [],
                 "execution_time_ms": {"observed": False, "mean": None},
                 "completed_bursts": 0,
+                "burst_attempts": 0,
+                "failed_burst_attempts": 0,
+                "submitted_transactions": 0,
+                "included_transactions": 0,
+                "reverted_transactions": 0,
+                "successful_transactions": 0,
             },
         )
         summary["expected_matches"] = expected_samples
@@ -229,7 +267,8 @@ def build_report(output_dir):
         "notes": [
             "Block transaction counts and timestamps come from JSON-RPC block responses.",
             "Positive transaction-count samples are completed submitted bursts; bursts may span multiple blocks, which remain individually recorded.",
-            "Burst completion latency runs from the first burst submission start until the final receipt is first observed; receipt polling interval contributes delay.",
+            "Current inclusion-latency rows record Cast send completion through first receipt observation; the exact per-row basis is included in each sample and legacy rows without it remain unknown.",
+            "Current burst-completion rows record the first Cast send completion through the final receipt observation; partial receipt observations are retained even when the wait times out.",
             "Older result directories without transaction_burst_samples.csv cannot provide completed-burst or cross-block grouping statistics.",
             "Execution duration, transaction gas/sender, and peer/download events are included only when structured client logs provide them.",
             "Raw Prometheus names are preserved; semantic equivalence is not inferred.",
@@ -272,6 +311,9 @@ def build_report(output_dir):
                     lines.append(
                         f"- Target `{target}`: {summary['completed_bursts']}/{summary['expected_bursts']} completed bursts "
                         f"({summary['missing_bursts']} missing); {summary['exact_block_matches']} individual blocks exactly matched the target; "
+                        f"{summary['included_transactions']} included transactions, {summary['successful_transactions']} successful and "
+                        f"{summary['reverted_transactions']} reverted across {summary['burst_attempts']} attempt(s) "
+                        f"({summary['failed_burst_attempts']} incomplete); "
                         f"observed block transaction counts `{summary['actual_tx_counts']}`; "
                         f"mean burst completion `{summary['burst_completion_latency_ms']['mean']}` ms."
                     )
@@ -283,11 +325,12 @@ def build_report(output_dir):
             lines.append(
                 f"- `{transaction_type}` ({summary['workload']}): {summary['observations']} observations; "
                 f"mean `{summary['mean_ms']:.3f}` ms, median `{summary['median_ms']:.3f}` ms, "
-                f"p95 `{summary['p95_ms']:.3f}` ms; {summary['failed_observations']} reverted."
+                f"p95 `{summary['p95_ms']:.3f}` ms; {summary['failed_observations']} reverted; "
+                f"basis `{', '.join(summary['latency_basis']) or 'unknown'}`."
             )
         lines.append(
-            "Latency is measured from the client-side submission start until the first receipt poll observes inclusion; "
-            "the configured polling interval contributes observation delay."
+            "This is a send-acknowledgment-to-first-receipt-observation proxy, not the exact consensus inclusion instant; "
+            "receipt polling interval and RPC response time contribute observation delay."
         )
     else:
         lines.append("- No transaction inclusion latency observations were recorded.")

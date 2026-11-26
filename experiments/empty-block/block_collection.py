@@ -1,10 +1,23 @@
 import json
+import socket
 import time
 from collections import defaultdict
+from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 
 RPC_ID = 0
+
+
+class ReceiptWaitTimeout(TimeoutError):
+    def __init__(self, receipts, observed_times, missing_hashes):
+        self.receipts = receipts
+        self.observed_times = observed_times
+        self.missing_hashes = missing_hashes
+        super().__init__(
+            f"timed out waiting for {len(missing_hashes)} transaction receipt(s); "
+            f"observed {len(receipts)} receipt(s) before the deadline"
+        )
 
 
 def rpc_call(rpc_url, method, params, timeout):
@@ -51,11 +64,29 @@ def wait_for_receipts(
         for tx_hash in tx_hashes:
             if tx_hash in receipts:
                 continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             try:
-                receipt = rpc_call(rpc_url, "eth_getTransactionReceipt", [tx_hash], min(timeout, 30))
+                receipt = rpc_call(
+                    rpc_url,
+                    "eth_getTransactionReceipt",
+                    [tx_hash],
+                    min(remaining, 30),
+                )
             except RuntimeError as exc:
                 if "transaction indexing is in progress" not in str(exc).lower():
                     raise
+                continue
+            except (TimeoutError, socket.timeout):
+                if time.monotonic() >= deadline:
+                    break
+                continue
+            except URLError as exc:
+                if not isinstance(exc.reason, (TimeoutError, socket.timeout)):
+                    raise
+                if time.monotonic() >= deadline:
+                    break
                 continue
             if receipt is not None:
                 if receipt.get("status") not in (None, "0x1") and not allow_failed_receipts:
@@ -63,10 +94,11 @@ def wait_for_receipts(
                 receipts[tx_hash] = receipt
                 observed_times[tx_hash] = {"monotonic": time.monotonic(), "epoch": time.time()}
         if len(receipts) < len(tx_hashes):
-            if time.monotonic() >= deadline:
-                missing = len(tx_hashes) - len(receipts)
-                raise TimeoutError(f"timed out waiting for {missing} transaction receipt(s)")
-            time.sleep(poll_interval)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                missing = [tx_hash for tx_hash in tx_hashes if tx_hash not in receipts]
+                raise ReceiptWaitTimeout(receipts, observed_times, missing)
+            time.sleep(min(poll_interval, remaining))
     if include_observation_times:
         return receipts, observed_times
     return receipts

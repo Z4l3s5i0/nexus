@@ -66,22 +66,29 @@ def derive_block_samples(rows, metadata, experiment_id, latency_rows=(), burst_r
                           "empty_block_timestamp_seconds", block_timestamp, labels)
         )
 
-    previous_timestamp = None
+    previous_block = None
+    consecutive_tps_intervals = 0
+    skipped_nonconsecutive_tps_intervals = 0
     for number, block in sorted(blocks.items()):
-        if previous_timestamp is not None and block["timestamp"] > previous_timestamp:
-            interval = block["timestamp"] - previous_timestamp
-            samples.append(
-                metric_sample(
-                    block["timestamp_ms"], experiment_id, node_id, network, client, "Derived",
-                    "empty_block_tps", block["actual"] / interval,
-                    {
-                        "block_number": str(number),
-                        "basis": "block transactions / timestamp interval",
-                        "runtime_variant": client_variant,
-                    },
+        if previous_block is not None:
+            previous_number, previous_timestamp = previous_block
+            if number == previous_number + 1 and block["timestamp"] > previous_timestamp:
+                interval = block["timestamp"] - previous_timestamp
+                samples.append(
+                    metric_sample(
+                        block["timestamp_ms"], experiment_id, node_id, network, client, "Derived",
+                        "empty_block_tps", block["actual"] / interval,
+                        {
+                            "block_number": str(number),
+                            "basis": "block transactions / timestamp interval for consecutive block numbers",
+                            "runtime_variant": client_variant,
+                        },
+                    )
                 )
-            )
-        previous_timestamp = block["timestamp"]
+                consecutive_tps_intervals += 1
+            elif number > previous_number + 1:
+                skipped_nonconsecutive_tps_intervals += 1
+        previous_block = (number, block["timestamp"])
 
     for (target, attempt), attempt_data in attempts.items():
         submitted = len(attempt_data["submitted"])
@@ -124,7 +131,7 @@ def derive_block_samples(rows, metadata, experiment_id, latency_rows=(), burst_r
                 else "success" if str(row.get("status") or "").lower() in ("0x1", "1")
                 else "unknown"
             ),
-            "basis": "submission start to first receipt observation",
+            "basis": row.get("latency_basis") or "unavailable (saved row has no latency_basis)",
             "runtime_variant": client_variant,
         }
         if row.get("target_tx_count"):
@@ -170,7 +177,7 @@ def derive_block_samples(rows, metadata, experiment_id, latency_rows=(), burst_r
             "transaction_type": row.get("transaction_type", "unknown"),
             "workload": row.get("workload", "") or "none",
             "completed": row.get("completed", "false"),
-            "basis": "first burst submission start to final receipt observation",
+            "basis": row.get("latency_basis") or "unavailable (saved row has no latency_basis)",
             "runtime_variant": client_variant,
         }
         samples.append(
@@ -219,7 +226,12 @@ def derive_block_samples(rows, metadata, experiment_id, latency_rows=(), burst_r
             ),
         )
     }
-    return samples, {"fields": coverage, "sample_count": len(samples)}
+    return samples, {
+        "fields": coverage,
+        "sample_count": len(samples),
+        "consecutive_tps_intervals": consecutive_tps_intervals,
+        "skipped_nonconsecutive_tps_intervals": skipped_nonconsecutive_tps_intervals,
+    }
 
 
 def collect(args):

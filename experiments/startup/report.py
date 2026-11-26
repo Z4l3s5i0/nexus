@@ -118,7 +118,8 @@ def build_report(output_dir, expected_iterations=None):
         "metrics_database_archived": database_available,
         "notes": [
             "Startup timing ends at the first successful eth_chainId response.",
-            "Geth, Reth, and host Wasmer initialization is excluded; WASIX-in-Docker initialization remains inside the timed launch, matching the prior benchmark.",
+            "Genesis/data initialization and image preparation are excluded for all clients; startup timing begins when the configured client process/container is launched.",
+            "Readiness requires eth_chainId to equal the configured chain ID; a different chain ID is reported as a startup failure.",
             "Host load/context-switch values remain host-scoped; process/container attribution is reported separately.",
             "Unavailable metrics and failed readiness checks are not represented as zero.",
         ],

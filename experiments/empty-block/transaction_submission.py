@@ -26,7 +26,8 @@ def transaction_hash(output):
 
 
 def run_cast(cast_bin, arguments, timeout, cast_network, cast_image, capture_timestamp=False):
-    submitted_at = {"monotonic": time.monotonic(), "epoch": time.time()} if capture_timestamp else None
+    submission_clock = {"monotonic": time.monotonic(), "epoch": time.time()} if capture_timestamp else None
+    submitted_at = None
     docker_script = None
     if cast_bin:
         command = [cast_bin, *arguments]
@@ -39,8 +40,8 @@ def run_cast(cast_bin, arguments, timeout, cast_network, cast_image, capture_tim
         if capture_timestamp:
             script = (
                 "set -e\n"
-                "submitted_at=$(date +%s.%N)\n"
                 f"output=$({cast_command})\n"
+                "submitted_at=$(date +%s.%N)\n"
                 "printf '%s\\n%s\\n' \"$output\" \"SUBMITTED_AT=$submitted_at\""
             )
         else:
@@ -62,13 +63,15 @@ def run_cast(cast_bin, arguments, timeout, cast_network, cast_image, capture_tim
                 message = message.replace(arguments[index + 1], "[redacted]")
         raise RuntimeError(f"cast command failed: {message}")
     output = result.stdout.strip()
-    if capture_timestamp and not cast_bin:
+    if capture_timestamp and cast_bin:
+        submitted_at = {"monotonic": time.monotonic(), "epoch": time.time()}
+    elif capture_timestamp:
         marker = next((line for line in output.splitlines() if line.startswith("SUBMITTED_AT=")), None)
         if marker is None:
             raise RuntimeError("cast did not return a submission timestamp")
         epoch = float(marker.partition("=")[2])
         submitted_at = {
-            "monotonic": submitted_at["monotonic"] + epoch - submitted_at["epoch"],
+            "monotonic": submission_clock["monotonic"] + epoch - submission_clock["epoch"],
             "epoch": epoch,
         }
         output = "\n".join(line for line in output.splitlines() if line != marker).strip()
@@ -149,7 +152,7 @@ def submit_burst(
         for offset in range(count):
             command = shlex.join(["cast", *arguments(first_nonce + offset)])
             lines.append(
-                f"submitted_at=$(date +%s.%N)\noutput=$({command})\n"
+                f"output=$({command})\nsubmitted_at=$(date +%s.%N)\n"
                 "printf 'SUBMITTED_AT=%s\\n%s\\n' \"$submitted_at\" \"$output\""
             )
         script = "set -e\n" + "\n".join(lines)

@@ -81,10 +81,13 @@ class StartupBenchmarkTests(unittest.TestCase):
     def test_readiness_probe_accepts_rpc_result_not_http_response_alone(self):
         response = io.BytesIO(json.dumps({"jsonrpc": "2.0", "id": 1, "result": "0x3039"}).encode())
         with patch.object(benchmark_client, "urlopen", return_value=response):
-            self.assertTrue(benchmark_client.rpc_ready(8545))
+            self.assertTrue(benchmark_client.rpc_ready(8545, 12345))
+        response = io.BytesIO(json.dumps({"jsonrpc": "2.0", "id": 1, "result": "0x5ba0"}).encode())
+        with patch.object(benchmark_client, "urlopen", return_value=response):
+            self.assertFalse(benchmark_client.rpc_ready(8545, 12345))
         response = io.BytesIO(json.dumps({"jsonrpc": "2.0", "id": 1, "error": {"message": "not ready"}}).encode())
         with patch.object(benchmark_client, "urlopen", return_value=response):
-            self.assertFalse(benchmark_client.rpc_ready(8545))
+            self.assertFalse(benchmark_client.rpc_ready(8545, 12345))
 
     def test_docker_launch_keeps_container_available_for_log_collection(self):
         args = SimpleNamespace(rpc_port=8545)
@@ -125,12 +128,27 @@ class StartupBenchmarkTests(unittest.TestCase):
         self.assertIn(str(log_file), str(raised.exception))
 
     def test_wasix_docker_preparation_creates_volume_source_directory(self):
-        args = SimpleNamespace(config="nexus-wasix-docker", nexus_wasix_image="nexus-wasix")
+        args = SimpleNamespace(config="nexus-wasix-docker", nexus_wasix_image="nexus-wasix", rpc_port=8545)
         with tempfile.TemporaryDirectory() as temp:
             with patch.object(benchmark_client, "ensure_image"):
-                benchmark_client.prepare_config(args, temp, pathlib.Path(temp) / "client.log")
+                with patch.object(benchmark_client, "run_checked") as run_checked:
+                    benchmark_client.prepare_config(args, temp, pathlib.Path(temp) / "client.log")
 
             self.assertTrue((pathlib.Path(temp) / "data" / "nexus").is_dir())
+        command = run_checked.call_args.args[0]
+        self.assertIn("--entrypoint", command)
+        self.assertIn("init", command[-1])
+
+    def test_nexus_linux_preparation_initializes_the_datadir(self):
+        args = SimpleNamespace(config="nexus-linux", nexus_linux_image="nexus-linux", rpc_port=8545)
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(benchmark_client, "ensure_image"):
+                with patch.object(benchmark_client, "run_checked") as run_checked:
+                    benchmark_client.prepare_config(args, temp, pathlib.Path(temp) / "client.log")
+
+        command = run_checked.call_args.args[0]
+        self.assertIn("init", command)
+        self.assertIn("/data/data/nexus", command)
 
     def test_nexus_linux_launch_uses_run_subcommand(self):
         args = SimpleNamespace(config="nexus-linux", rpc_port=8545, nexus_linux_image="nexus-linux")
@@ -140,7 +158,7 @@ class StartupBenchmarkTests(unittest.TestCase):
 
         self.assertEqual(launch_docker.call_args.args[4][0], "run")
 
-    def test_nexus_wasix_docker_uses_shell_entrypoint_for_init_and_run(self):
+    def test_nexus_wasix_docker_uses_shell_entrypoint_for_run_after_preparation(self):
         args = SimpleNamespace(config="nexus-wasix-docker", rpc_port=8545, nexus_wasix_image="nexus-wasix")
         with tempfile.TemporaryDirectory() as temp:
             with patch.object(benchmark_client, "launch_docker") as launch_docker:
@@ -149,9 +167,8 @@ class StartupBenchmarkTests(unittest.TestCase):
         self.assertEqual(launch_docker.call_args.kwargs["entrypoint"], "sh")
         command = launch_docker.call_args.args[4]
         self.assertEqual(command[0], "-c")
-        self.assertIn(" init ", command[1])
-        self.assertIn(" && ", command[1])
         self.assertIn(" run ", command[1])
+        self.assertNotIn(" init ", command[1])
 
     def test_reth_launch_uses_the_custom_genesis_chainspec(self):
         args = SimpleNamespace(config="reth", rpc_port=8545, reth_image="reth")
@@ -217,7 +234,7 @@ class StartupBenchmarkTests(unittest.TestCase):
 
             with patch.object(benchmark_client, "prepare_config"):
                 with patch.object(benchmark_client, "launch_config", return_value=launched):
-                    with patch.object(benchmark_client, "rpc_ready", return_value=False):
+                    with patch.object(benchmark_client, "rpc_chain_id", return_value=None):
                         with patch.object(
                             benchmark_client,
                             "container_state",
@@ -272,7 +289,7 @@ class StartupBenchmarkTests(unittest.TestCase):
 
             with patch.object(benchmark_client, "prepare_config", side_effect=prepare):
                 with patch.object(benchmark_client, "launch_config", side_effect=launch):
-                    with patch.object(benchmark_client, "rpc_ready", return_value=True):
+                    with patch.object(benchmark_client, "rpc_chain_id", return_value=12345):
                         with patch.object(benchmark_client.time, "perf_counter_ns", side_effect=clock):
                             status = benchmark_client.run(args)
             result = json.loads((root / "result.json").read_text(encoding="utf-8"))

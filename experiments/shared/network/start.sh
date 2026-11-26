@@ -18,7 +18,7 @@ CLEANUP=false
 REGISTRY=""
 TAG="latest"
 GETH_IMAGE="ethereum/client-go@sha256:798b7eb1bcef6d4be7576232beea63bf291450f48b025dc8fb5c6e37840e4364"
-RETH_IMAGE="ghcr.io/paradigmxyz/reth:latest"
+RETH_IMAGE="ghcr.io/paradigmxyz/reth@sha256:68e76b32ad9ac1a3de54984d6f15bbce2047a92a771ff4efbcd08ee8f9dbd4d1"
 METRICS_IMAGE_OVERRIDE=""
 
 usage() {

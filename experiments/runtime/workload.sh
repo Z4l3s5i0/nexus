@@ -10,6 +10,7 @@ ACCOUNTS=4
 NETWORK=""
 RUN_ID=""
 STATE_DIR=""
+WORKLOAD_WINDOW_FILE=""
 CONTENDER_IMAGE="docker.io/z4l3s5i0/contender:latest"
 FOUNDRY_IMAGE="ghcr.io/foundry-rs/foundry:v1.7.1"
 
@@ -25,6 +26,7 @@ while [[ "$#" -gt 0 ]]; do
         --network) NETWORK="$2"; shift 2 ;;
         --run-id) RUN_ID="$2"; shift 2 ;;
         --state-dir) STATE_DIR="$2"; shift 2 ;;
+        --window-file) WORKLOAD_WINDOW_FILE="$2"; shift 2 ;;
         --scenario) SCENARIO="$2"; shift 2 ;;
         --tps) TPS="$2"; shift 2 ;;
         --duration) DURATION="$2"; shift 2 ;;
@@ -36,7 +38,7 @@ done
 
 [[ "$NODE_INDEX" =~ ^[0-9]+$ && "$CHAIN_ID" =~ ^[1-9][0-9]*$ ]] || usage
 [[ "$TPS" =~ ^[1-9][0-9]*$ && "$DURATION" =~ ^[1-9][0-9]*$ && "$ACCOUNTS" =~ ^[1-9][0-9]*$ ]] || usage
-[[ -n "$NETWORK" && -n "$RUN_ID" && -n "$STATE_DIR" ]] || usage
+[[ -n "$NETWORK" && -n "$RUN_ID" && -n "$STATE_DIR" && -n "$WORKLOAD_WINDOW_FILE" ]] || usage
 
 MNEMONIC="sleep moment list remain like wall lake industry canvas wonder ecology elite duck salad naive syrup frame brass utility club odor country obey pudding"
 RPC_URL="http://el-node-$NODE_INDEX:$((8545 + NODE_INDEX))"
@@ -61,6 +63,30 @@ CONTAINER_OPTIONS=(
 docker run -i "${CONTAINER_OPTIONS[@]}" "$CONTENDER_IMAGE" setup "$SCENARIO_REF" \
     -r "$RPC_URL" -p "$PRIVATE_KEY" -a "$ACCOUNTS" --seed "$SEED" \
     --env GAS_LIMIT=1eth --min-balance 100eth
-docker run -i "${CONTAINER_OPTIONS[@]}" "$CONTENDER_IMAGE" spam "$SCENARIO_REF" \
+WORKLOAD_START_MS="$(python3 -c 'import time; print(time.time_ns() // 1_000_000)')"
+SPAM_STATUS=0
+if docker run -i "${CONTAINER_OPTIONS[@]}" "$CONTENDER_IMAGE" spam "$SCENARIO_REF" \
     -r "$RPC_URL" --tps "$TPS" -d "$DURATION" -p "$PRIVATE_KEY" -a "$ACCOUNTS" \
-    --seed "$SEED" --env GAS_LIMIT=1eth --min-balance 100eth --pending-timeout 36
+    --seed "$SEED" --env GAS_LIMIT=1eth --min-balance 100eth --pending-timeout 36; then
+    :
+else
+    SPAM_STATUS=$?
+fi
+WORKLOAD_END_MS="$(python3 -c 'import time; print(time.time_ns() // 1_000_000)')"
+python3 - "$WORKLOAD_WINDOW_FILE" "$RUN_ID" "$NODE_INDEX" "$WORKLOAD_START_MS" "$WORKLOAD_END_MS" "$SPAM_STATUS" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+path.parent.mkdir(parents=True, exist_ok=True)
+window = {
+    "experiment_id": sys.argv[2],
+    "node_index": int(sys.argv[3]),
+    "start_ms": int(sys.argv[4]),
+    "end_ms": int(sys.argv[5]),
+    "exit_code": int(sys.argv[6]),
+}
+path.write_text(json.dumps(window, sort_keys=True) + "\n", encoding="utf-8")
+PY
+exit "$SPAM_STATUS"

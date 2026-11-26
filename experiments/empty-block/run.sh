@@ -126,6 +126,10 @@ mkdir -p "$OUTPUT_DIR/logs"
 
 cleanup() {
     local status=$?
+    if [[ -n "$OUTPUT_DIR" && -d "$OUTPUT_DIR" ]]; then
+        python3 "$REPO_ROOT/experiments/record_run_status.py" \
+            --output "$OUTPUT_DIR/run_status.json" --exit-code "$status" || true
+    fi
     if [[ -n "$SYSTEM_COLLECTOR_PID" ]] && kill -0 "$SYSTEM_COLLECTOR_PID" 2>/dev/null; then
         kill "$SYSTEM_COLLECTOR_PID" 2>/dev/null || true
         wait "$SYSTEM_COLLECTOR_PID" 2>/dev/null || true
@@ -229,7 +233,8 @@ python3 "$SCRIPT_DIR/collect_block_metrics.py" \
 python3 "$REPO_ROOT/experiments/runtime/collect_node_metrics.py" \
     --metadata "$OUTPUT_DIR/metadata.json" --output "$OUTPUT_DIR/node_metric_coverage.json" \
     --experiment-id "$RUN_ID"
-printf '{"status":%s}\n' "$RUN_STATUS" > "$OUTPUT_DIR/run_status.json"
+python3 "$REPO_ROOT/experiments/record_run_status.py" \
+    --output "$OUTPUT_DIR/run_status.json" --exit-code "$RUN_STATUS"
 
 bash "$NETWORK_SCRIPT" stop-metrics
 if [[ -f "$REPO_ROOT/data_v2/metrics-server/metrics.redb" ]]; then

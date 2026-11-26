@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from block_collection import (
+    ReceiptWaitTimeout,
     block_details,
     block_number,
     receipts_by_block,
@@ -26,6 +27,7 @@ from transaction_submission import CONTRACT_CALL_GAS_LIMIT, run_cast, submit_bur
 
 DEFAULT_COUNTS = (0, 1, 5, 10, 20, 50, 100)
 CAST_IMAGE = "ghcr.io/foundry-rs/foundry:v1.7.1"
+LATENCY_BASIS = "Cast send completion to first receipt observation"
 BYTECODE_FILE = Path(__file__).resolve().parents[2] / "diablo_workloads" / "bytecode.csv"
 WORKLOAD_CALLS = {
     "counter": "Add()",
@@ -36,14 +38,15 @@ WORKLOAD_CALLS = {
 INCLUSION_COLUMNS = (
     "experiment_id", "client", "client_variant", "node_id", "transaction_type", "workload",
     "target_tx_count", "attempt", "tx_hash", "sender", "to_address", "submitted_at_utc",
-    "included_at_utc", "inclusion_latency_ms", "block_number", "block_timestamp", "gas_used", "status",
+    "included_at_utc", "inclusion_latency_ms", "latency_basis", "block_number", "block_timestamp",
+    "gas_used", "status",
 )
 BURST_COLUMNS = (
     "experiment_id", "client", "client_variant", "node_id", "transaction_type", "workload",
     "target_tx_count", "attempt", "sample", "submitted_tx_count", "included_tx_count",
     "reverted_tx_count", "blocks_spanned", "block_numbers", "block_distribution", "completed",
     "burst_completion_latency_ms", "mean_transaction_inclusion_latency_ms",
-    "max_transaction_inclusion_latency_ms", "completed_at_utc",
+    "max_transaction_inclusion_latency_ms", "completed_at_utc", "latency_basis",
 )
 
 
@@ -195,6 +198,7 @@ def write_inclusion_sample(writer, output_file, args, transaction_type, tx_hash,
             "submitted_at_utc": datetime.fromtimestamp(submitted_at["epoch"], timezone.utc).isoformat(),
             "included_at_utc": datetime.fromtimestamp(observed_at["epoch"], timezone.utc).isoformat(),
             "inclusion_latency_ms": f"{latency_ms:.3f}",
+            "latency_basis": LATENCY_BASIS,
             "block_number": block_number_int if block_number_int is not None else "",
             "block_timestamp": block_timestamp,
             "gas_used": int(receipt.get("gasUsed", "0x0"), 16),
@@ -255,10 +259,68 @@ def write_burst_sample(writer, output_file, args, transaction_type, target, atte
             ),
             "max_transaction_inclusion_latency_ms": f"{max(transaction_latencies):.3f}" if transaction_latencies else "",
             "completed_at_utc": completed_at_utc,
+            "latency_basis": LATENCY_BASIS,
         }
     )
     output_file.flush()
     return completed
+
+
+def write_observed_burst(
+    args, transaction_type, target, attempt, sample, submitted, receipts, observed_times,
+    sender, contract_address, inclusion_writer, inclusion_file, burst_writer, burst_file,
+    writer, output_file, block_timestamp_cache,
+):
+    for item in submitted:
+        tx_hash = item["hash"]
+        if tx_hash not in receipts:
+            continue
+        write_inclusion_sample(
+            inclusion_writer,
+            inclusion_file,
+            args,
+            transaction_type,
+            tx_hash,
+            receipts[tx_hash],
+            item["submitted_at"],
+            observed_times[tx_hash],
+            sender,
+            contract_address,
+            target,
+            attempt,
+            block_timestamp_cache,
+        )
+    burst_complete = write_burst_sample(
+        burst_writer,
+        burst_file,
+        args,
+        transaction_type,
+        target,
+        attempt,
+        sample,
+        submitted,
+        receipts,
+        observed_times,
+    )
+    hashes_by_block = receipts_by_block(receipts)
+    actual_counts = {}
+    for number, included_hashes in sorted(hashes_by_block.items()):
+        actual, timestamp = block_details(args.rpc_url, number, 15)
+        actual_counts[number] = actual
+        write_sample(
+            writer,
+            output_file,
+            args,
+            target,
+            sample,
+            attempt,
+            number,
+            actual,
+            timestamp,
+            included_hashes,
+            [item["hash"] for item in submitted],
+        )
+    return burst_complete, actual_counts, hashes_by_block
 
 
 def run(args):
@@ -369,6 +431,7 @@ def run(args):
                 "transaction_hash": deployment_hash,
                 "block_number": block_number(deployment_receipt["blockNumber"]),
                 "inclusion_latency_ms": round(deployment_latency, 3),
+                "latency_basis": LATENCY_BASIS,
                 "confirmed": True,
             }
             (output.parent / "contract_deployment.json").write_text(
@@ -428,48 +491,32 @@ def run(args):
                         contract_gas_limit=args.contract_gas_limit,
                     )
                     submitted_hashes = [item["hash"] for item in submitted]
-                    receipts, observed_times = wait_for_receipts(
-                        args.rpc_url,
-                        submitted_hashes,
-                        args.receipt_timeout,
-                        args.poll_interval,
-                        include_observation_times=True,
-                        allow_failed_receipts=args.workload != "none",
-                    )
-                    for item in submitted:
-                        write_inclusion_sample(
-                            inclusion_writer,
-                            inclusion_file,
-                            args,
-                            "contract_call" if args.workload != "none" else "value_transfer",
-                            item["hash"],
-                            receipts[item["hash"]],
-                            item["submitted_at"],
-                            observed_times[item["hash"]],
-                            sender,
-                            contract_address,
-                            target,
-                            attempt,
-                            block_timestamp_cache,
-                        )
                     transaction_type = "contract_call" if args.workload != "none" else "value_transfer"
-                    burst_complete = write_burst_sample(
-                        burst_writer,
-                        burst_file,
-                        args,
-                        transaction_type,
-                        target,
-                        attempt,
-                        successful + 1,
-                        submitted,
-                        receipts,
-                        observed_times,
+                    try:
+                        receipts, observed_times = wait_for_receipts(
+                            args.rpc_url,
+                            submitted_hashes,
+                            args.receipt_timeout,
+                            args.poll_interval,
+                            include_observation_times=True,
+                            allow_failed_receipts=args.workload != "none",
+                        )
+                    except ReceiptWaitTimeout as exc:
+                        write_observed_burst(
+                            args, transaction_type, target, attempt, successful + 1, submitted,
+                            exc.receipts, exc.observed_times, sender, contract_address,
+                            inclusion_writer, inclusion_file, burst_writer, burst_file,
+                            writer, output_file, block_timestamp_cache,
+                        )
+                        raise
+                    burst_complete, actual_counts, hashes_by_block = write_observed_burst(
+                        args, transaction_type, target, attempt, successful + 1, submitted,
+                        receipts, observed_times, sender, contract_address,
+                        inclusion_writer, inclusion_file, burst_writer, burst_file,
+                        writer, output_file, block_timestamp_cache,
                     )
-                    hashes_by_block = receipts_by_block(receipts)
-                    for number, included_hashes in sorted(hashes_by_block.items()):
-                        actual, timestamp = block_details(args.rpc_url, number, 15)
-                        if write_sample(writer, output_file, args, target, successful + 1, attempt,
-                                        number, actual, timestamp, included_hashes, submitted_hashes):
+                    for number, actual in sorted(actual_counts.items()):
+                        if actual == target:
                             print(f"{target} tx: block {number} exactly matched the target transaction count")
                         else:
                             print(f"{target} tx: burst landed in block {number} with {actual} total transaction(s)")

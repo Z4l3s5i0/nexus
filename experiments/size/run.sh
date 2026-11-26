@@ -56,6 +56,14 @@ if ! mkdir "$OUTPUT_DIR" 2>/dev/null; then
     exit 1
 fi
 
+record_run_status() {
+    local status=$?
+    python3 "$REPO_ROOT/experiments/record_run_status.py" \
+        --output "$OUTPUT_DIR/run_status.json" --exit-code "$status" || true
+    return "$status"
+}
+trap record_run_status EXIT
+
 SOURCE_ARGS=()
 for source in "${SOURCES[@]}"; do SOURCE_ARGS+=(--source "$source"); done
 BINARY_ARGS=()

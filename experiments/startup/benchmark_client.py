@@ -24,6 +24,7 @@ CLIENT_NAMES = {
     "nexus-wasix-docker": "wasix-eth",
     "nexus-wasmer": "wasix-eth",
 }
+DEFAULT_RETH_IMAGE = "ghcr.io/paradigmxyz/reth@sha256:68e76b32ad9ac1a3de54984d6f15bbce2047a92a771ff4efbcd08ee8f9dbd4d1"
 
 
 def free_port():
@@ -37,7 +38,7 @@ def safe_container_name(run_id, config, iteration):
     return value[:120]
 
 
-def rpc_ready(port, timeout=2):
+def rpc_chain_id(port, timeout=2):
     body = json.dumps({"jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1}).encode()
     request = Request(
         f"http://127.0.0.1:{port}", data=body, headers={"Content-Type": "application/json"}
@@ -45,9 +46,18 @@ def rpc_ready(port, timeout=2):
     try:
         with urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
-        return isinstance(payload.get("result"), str) and payload["result"].startswith("0x")
+        if not isinstance(payload, dict):
+            return None
+        result = payload.get("result")
+        if not isinstance(result, str) or not re.fullmatch(r"0x[0-9a-fA-F]+", result):
+            return None
+        return int(result, 16)
     except (OSError, ValueError, URLError):
-        return False
+        return None
+
+
+def rpc_ready(port, expected_chain_id, timeout=2):
+    return rpc_chain_id(port, timeout) == expected_chain_id
 
 
 def write_json(path, value):
@@ -75,7 +85,7 @@ def ensure_image(image, log_file):
 def prepare_config(args, work_dir, log_file):
     work_dir = Path(work_dir).resolve()
     (work_dir / "data").mkdir(parents=True, exist_ok=True)
-    if args.config in {"nexus-wasix-docker", "nexus-wasmer"}:
+    if args.config in {"nexus-linux", "nexus-wasix-docker", "nexus-wasmer"}:
         (work_dir / "data" / "nexus").mkdir(parents=True, exist_ok=True)
     (work_dir / "jwt.hex").write_text(os.urandom(32).hex() + "\n", encoding="ascii")
     if args.config == "geth":
@@ -98,10 +108,33 @@ def prepare_config(args, work_dir, log_file):
         )
     elif args.config == "nexus-linux":
         ensure_image(args.nexus_linux_image, log_file)
+        run_checked(
+            [
+                "docker", "run", "--rm", "-v", f"{work_dir}:/data", args.nexus_linux_image,
+                "init", "--data-dir", "/data/data/nexus", "--genesis-path", "/data/genesis.json",
+                "--eth-rpc-port", str(args.rpc_port), "--auth-rpc-port", str(args.rpc_port + 1),
+                "--auth-rpc-jwt-path", "/data/jwt.hex", "--verbose", "0",
+            ],
+            log_file,
+        )
     elif args.config == "nexus-wasix-docker":
         if not args.nexus_wasix_image:
             raise ValueError("--nexus-wasix-image is required for nexus-wasix-docker")
         ensure_image(args.nexus_wasix_image, log_file)
+        init_command = (
+            "wasmer run /app/wasix_eth.wasm --enable-async-threads --net "
+            "--volume /data/data/nexus:/app/data --volume /data:/app/startup -- "
+            f"init --data-dir /app/data --genesis-path /app/startup/genesis.json "
+            f"--eth-rpc-port {args.rpc_port} --auth-rpc-port {args.rpc_port + 1} "
+            "--auth-rpc-jwt-path /app/startup/jwt.hex --verbose 0"
+        )
+        run_checked(
+            [
+                "docker", "run", "--rm", "--entrypoint", "sh", "-v", f"{work_dir}:/data",
+                args.nexus_wasix_image, "-c", init_command,
+            ],
+            log_file,
+        )
     elif args.config == "nexus-wasmer":
         wasmer = shutil.which(args.wasmer_bin)
         if not args.nexus_wasix_wasm:
@@ -216,10 +249,6 @@ def launch_config(args, work_dir, log_file, container_name):
         command = (
             "wasmer run /app/wasix_eth.wasm --enable-async-threads --net "
             "--volume /data/data/nexus:/app/data --volume /data:/app/startup -- "
-            f"init --data-dir /app/data --genesis-path /app/startup/genesis.json --eth-rpc-port {rpc_port} "
-            f"--auth-rpc-port {auth_port} --auth-rpc-jwt-path /app/startup/jwt.hex --verbose 0 && "
-            "wasmer run /app/wasix_eth.wasm --enable-async-threads --net "
-            "--volume /data/data/nexus:/app/data --volume /data:/app/startup -- "
             f"run --data-dir /app/data --genesis-path /app/startup/genesis.json --eth-rpc-port {rpc_port} "
             f"--auth-rpc-port {auth_port} --auth-rpc-jwt-path /app/startup/jwt.hex --verbose 0"
         )
@@ -303,8 +332,14 @@ def run(args):
         deadline = time.monotonic() + args.timeout
         ready = False
         while time.monotonic() < deadline:
-            if rpc_ready(args.rpc_port, min(2, args.poll_interval + 1)):
-                ready = True
+            observed_chain_id = rpc_chain_id(args.rpc_port, min(2, args.poll_interval + 1))
+            if observed_chain_id is not None:
+                if observed_chain_id == args.chain_id:
+                    ready = True
+                else:
+                    result["error"] = (
+                        f"RPC returned chain ID {observed_chain_id}; expected configured chain ID {args.chain_id}"
+                    )
                 break
             if launched.get("container_name"):
                 client_state = container_state(launched["container_name"])
@@ -354,7 +389,7 @@ def main():
     preparation.add_argument("--prepare-only", action="store_true")
     preparation.add_argument("--skip-preparation", action="store_true")
     parser.add_argument("--geth-image", default="ethereum/client-go@sha256:798b7eb1bcef6d4be7576232beea63bf291450f48b025dc8fb5c6e37840e4364")
-    parser.add_argument("--reth-image", default="ghcr.io/paradigmxyz/reth:latest")
+    parser.add_argument("--reth-image", default=DEFAULT_RETH_IMAGE)
     parser.add_argument("--nexus-linux-image", default="wasix-eth-linux:latest")
     parser.add_argument("--nexus-wasix-image", default="wasix-eth-wasix:latest")
     parser.add_argument("--nexus-wasix-wasm", default="")

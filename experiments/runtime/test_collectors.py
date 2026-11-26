@@ -5,7 +5,7 @@ from pathlib import Path
 
 from runtime.collect_logs import derive_samples, parse_event_line
 from runtime.collect_node_metrics import summarize_node_metrics
-from runtime.report import system_coverage
+from runtime.report import build_report, read_jsonl, system_coverage
 from runtime.collect_system_metrics import (
     container_metric_samples,
     host_metric_samples,
@@ -151,9 +151,9 @@ class LogMetricTests(unittest.TestCase):
         client = "wasix-eth"
         lines = [
             f"2026-01-01T00:00:00.000Z [EXP] TX_RPC_RECV hash={tx_hash}",
+            "2026-01-01T00:00:00.005Z [EXP] BLOCK_EXEC_START number=7 hash=0xabc parent=0xdef tx_count=1",
             f"2026-01-01T00:00:00.010Z [EXP] TX_EXEC_START hash={tx_hash} sender=0x1234 nonce=1",
             f"2026-01-01T00:00:00.020Z [EXP] TX_EXEC_END hash={tx_hash} success=true reverted=false gas_used=21000 cumulative_gas=21000 elapsed_ms=8",
-            "2026-01-01T00:00:00.030Z [EXP] BLOCK_EXEC_START number=7 hash=0xabc parent=0xdef tx_count=1",
             "2026-01-01T00:00:00.040Z [EXP] BLOCK_EXEC_END number=7 hash=0xabc elapsed_ms=12",
             "2026-01-01T00:00:00.050Z [EXP] IMPORT_END number=7 txs=1 exec_ms=8 root_ms=2 persist_ms=1",
             "2026-01-01T00:00:00.060Z [EXP] DOWNLOAD_HEADERS_START peer=peer-7 start=7 amount=10",
@@ -162,8 +162,14 @@ class LogMetricTests(unittest.TestCase):
             parse_event_line(line, "run-1", "node-a", client, "123")
             for line in lines
         ]
+        workload_windows = {
+            "node-a": {
+                "start_ms": events[0]["timestamp_ms"],
+                "end_ms": events[0]["timestamp_ms"] + 2000,
+            }
+        }
 
-        samples, coverage = derive_samples(events, workload_duration=2)
+        samples, coverage = derive_samples(events, workload_windows)
         by_name = {sample["name"]: sample for sample in samples}
 
         self.assertEqual(by_name["log_transaction_gas_used"]["value"], 21000.0)
@@ -176,12 +182,95 @@ class LogMetricTests(unittest.TestCase):
         self.assertEqual(coverage["download_type"], 1)
         self.assertEqual(json.loads(by_name["log_transaction_gas_used"]["labels_json"])["sender"], "0x1234")
 
+    def test_workload_metrics_filter_submission_window_and_confirmed_hashes(self):
+        workload_hash = "0x" + "a" * 64
+        setup_hash = "0x" + "b" * 64
+        outside_hash = "0x" + "c" * 64
+        lines = [
+            f"2026-01-01T00:00:00.000Z [EXP] TX_RPC_RECV hash={setup_hash}",
+            "2026-01-01T00:00:00.010Z [EXP] BLOCK_EXEC_START number=6 hash=0x6 parent=0x5 tx_count=1",
+            f"2026-01-01T00:00:00.020Z [EXP] TX_EXEC_START hash={setup_hash} sender=0x1234 nonce=0",
+            "2026-01-01T00:00:00.030Z [EXP] BLOCK_EXEC_END number=6 hash=0x6 elapsed_ms=1",
+            "2026-01-01T00:00:00.040Z [EXP] IMPORT_END number=6 txs=1 exec_ms=1",
+            f"2026-01-01T00:00:10.000Z [EXP] TX_RPC_RECV hash={workload_hash}",
+            f"2026-01-01T00:00:12.000Z [EXP] TX_RPC_RECV hash={outside_hash}",
+            "2026-01-01T00:00:12.010Z [EXP] BLOCK_EXEC_START number=7 hash=0x7 parent=0x6 tx_count=2",
+            f"2026-01-01T00:00:12.020Z [EXP] TX_EXEC_START hash={workload_hash} sender=0x1234 nonce=1",
+            f"2026-01-01T00:00:12.030Z [EXP] TX_EXEC_START hash={outside_hash} sender=0x5678 nonce=0",
+            "2026-01-01T00:00:12.040Z [EXP] BLOCK_EXEC_END number=7 hash=0x7 elapsed_ms=2",
+            "2026-01-01T00:00:12.050Z [EXP] IMPORT_END number=7 txs=2 exec_ms=2",
+        ]
+        events = [
+            parse_event_line(line, "run-1", "node-a", "wasix-eth", "123")
+            for line in lines
+        ]
+
+        samples, coverage = derive_samples(
+            events,
+            {"node-a": {"start_ms": events[5]["timestamp_ms"], "end_ms": events[5]["timestamp_ms"] + 1000}},
+        )
+        by_name = {sample["name"]: sample for sample in samples}
+
+        self.assertEqual(by_name["log_tps"]["value"], 1.0)
+        self.assertEqual(by_name["log_commit_to_submit_ratio"]["value"], 1.0)
+        labels = json.loads(by_name["log_tps"]["labels_json"])
+        self.assertEqual(labels["submitted_transactions"], 1)
+        self.assertEqual(labels["committed_transactions"], 1)
+        self.assertEqual(coverage["workload_submitted_transactions"], 1)
+        self.assertEqual(coverage["workload_committed_transactions"], 1)
+
     def test_missing_structured_events_produce_no_zero_samples(self):
-        samples, coverage = derive_samples([], workload_duration=1)
+        samples, coverage = derive_samples([], {})
 
         self.assertEqual(samples, [])
         self.assertEqual(coverage["gas_used"], 0)
         self.assertEqual(coverage["transaction_hash"], 0)
+
+
+class RuntimeReportTests(unittest.TestCase):
+    def test_report_summarizes_workload_outcomes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp)
+            (output_dir / "metadata.json").write_text(
+                json.dumps(
+                    {
+                        "experiment_id": "run-1",
+                        "chain_id": 123,
+                        "nodes": [{"index": 0, "node_id": "node-a", "client": "wasix-eth"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (output_dir / "system_metric_samples.jsonl").write_text("", encoding="utf-8")
+            metrics = [
+                {
+                    "experiment_id": "run-1", "node_id": "node-a", "client": "wasix-eth",
+                    "source": "Log", "name": "log_tps", "value": 12.5,
+                },
+                {
+                    "experiment_id": "run-1", "node_id": "node-a", "client": "wasix-eth",
+                    "source": "Log", "name": "log_commit_to_submit_ratio", "value": 0.9,
+                },
+            ]
+            (output_dir / "log_metric_samples.jsonl").write_text(
+                "".join(json.dumps(metric) + "\n" for metric in metrics), encoding="utf-8"
+            )
+            (output_dir / "log_metrics_coverage.json").write_text("{}\n", encoding="utf-8")
+            (output_dir / "node_metric_coverage.json").write_text("{}\n", encoding="utf-8")
+
+            report = build_report(output_dir)
+
+            self.assertEqual(report["workload_outcomes"]["tps"]["mean"], 12.5)
+            self.assertEqual(report["workload_outcomes"]["commit_to_submit_ratio"]["mean"], 0.9)
+            self.assertIn("Workload outcome summary", (output_dir / "report.md").read_text(encoding="utf-8"))
+
+    def test_report_reader_rejects_malformed_jsonl(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "samples.jsonl"
+            path.write_text('{"valid":true}\nnot-json\n', encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "not valid JSON"):
+                read_jsonl(path)
 
 
 class NodeMetricCoverageTests(unittest.TestCase):

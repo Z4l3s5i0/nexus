@@ -60,6 +60,7 @@ class ExperimentRunnerTests(unittest.TestCase):
     def run_with_stubs(
         self, selection, fail_module=None, config_answers=None, fail_setup_status=None,
         runner_args=None, private_key="0" * 64, fail_empty_block_count=None,
+        missing_run_status_for=None,
     ):
         with tempfile.TemporaryDirectory(prefix="experiment-runner-test-", dir=ROOT) as temp:
             temp_root = pathlib.Path(temp)
@@ -111,6 +112,47 @@ class ExperimentRunnerTests(unittest.TestCase):
                 }[name]
                 for artifact in required:
                     (run_dir / artifact).write_text("{}\n", encoding="utf-8")
+                if missing_run_status_for != name:
+                    (run_dir / "run_status.json").write_text(
+                        '{"status":"passed","exit_code":0}\n', encoding="utf-8"
+                    )
+                if name == "empty-block":
+                    (run_dir / "metadata.json").write_text(
+                        '{"experiment_id":"saved-run","chain_id":1,"sweep":{"transaction_counts":[0],"blocks_per_count":1}}\n',
+                        encoding="utf-8",
+                    )
+                    csv_headers = {
+                        "block_samples.csv": "target_tx_count,block_number,actual_tx_count,matched\n0,1,0,true\n",
+                        "samples.csv": "target_tx_count,block_number,actual_tx_count,matched\n0,1,0,true\n",
+                        "transaction_inclusion_samples.csv": (
+                            "transaction_type,tx_hash,submitted_at_utc,included_at_utc,"
+                            "inclusion_latency_ms,latency_basis,block_number,status\n"
+                        ),
+                        "transaction_burst_samples.csv": (
+                            "target_tx_count,attempt,submitted_tx_count,included_tx_count,completed,blocks_spanned,latency_basis\n"
+                        ),
+                    }
+                    for filename, contents in csv_headers.items():
+                        (run_dir / filename).write_text(contents, encoding="utf-8")
+                    for filename in (
+                        "system_metric_samples.jsonl", "events.jsonl", "log_metric_samples.jsonl",
+                        "derived_metric_samples.jsonl",
+                    ):
+                        (run_dir / filename).write_text("", encoding="utf-8")
+                    for filename in ("block_metric_coverage.json", "log_metrics_coverage.json", "node_metric_coverage.json"):
+                        (run_dir / filename).write_text("{}\n", encoding="utf-8")
+                    metrics_dir = run_dir / "metrics_server_data"
+                    metrics_dir.mkdir()
+                    (metrics_dir / "metrics.redb").write_bytes(b"saved-metrics")
+                elif name == "size":
+                    (run_dir / "source_size.tsv").write_text(
+                        "measurement\tlabel\tvalue\tunit\tsource\tstatus\nsource_code\tclient\t1\tlines\tsource\tmeasured\n",
+                        encoding="utf-8",
+                    )
+                    (run_dir / "binary_size.tsv").write_text(
+                        "measurement\tlabel\tvalue\tunit\tsource\tstatus\ncompiled_binary\tclient\t1\tbytes\tbinary\tmeasured\n",
+                        encoding="utf-8",
+                    )
             env.update(
                 {
                     "EXPERIMENTS_MODULE_ROOT": bash_compatible_path(module_root),
@@ -723,6 +765,16 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertIn("skipping incomplete runtime results", result.stderr)
         self.assertIn("metadata.json", result.stderr)
         self.assertNotIn("should not run", result.stderr)
+
+    def test_evaluation_rejects_saved_results_without_a_success_status(self):
+        result, calls = self.run_with_stubs(
+            "7\n2", missing_run_status_for="empty-block"
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(calls, [])
+        self.assertIn("run_status.json", self.last_logs["empty-block/validation-1.log"])
+        self.assertNotIn("empty-block-report-output", "".join(self.last_logs.values()))
 
 
 if __name__ == "__main__":

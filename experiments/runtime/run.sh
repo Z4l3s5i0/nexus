@@ -96,6 +96,10 @@ mkdir -p "$OUTPUT_DIR/logs" "$OUTPUT_DIR/workloads" "$OUTPUT_DIR/contender_state
 
 cleanup() {
     local status=$?
+    if [[ -n "$OUTPUT_DIR" && -d "$OUTPUT_DIR" ]]; then
+        python3 "$REPO_ROOT/experiments/record_run_status.py" \
+            --output "$OUTPUT_DIR/run_status.json" --exit-code "$status" || true
+    fi
     if [[ -n "$SYSTEM_COLLECTOR_PID" ]] && kill -0 "$SYSTEM_COLLECTOR_PID" 2>/dev/null; then
         kill "$SYSTEM_COLLECTOR_PID" 2>/dev/null || true
         wait "$SYSTEM_COLLECTOR_PID" 2>/dev/null || true
@@ -175,6 +179,7 @@ for ((index = 0; index < NODE_COUNT; index++)); do
     bash "$SCRIPT_DIR/workload.sh" \
         --node-index "$index" --chain-id "$CHAIN_ID" --network "$NETWORK_NAME" \
         --run-id "$RUN_ID" --state-dir "$OUTPUT_DIR/contender_state/node_$index" \
+        --window-file "$OUTPUT_DIR/workload_windows/node_$index.json" \
         --scenario "$WORKLOAD_TYPE" --tps "$TPS" --duration "$DURATION" --accounts "$ACCOUNTS" \
         > "$OUTPUT_DIR/workloads/node_$index.log" 2>&1 &
     WORKLOAD_PIDS+=("$!")
@@ -214,7 +219,8 @@ fi
 bash "$SCRIPT_DIR/capture_logs.sh" --output-dir "$OUTPUT_DIR/logs" --nodes "$NODE_COUNT"
 python3 "$SCRIPT_DIR/collect_logs.py" \
     --metadata "$OUTPUT_DIR/metadata.json" --logs-dir "$OUTPUT_DIR/logs" \
-    --output-dir "$OUTPUT_DIR" --experiment-id "$RUN_ID" --workload-duration "$DURATION"
+    --workload-windows "$OUTPUT_DIR/workload_windows" \
+    --output-dir "$OUTPUT_DIR" --experiment-id "$RUN_ID"
 python3 "$SCRIPT_DIR/collect_node_metrics.py" \
     --metadata "$OUTPUT_DIR/metadata.json" \
     --output "$OUTPUT_DIR/node_metric_coverage.json" --experiment-id "$RUN_ID"

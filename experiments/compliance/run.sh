@@ -69,6 +69,14 @@ if ! mkdir "$OUTPUT_DIR" 2>/dev/null; then
 fi
 mkdir -p "$OUTPUT_DIR/logs" "$OUTPUT_DIR/workspace"
 
+record_run_status() {
+    local status=$?
+    python3 "$REPO_ROOT/experiments/record_run_status.py" \
+        --output "$OUTPUT_DIR/run_status.json" --exit-code "$status" || true
+    return "$status"
+}
+trap record_run_status EXIT
+
 PREPARE_ARGS=(--output-dir "$OUTPUT_DIR" --clients "$CLIENTS" --hive-image "$HIVE_IMAGE")
 if [[ "$SKIP_BASE_BUILD" == true ]]; then PREPARE_ARGS+=(--skip-base-build); fi
 if [[ "$SKIP_HIVE_BUILD" == true ]]; then PREPARE_ARGS+=(--skip-hive-build); fi

@@ -10,7 +10,7 @@ RUN_ID="${EXPERIMENT_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 RESULTS_PARENT="${EXPERIMENTS_OUTPUT_ROOT:-$REPO_ROOT/experiment-results}/startup"
 ITERATIONS=5
 GETH_IMAGE="ethereum/client-go@sha256:798b7eb1bcef6d4be7576232beea63bf291450f48b025dc8fb5c6e37840e4364"
-RETH_IMAGE="ghcr.io/paradigmxyz/reth:latest"
+RETH_IMAGE="ghcr.io/paradigmxyz/reth@sha256:68e76b32ad9ac1a3de54984d6f15bbce2047a92a771ff4efbcd08ee8f9dbd4d1"
 NEXUS_LINUX_IMAGE="wasix-eth-linux:latest"
 NEXUS_WASIX_IMAGE="wasix-eth-wasix:latest"
 NEXUS_WASIX_WASM="${NEXUS_WASIX_WASM:-${EXPERIMENTS_WASIX_ETH_ROOT:-$REPO_ROOT/wasix_eth}/target/wasm32-wasmer-wasi/release/wasix_eth.wasi.wasm}"
@@ -164,6 +164,10 @@ mkdir -p "$OUTPUT_DIR/iterations"
 
 cleanup() {
     local status=$?
+    if [[ -n "$OUTPUT_DIR" && -d "$OUTPUT_DIR" ]]; then
+        python3 "$REPO_ROOT/experiments/record_run_status.py" \
+            --output "$OUTPUT_DIR/run_status.json" --exit-code "$status" || true
+    fi
     if [[ -n "$SYSTEM_COLLECTOR_PID" ]] && kill -0 "$SYSTEM_COLLECTOR_PID" 2>/dev/null; then
         kill "$SYSTEM_COLLECTOR_PID" 2>/dev/null || true
         wait "$SYSTEM_COLLECTOR_PID" 2>/dev/null || true

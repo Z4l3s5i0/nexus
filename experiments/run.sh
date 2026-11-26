@@ -453,7 +453,7 @@ configure_module() {
                 prompt_value startup_timeout 'Readiness timeout in seconds' 60 positive_decimal || return $?
                 prompt_value startup_interval 'System metrics interval in seconds' 0.2 positive_decimal || return $?
                 prompt_value geth_image 'Geth image' 'ethereum/client-go@sha256:798b7eb1bcef6d4be7576232beea63bf291450f48b025dc8fb5c6e37840e4364' text || return $?
-                prompt_value reth_image 'Reth image' 'ghcr.io/paradigmxyz/reth:latest' text || return $?
+                prompt_value reth_image 'Reth image' 'ghcr.io/paradigmxyz/reth@sha256:68e76b32ad9ac1a3de54984d6f15bbce2047a92a771ff4efbcd08ee8f9dbd4d1' text || return $?
                 prompt_value nexus_linux_image 'NEXUS Linux image' 'wasix-eth-linux:latest' text || return $?
                 prompt_value nexus_wasix_image 'NEXUS WASIX Docker image' 'wasix-eth-wasix:latest' text || return $?
                 prompt_value nexus_wasix_wasm 'NEXUS WASIX module path' "$startup_wasix_wasm_default" optional_text || return $?
@@ -758,8 +758,20 @@ if [[ "$mode" == evaluate ]]; then
                 continue
             fi
 
-            echo "=== Re-evaluating $experiment results: $(basename "$output_dir") ==="
             evaluation_index=$((evaluation_index + 1))
+            if run_logged "$RUN_LOG_DIR/$experiment/validation-$evaluation_index.log" \
+                "Validate $experiment saved run $(basename "$output_dir")" \
+                python3 "$REPO_ROOT/experiments/validate_results.py" \
+                    --experiment "$experiment" --output-dir "$output_dir"; then
+                :
+            else
+                status=$?
+                echo "Error: skipping incomplete $experiment results in '$output_dir' (validation exit $status)." >&2
+                evaluation_status=1
+                continue
+            fi
+
+            echo "=== Re-evaluating $experiment results: $(basename "$output_dir") ==="
             if run_logged "$RUN_LOG_DIR/$experiment/evaluation-$evaluation_index.log" \
                 "Evaluate $experiment saved run $(basename "$output_dir")" \
                 python3 "$report_script" --output-dir "$output_dir"; then
