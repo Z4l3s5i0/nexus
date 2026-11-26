@@ -108,6 +108,7 @@ class NetworkSupportTests(unittest.TestCase):
         self.assertIn('OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"', script)
         self.assertIn('-v "$OUTPUT_DIR/values.env:/config/values.env"', script)
         self.assertIn('-v "$OUTPUT_DIR:/data"', script)
+        self.assertIn("GENESIS_GASLIMIT=650000000", script)
         self.assertNotIn('$(pwd)/$OUTPUT_DIR', script)
 
     def test_prometheus_scrapes_host_and_labeled_node_container_metrics(self):
@@ -280,6 +281,7 @@ class NetworkSupportTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("CHAIN_ID=9876", (output_dir / "values.env").read_text(encoding="utf-8"))
             self.assertIn("GENESIS_DELAY=0", (output_dir / "values.env").read_text(encoding="utf-8"))
+            self.assertIn("GENESIS_GASLIMIT=650000000", (output_dir / "values.env").read_text(encoding="utf-8"))
             self.assertTrue((output_dir / "validators" / "node_0" / "keystore-m_12381_3600_0-0.json").is_file())
             docker_calls = docker_log.read_text(encoding="utf-8")
             self.assertIn(f"{output_dir}/values.env:/config/values.env", docker_calls)

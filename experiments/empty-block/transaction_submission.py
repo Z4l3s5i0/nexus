@@ -7,6 +7,7 @@ import time
 
 TX_HASH = re.compile(r"0x[0-9a-fA-F]{64}")
 CONTRACT_CALL_GAS_LIMIT = 250_000
+CONTRACT_DEPLOYMENT_GAS_LIMIT = 600_000_000
 
 
 def transaction_hash(output):
@@ -186,13 +187,24 @@ def submit_burst(
 
 
 def submit_contract_deployment(
-    cast_bin, cast_network, cast_image, rpc_url, private_key, nonce, bytecode, timeout, gas_price
+    cast_bin,
+    cast_network,
+    cast_image,
+    rpc_url,
+    private_key,
+    nonce,
+    bytecode,
+    timeout,
+    gas_price,
+    gas_limit=CONTRACT_DEPLOYMENT_GAS_LIMIT,
 ):
     output, submitted_at = run_cast(
         cast_bin,
         [
             "send",
             "--legacy",
+            "--gas-limit",
+            str(gas_limit),
             "--gas-price",
             str(gas_price),
             "--nonce",

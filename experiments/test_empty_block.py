@@ -74,6 +74,9 @@ class EmptyBlockExperimentTests(unittest.TestCase):
 
         self.assertEqual(args.workload, "uber_v2")
 
+    def test_contract_deployment_gas_limit_constant(self):
+        self.assertEqual(transaction_submission.CONTRACT_DEPLOYMENT_GAS_LIMIT, 600_000_000)
+
     def test_contract_gas_limit_defaults_and_requires_positive_value(self):
         args = run_experiment.create_parser().parse_args(["--counts", "0"])
         self.assertEqual(args.contract_gas_limit, 250_000)
@@ -220,10 +223,13 @@ class EmptyBlockExperimentTests(unittest.TestCase):
         arguments = cast.call_args.args[1]
         self.assertEqual(arguments[-2:], ["--create", "0x608060"])
         legacy_index = arguments.index("--legacy")
+        gas_limit_index = arguments.index("--gas-limit")
         gas_price_index = arguments.index("--gas-price")
         create_index = arguments.index("--create")
         self.assertLess(legacy_index, create_index)
+        self.assertLess(gas_limit_index, create_index)
         self.assertLess(gas_price_index, create_index)
+        self.assertEqual(arguments[gas_limit_index + 1], "600000000")
         self.assertEqual(arguments[gas_price_index + 1], "7")
 
     def test_workload_calls_target_the_contract_and_capture_send_time(self):

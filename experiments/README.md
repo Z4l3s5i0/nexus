@@ -36,7 +36,7 @@ After selecting experiments, the runner displays each selected module's proposed
 
 The runtime scenario field accepts comma-separated Contender scenario paths such as `exp/uber,exp/uber_v2,exp/counter,exp/dota`; by default, both Uber scenarios run separately for every requested runtime iteration, with their own network lifecycle, metadata, and result directory. Empty-block accepts `uber_v2` as an optional contract workload alongside its existing options and runs each selected client separately with the same sweep settings and a distinct run ID; startup and empty-block iteration settings retain their module-specific meanings (repetitions per client configuration and samples per transaction-count group respectively).
 
-Contract-call bursts use a fixed gas limit (`250000` by default) so Cast does not run `eth_estimateGas` separately for every future-nonce send. Set `--contract-gas-limit` on `experiments/empty-block/run.sh` to tune it for a workload; value-transfer runs keep their existing `21000` gas limit.
+Contract-call bursts use a fixed gas limit (`250000` by default) so Cast does not run `eth_estimateGas` separately for every future-nonce send. Set `--contract-gas-limit` on `experiments/empty-block/run.sh` to tune it for a workload; value-transfer runs keep their existing `21000` gas limit. Contract deployments use a `600000000` gas limit, and the shared network genesis block gas limit is `650000000` to allow storage-heavy workloads such as `uber_v2` to deploy.
 
 ## Modules
 
