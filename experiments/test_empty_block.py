@@ -327,6 +327,105 @@ class EmptyBlockExperimentTests(unittest.TestCase):
         self.assertEqual(deployment["contract_address"], address)
         self.assertTrue(deployment["confirmed"])
 
+    def test_completed_burst_split_across_blocks_counts_as_a_sample(self):
+        sender = "0x" + "1" * 40
+        hashes = ["0x" + "a" * 64, "0x" + "b" * 64]
+        submitted_at = [
+            {"hash": hashes[0], "submitted_at": {"monotonic": 10.0, "epoch": 100.0}},
+            {"hash": hashes[1], "submitted_at": {"monotonic": 10.1, "epoch": 100.1}},
+        ]
+        observed_at = {
+            hashes[0]: {"monotonic": 10.2, "epoch": 100.2},
+            hashes[1]: {"monotonic": 11.5, "epoch": 101.5},
+        }
+
+        with tempfile.TemporaryDirectory() as temp:
+            output = pathlib.Path(temp) / "block_samples.csv"
+            inclusion_output = pathlib.Path(temp) / "transaction_inclusion_samples.csv"
+            burst_output = pathlib.Path(temp) / "transaction_burst_samples.csv"
+            args = run_experiment.create_parser().parse_args([
+                "--counts", "2", "--blocks-per-count", "1", "--max-attempts", "1",
+                "--private-key", "0x" + "3" * 64,
+                "--output", str(output), "--inclusion-output", str(inclusion_output),
+            ])
+
+            def rpc(rpc_url, method, params, timeout):
+                if method == "eth_chainId":
+                    return "0x5ba0"
+                if method == "eth_getTransactionCount":
+                    return "0x1"
+                if method == "eth_gasPrice":
+                    return "0x3"
+                if method == "eth_getBlockByNumber":
+                    number = int(params[0], 16)
+                    included_hash = hashes[number - 2]
+                    return {"timestamp": "0x64", "transactions": [included_hash]}
+                raise AssertionError(method)
+
+            receipts = {
+                hashes[0]: {"status": "0x1", "blockNumber": "0x2", "gasUsed": "0x5208"},
+                hashes[1]: {"status": "0x1", "blockNumber": "0x3", "gasUsed": "0x5208"},
+            }
+            observed = {tx_hash: observed_at[tx_hash] for tx_hash in hashes}
+
+            with patch.object(run_experiment.shutil, "which", return_value="cast"):
+                with patch.object(run_experiment, "run_cast", return_value=sender):
+                    with patch.object(run_experiment, "rpc_call", side_effect=rpc):
+                        with patch.object(run_experiment, "block_details", return_value=(1, 100)):
+                            with patch.object(run_experiment, "submit_burst", return_value=submitted_at):
+                                with patch.object(run_experiment, "wait_for_receipts", return_value=(receipts, observed)):
+                                    result = run_experiment.run(args)
+
+            self.assertTrue(burst_output.is_file())
+            with burst_output.open(newline="", encoding="utf-8") as source:
+                burst_rows = list(csv.DictReader(source))
+            with output.open(newline="", encoding="utf-8") as source:
+                block_rows = list(csv.DictReader(source))
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(burst_rows), 1)
+        self.assertEqual(burst_rows[0]["completed"], "true")
+        self.assertEqual(burst_rows[0]["blocks_spanned"], "2")
+        self.assertEqual(burst_rows[0]["block_distribution"], "2:1;3:1")
+        self.assertAlmostEqual(float(burst_rows[0]["burst_completion_latency_ms"]), 1500.0)
+        self.assertEqual(len(block_rows), 2)
+        self.assertTrue(all(row["matched"] == "false" for row in block_rows))
+
+    def test_report_summarizes_completed_bursts_and_split_block_latency(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = pathlib.Path(temp)
+            metadata = {
+                "experiment_id": "run-1", "chain_id": 100, "client": "wasix-eth",
+                "sweep": {"transaction_counts": [100], "blocks_per_count": 1},
+            }
+            (output_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+            (output_dir / "samples.csv").write_text(
+                "target_tx_count,block_number,actual_tx_count,matched,execution_time_ms\n"
+                "100,22,78,false,\n100,23,22,false,\n",
+                encoding="utf-8",
+            )
+            (output_dir / "transaction_burst_samples.csv").write_text(
+                "transaction_type,target_tx_count,attempt,completed,blocks_spanned,burst_completion_latency_ms\n"
+                "contract_call,100,1,true,2,1300\n",
+                encoding="utf-8",
+            )
+            (output_dir / "transaction_inclusion_samples.csv").write_text(
+                "transaction_type,target_tx_count,attempt,inclusion_latency_ms,status\n"
+                "contract_call,100,1,100,0x1\ncontract_call,100,1,1300,0x1\n",
+                encoding="utf-8",
+            )
+
+            report = empty_block_report.build_report(output_dir)
+
+        target_summary = report["by_target_transaction_count"]["100"]
+        spread_latency = report["transaction_inclusion_latency_by_target"]["contract_call"]["100"]["multiple_blocks"]
+        self.assertEqual(target_summary["completed_bursts"], 1)
+        self.assertEqual(target_summary["missing_bursts"], 0)
+        self.assertEqual(target_summary["exact_block_matches"], 0)
+        self.assertEqual(spread_latency["observations"], 2)
+        self.assertEqual(spread_latency["mean_ms"], 700)
+        self.assertEqual(spread_latency["burst_completion_latency_ms"]["mean"], 1300)
+
     def test_rpc_derived_block_metrics_keep_zero_observations_and_identity(self):
         metadata = {"chain_id": 100, "client": "wasix-eth", "node_id": "node-a"}
         rows = [
@@ -376,6 +475,36 @@ class EmptyBlockExperimentTests(unittest.TestCase):
         self.assertEqual(latency["value"], 27.25)
         self.assertEqual(json.loads(latency["labels_json"])["workload"], "dota")
         self.assertEqual(coverage["fields"]["transaction_inclusion_latency"], "observed")
+
+    def test_rpc_derived_metrics_include_multi_block_burst_completion(self):
+        samples, coverage = collect_block_metrics.derive_block_samples(
+            [],
+            {"chain_id": 100, "client": "wasix-eth"},
+            "run-1",
+            burst_rows=[{
+                "transaction_type": "contract_call",
+                "workload": "uber_v2",
+                "target_tx_count": "100",
+                "attempt": "2",
+                "blocks_spanned": "2",
+                "completed": "true",
+                "burst_completion_latency_ms": "1500.5",
+                "completed_at_utc": "1970-01-01T00:01:40.500000+00:00",
+            }],
+        )
+
+        latency = next(
+            sample for sample in samples
+            if sample["name"] == "empty_block_transaction_burst_completion_latency_ms"
+        )
+        spans = next(
+            sample for sample in samples
+            if sample["name"] == "empty_block_transaction_burst_blocks_spanned"
+        )
+        self.assertEqual(latency["value"], 1500.5)
+        self.assertEqual(spans["value"], 2.0)
+        self.assertEqual(json.loads(latency["labels_json"])["workload"], "uber_v2")
+        self.assertEqual(coverage["fields"]["transaction_burst_completion_latency"], "observed")
 
     def test_missing_block_samples_are_unavailable_not_zero(self):
         samples, coverage = collect_block_metrics.derive_block_samples([], {"chain_id": 100}, "run-1")

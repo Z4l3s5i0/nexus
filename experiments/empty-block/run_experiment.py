@@ -38,6 +38,13 @@ INCLUSION_COLUMNS = (
     "target_tx_count", "attempt", "tx_hash", "sender", "to_address", "submitted_at_utc",
     "included_at_utc", "inclusion_latency_ms", "block_number", "block_timestamp", "gas_used", "status",
 )
+BURST_COLUMNS = (
+    "experiment_id", "client", "client_variant", "node_id", "transaction_type", "workload",
+    "target_tx_count", "attempt", "sample", "submitted_tx_count", "included_tx_count",
+    "reverted_tx_count", "blocks_spanned", "block_numbers", "block_distribution", "completed",
+    "burst_completion_latency_ms", "mean_transaction_inclusion_latency_ms",
+    "max_transaction_inclusion_latency_ms", "completed_at_utc",
+)
 
 
 def parse_counts(value):
@@ -198,6 +205,62 @@ def write_inclusion_sample(writer, output_file, args, transaction_type, tx_hash,
     return latency_ms
 
 
+def write_burst_sample(writer, output_file, args, transaction_type, target, attempt, sample,
+                       submitted, receipts, observed_times):
+    submitted_by_hash = {item["hash"]: item for item in submitted}
+    included_hashes = [tx_hash for tx_hash in submitted_by_hash if tx_hash in receipts]
+    grouped_receipts = receipts_by_block({tx_hash: receipts[tx_hash] for tx_hash in included_hashes})
+    block_distribution = ";".join(
+        f"{number}:{len(hashes)}" for number, hashes in sorted(grouped_receipts.items())
+    )
+    observed_for_included = [observed_times[tx_hash] for tx_hash in included_hashes if tx_hash in observed_times]
+    transaction_latencies = [
+        max(0.0, (observed_times[tx_hash]["monotonic"] - submitted_by_hash[tx_hash]["submitted_at"]["monotonic"]) * 1000)
+        for tx_hash in included_hashes
+        if tx_hash in observed_times
+    ]
+    completed = bool(submitted_by_hash) and len(included_hashes) == len(submitted_by_hash)
+    completion_latency = ""
+    completed_at_utc = ""
+    if completed and observed_for_included:
+        first_submission = min(item["submitted_at"]["monotonic"] for item in submitted_by_hash.values())
+        latest_observation = max(observed_for_included, key=lambda item: item["monotonic"])
+        completion_latency = f"{max(0.0, (latest_observation['monotonic'] - first_submission) * 1000):.3f}"
+        completed_at_utc = datetime.fromtimestamp(latest_observation["epoch"], timezone.utc).isoformat()
+    reverted = sum(
+        str(receipts[tx_hash].get("status") or "").lower() in ("0x0", "0")
+        for tx_hash in included_hashes
+    )
+    writer.writerow(
+        {
+            "experiment_id": args.experiment_id,
+            "client": args.client,
+            "client_variant": args.client_variant,
+            "node_id": args.node_id,
+            "transaction_type": transaction_type,
+            "workload": args.workload if args.workload != "none" else "",
+            "target_tx_count": target,
+            "attempt": attempt,
+            "sample": sample if completed else "",
+            "submitted_tx_count": len(submitted_by_hash),
+            "included_tx_count": len(included_hashes),
+            "reverted_tx_count": reverted,
+            "blocks_spanned": len(grouped_receipts),
+            "block_numbers": ";".join(str(number) for number in sorted(grouped_receipts)),
+            "block_distribution": block_distribution,
+            "completed": str(completed).lower(),
+            "burst_completion_latency_ms": completion_latency,
+            "mean_transaction_inclusion_latency_ms": (
+                f"{sum(transaction_latencies) / len(transaction_latencies):.3f}" if transaction_latencies else ""
+            ),
+            "max_transaction_inclusion_latency_ms": f"{max(transaction_latencies):.3f}" if transaction_latencies else "",
+            "completed_at_utc": completed_at_utc,
+        }
+    )
+    output_file.flush()
+    return completed
+
+
 def run(args):
     private_key = args.private_key or os.environ.get("EB_PRIVATE_KEY", "")
     validate_options(args, private_key)
@@ -207,10 +270,13 @@ def run(args):
     output = args.output
     output.parent.mkdir(parents=True, exist_ok=True)
     inclusion_output = args.inclusion_output or output.parent / "transaction_inclusion_samples.csv"
+    burst_output = output.parent / "transaction_burst_samples.csv"
     if output.exists():
         raise ValueError(f"output file already exists: {output}")
     if inclusion_output.exists():
         raise ValueError(f"output file already exists: {inclusion_output}")
+    if burst_output.exists():
+        raise ValueError(f"output file already exists: {burst_output}")
 
     cast_bin = shutil.which(args.cast_bin)
     cast_rpc_url = args.rpc_url if cast_bin else args.cast_rpc_url
@@ -239,13 +305,16 @@ def run(args):
     incomplete_counts = 0
     with output.open("x", newline="", encoding="utf-8") as output_file, inclusion_output.open(
         "x", newline="", encoding="utf-8"
-    ) as inclusion_file:
+    ) as inclusion_file, burst_output.open("x", newline="", encoding="utf-8") as burst_file:
         writer = csv.DictWriter(output_file, fieldnames=columns)
         inclusion_writer = csv.DictWriter(inclusion_file, fieldnames=INCLUSION_COLUMNS)
+        burst_writer = csv.DictWriter(burst_file, fieldnames=BURST_COLUMNS)
         writer.writeheader()
         inclusion_writer.writeheader()
+        burst_writer.writeheader()
         output_file.flush()
         inclusion_file.flush()
+        burst_file.flush()
 
         contract_address = None
         block_timestamp_cache = {}
@@ -315,8 +384,8 @@ def run(args):
 
         for target in args.counts:
             successful = 0
-            seen_blocks = set()
             if target == 0:
+                seen_blocks = set()
                 head = block_number(rpc_call(args.rpc_url, "eth_blockNumber", [], 15))
                 max_observations = args.blocks_per_count * args.max_attempts
                 for attempt in range(1, max_observations + 1):
@@ -383,34 +452,52 @@ def run(args):
                             attempt,
                             block_timestamp_cache,
                         )
+                    transaction_type = "contract_call" if args.workload != "none" else "value_transfer"
+                    burst_complete = write_burst_sample(
+                        burst_writer,
+                        burst_file,
+                        args,
+                        transaction_type,
+                        target,
+                        attempt,
+                        successful + 1,
+                        submitted,
+                        receipts,
+                        observed_times,
+                    )
                     hashes_by_block = receipts_by_block(receipts)
                     for number, included_hashes in sorted(hashes_by_block.items()):
-                        if number in seen_blocks:
-                            continue
-                        seen_blocks.add(number)
                         actual, timestamp = block_details(args.rpc_url, number, 15)
                         if write_sample(writer, output_file, args, target, successful + 1, attempt,
                                         number, actual, timestamp, included_hashes, submitted_hashes):
-                            successful += 1
-                            print(f"{target} tx: matched block {number} ({successful}/{args.blocks_per_count})")
+                            print(f"{target} tx: block {number} exactly matched the target transaction count")
                         else:
                             print(f"{target} tx: burst landed in block {number} with {actual} total transaction(s)")
-                        if successful >= args.blocks_per_count:
-                            break
+                    if burst_complete:
+                        successful += 1
+                        burst_row = f"{target} tx: completed burst {successful}/{args.blocks_per_count} across "
+                        burst_row += f"{len(hashes_by_block)} block(s)"
+                        if len(hashes_by_block) > 1:
+                            distribution = ", ".join(
+                                f"block {number}: {len(hashes)}" for number, hashes in sorted(hashes_by_block.items())
+                            )
+                            burst_row += f" ({distribution})"
+                        print(burst_row)
                     if successful >= args.blocks_per_count:
                         break
 
             if successful < args.blocks_per_count:
                 incomplete_counts += 1
                 print(
-                    f"Warning: only {successful}/{args.blocks_per_count} matching samples for {target} tx.",
+                    f"Warning: only {successful}/{args.blocks_per_count} completed samples for {target} tx.",
                     file=sys.stderr,
                 )
 
     print(f"Block samples written to {output}")
     print(f"Transaction inclusion samples written to {inclusion_output}")
+    print(f"Transaction burst samples written to {burst_output}")
     if incomplete_counts:
-        print(f"Could not collect the requested number of exact samples for {incomplete_counts} count(s).", file=sys.stderr)
+        print(f"Could not collect the requested number of completed samples for {incomplete_counts} count(s).", file=sys.stderr)
         return 2
     return 0
 

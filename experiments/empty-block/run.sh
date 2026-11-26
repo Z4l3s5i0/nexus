@@ -31,7 +31,7 @@ Options:
   --client TYPE            native, wasix, geth, or reth (default: $CLIENT)
   --chain-id ID            Local chain ID (default: $CHAIN_ID)
   --counts LIST            Comma-separated transaction counts (default: $COUNTS)
-  --blocks-per-count N     Exact matching samples per count (default: $BLOCKS_PER_COUNT)
+  --blocks-per-count N     Completed burst samples (or exact empty blocks) per count (default: $BLOCKS_PER_COUNT)
   --max-attempts N         Bursts/empty blocks observed per count (default: $MAX_ATTEMPTS)
   --receipt-timeout SECS   Receipt wait timeout (default: $RECEIPT_TIMEOUT)
   --block-timeout SECS     New block timeout (default: $BLOCK_TIMEOUT)

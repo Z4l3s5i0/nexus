@@ -13,7 +13,7 @@ sys.path.insert(0, str(RUNTIME_HELPERS))
 from metrics_api import ingest_samples, metric_sample
 
 
-def derive_block_samples(rows, metadata, experiment_id, latency_rows=()):
+def derive_block_samples(rows, metadata, experiment_id, latency_rows=(), burst_rows=()):
     client = metadata.get("client", "unavailable")
     node_id = metadata.get("node_id") or "el-node-0"
     network = str(metadata["chain_id"])
@@ -147,10 +147,64 @@ def derive_block_samples(rows, metadata, experiment_id, latency_rows=()):
             )
         )
 
+    for row in burst_rows:
+        try:
+            latency_ms = float(row["burst_completion_latency_ms"])
+            blocks_spanned = int(row["blocks_spanned"])
+            target = int(row["target_tx_count"])
+            attempt = int(row["attempt"])
+            if latency_ms < 0 or blocks_spanned < 1:
+                continue
+            if row.get("completed_at_utc"):
+                timestamp_ms = int(
+                    datetime.fromisoformat(row["completed_at_utc"].replace("Z", "+00:00")).timestamp() * 1000
+                )
+            else:
+                continue
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        labels = {
+            "target_tx_count": str(target),
+            "attempt": str(attempt),
+            "blocks_spanned": str(blocks_spanned),
+            "transaction_type": row.get("transaction_type", "unknown"),
+            "workload": row.get("workload", "") or "none",
+            "completed": row.get("completed", "false"),
+            "basis": "first burst submission start to final receipt observation",
+            "runtime_variant": client_variant,
+        }
+        samples.append(
+            metric_sample(
+                timestamp_ms,
+                experiment_id,
+                node_id,
+                network,
+                client,
+                "Derived",
+                "empty_block_transaction_burst_completion_latency_ms",
+                latency_ms,
+                labels,
+            )
+        )
+        samples.append(
+            metric_sample(
+                timestamp_ms,
+                experiment_id,
+                node_id,
+                network,
+                client,
+                "Derived",
+                "empty_block_transaction_burst_blocks_spanned",
+                blocks_spanned,
+                labels,
+            )
+        )
+
     names = {sample["name"] for sample in samples}
     fields = (
         "actual_transaction_count", "target_transaction_count", "matched_block",
         "block_timestamp", "tps", "commit_to_submit_ratio", "transaction_inclusion_latency",
+        "transaction_burst_completion_latency", "transaction_burst_blocks_spanned",
     )
     coverage = {
         field: "observed" if metric_name in names else "unavailable"
@@ -160,6 +214,8 @@ def derive_block_samples(rows, metadata, experiment_id, latency_rows=()):
                 "empty_block_actual_transaction_count", "empty_block_target_transaction_count",
                 "empty_block_block_matched", "empty_block_timestamp_seconds", "empty_block_tps",
                 "empty_block_commit_to_submit_ratio", "empty_block_transaction_inclusion_latency_ms",
+                "empty_block_transaction_burst_completion_latency_ms",
+                "empty_block_transaction_burst_blocks_spanned",
             ),
         )
     }
@@ -178,7 +234,12 @@ def collect(args):
     if latency_path.is_file():
         with latency_path.open(newline="", encoding="utf-8") as source:
             latency_rows = list(csv.DictReader(source))
-    samples, coverage = derive_block_samples(rows, metadata, args.experiment_id, latency_rows)
+    burst_rows = []
+    burst_path = Path(args.samples).with_name("transaction_burst_samples.csv")
+    if burst_path.is_file():
+        with burst_path.open(newline="", encoding="utf-8") as source:
+            burst_rows = list(csv.DictReader(source))
+    samples, coverage = derive_block_samples(rows, metadata, args.experiment_id, latency_rows, burst_rows)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     with (output_dir / "derived_metric_samples.jsonl").open("w", encoding="utf-8") as output:

@@ -38,12 +38,14 @@ The runtime scenario field accepts comma-separated Contender scenario paths such
 
 Contract-call bursts use a fixed gas limit (`250000` by default) so Cast does not run `eth_estimateGas` separately for every future-nonce send. Set `--contract-gas-limit` on `experiments/empty-block/run.sh` to tune it for a workload; value-transfer runs keep their existing `21000` gas limit. Contract deployments use a `600000000` gas limit, and the shared network genesis block gas limit is `650000000` to allow storage-heavy workloads such as `uber_v2` to deploy.
 
+For a nonzero target, one successful sample is a whole submitted burst whose transactions all have receipts; it remains successful if the burst is split across blocks. `block_samples.csv` retains one observation per block with each block's actual total transaction count and exact-match flag. `transaction_inclusion_samples.csv` records each transaction's submission-to-first-receipt-observation latency, while `transaction_burst_samples.csv` records blocks spanned/distribution and burst completion latency (first submission start to final receipt observation). The report groups per-transaction latencies by target and whether the burst occupied one or multiple blocks.
+
 ## Modules
 
 | Module | Entry point | Purpose and outputs |
 |---|---|---|
 | Runtime | `experiments/runtime/run.sh` | Starts a local mixed-client network, runs Contender workloads, records RPC/Prometheus samples, host/container metrics, structured logs, and reports availability by node/client. |
-| Empty block | `experiments/empty-block/run.sh` | Runs an exact transaction-count sweep, records actual block transaction counts, transaction inclusion latency and execution times, and writes block/transaction samples, raw events, derived samples, and coverage reports. |
+| Empty block | `experiments/empty-block/run.sh` | Runs a transaction-burst sweep, records actual per-block transaction counts, transaction inclusion latency and execution times, and writes block/transaction samples, raw events, derived samples, and coverage reports. |
 | Startup | `experiments/startup/run.sh` | Repeats isolated client starts, measures time to the first successful `eth_chainId` response, samples system resources, and reports per-configuration statistics. |
 | Compliance | `experiments/compliance/run.sh` | Builds the custom Hive image and runs `ethereum/engine` for the selected `wasix-r-eth` and/or `wasix-w-eth` client. Workspaces, command lines, and per-client logs are retained. |
 | Size | `experiments/size/run.sh` | Uses upstream `scc` to measure source-code lines and records compiled binary bytes. Missing source trees or binaries are reported as unavailable. |
