@@ -107,6 +107,30 @@ class EmptyBlockExperimentTests(unittest.TestCase):
         self.assertEqual(receipts[tx_hash], receipt)
         self.assertEqual(observed[tx_hash], {"monotonic": 12.5, "epoch": 100.25})
 
+    def test_receipt_polling_retries_transaction_indexing_in_progress(self):
+        tx_hash = "0x" + "a" * 64
+        receipt = {"status": "0x1", "blockNumber": "0x2"}
+        indexing_error = RuntimeError(
+            "RPC eth_getTransactionReceipt failed: transaction indexing is in progress"
+        )
+        with patch.object(block_collection, "rpc_call", side_effect=[indexing_error, receipt]) as rpc:
+            with patch.object(block_collection.time, "monotonic", side_effect=[0.0, 0.1, 0.2]):
+                with patch.object(block_collection.time, "time", return_value=100.25):
+                    with patch.object(block_collection.time, "sleep") as sleep:
+                        receipts = block_collection.wait_for_receipts(
+                            "http://localhost", [tx_hash], 5, 0.1
+                        )
+
+        self.assertEqual(receipts, {tx_hash: receipt})
+        self.assertEqual(rpc.call_count, 2)
+        sleep.assert_called_once_with(0.1)
+
+    def test_receipt_polling_propagates_other_rpc_errors(self):
+        error = RuntimeError("RPC eth_getTransactionReceipt failed: invalid params")
+        with patch.object(block_collection, "rpc_call", side_effect=error):
+            with self.assertRaisesRegex(RuntimeError, "invalid params"):
+                block_collection.wait_for_receipts("http://localhost", ["0xhash"], 5, 0.1)
+
     def test_receipt_polling_can_record_reverted_transaction_inclusion(self):
         tx_hash = "0x" + "a" * 64
         receipt = {"status": "0x0", "blockNumber": "0x2"}

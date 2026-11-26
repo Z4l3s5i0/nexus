@@ -51,7 +51,12 @@ def wait_for_receipts(
         for tx_hash in tx_hashes:
             if tx_hash in receipts:
                 continue
-            receipt = rpc_call(rpc_url, "eth_getTransactionReceipt", [tx_hash], min(timeout, 30))
+            try:
+                receipt = rpc_call(rpc_url, "eth_getTransactionReceipt", [tx_hash], min(timeout, 30))
+            except RuntimeError as exc:
+                if "transaction indexing is in progress" not in str(exc).lower():
+                    raise
+                continue
             if receipt is not None:
                 if receipt.get("status") not in (None, "0x1") and not allow_failed_receipts:
                     raise RuntimeError(f"transaction {tx_hash} failed")
