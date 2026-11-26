@@ -16,6 +16,7 @@ RECEIPT_TIMEOUT=180
 BLOCK_TIMEOUT=120
 POLL_INTERVAL=1
 WORKLOAD=none
+CONTRACT_GAS_LIMIT=250000
 PRIVATE_KEY="${EB_PRIVATE_KEY:-$EMPTY_BLOCK_DEFAULT_PRIVATE_KEY}"
 RESET_NETWORK=false
 NETWORK_STARTED=false
@@ -36,6 +37,7 @@ Options:
   --block-timeout SECS     New block timeout (default: $BLOCK_TIMEOUT)
   --poll-interval SECS     RPC poll interval (default: $POLL_INTERVAL)
   --workload TYPE         none, counter, dota, uber, or uber_v2 contract calls (default: $WORKLOAD)
+  --contract-gas-limit N  Gas limit per contract call (default: $CONTRACT_GAS_LIMIT)
   --private-key KEY        Override the default local Anvil key; EB_PRIVATE_KEY is also supported
   --reset-network          Allow the local launcher to remove pre-existing generated data
   --help                   Show this help
@@ -55,6 +57,7 @@ while [[ "$#" -gt 0 ]]; do
         --block-timeout) BLOCK_TIMEOUT="$2"; shift 2 ;;
         --poll-interval) POLL_INTERVAL="$2"; shift 2 ;;
         --workload) WORKLOAD="$2"; shift 2 ;;
+        --contract-gas-limit) CONTRACT_GAS_LIMIT="$2"; shift 2 ;;
         --private-key) PRIVATE_KEY="$2"; shift 2 ;;
         --reset-network) RESET_NETWORK=true; shift ;;
         --help|-h) usage; exit 0 ;;
@@ -83,6 +86,9 @@ esac
 [[ "$POLL_INTERVAL" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk "BEGIN { exit !($POLL_INTERVAL > 0) }" || {
     echo "Error: poll interval must be positive." >&2; exit 2;
 }
+[[ "$CONTRACT_GAS_LIMIT" =~ ^[1-9][0-9]*$ ]] || {
+    echo "Error: contract gas limit must be a positive integer." >&2; exit 2;
+}
 if [[ ! "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
     echo "Error: EXPERIMENT_RUN_ID contains unsupported characters." >&2
     exit 2
@@ -92,6 +98,7 @@ export EB_PRIVATE_KEY="$PRIVATE_KEY"
 python3 "$SCRIPT_DIR/run_experiment.py" \
     --validate-only --counts "$COUNTS" --private-key "$PRIVATE_KEY" \
     --workload "$WORKLOAD" \
+    --contract-gas-limit "$CONTRACT_GAS_LIMIT" \
     --rpc-url "http://127.0.0.1:8545" --chain-id "$CHAIN_ID" \
     --blocks-per-count "$BLOCKS_PER_COUNT" --max-attempts "$MAX_ATTEMPTS" \
     --receipt-timeout "$RECEIPT_TIMEOUT" --block-timeout "$BLOCK_TIMEOUT" \
@@ -194,6 +201,7 @@ python3 "$SCRIPT_DIR/run_experiment.py" \
     --chain-id "$CHAIN_ID" --experiment-id "$RUN_ID" \
     --client "$CLIENT_LABEL" --client-variant "$CLIENT" --node-id "$NODE_ID" \
     --workload "$WORKLOAD" \
+    --contract-gas-limit "$CONTRACT_GAS_LIMIT" \
     --counts "$COUNTS" --blocks-per-count "$BLOCKS_PER_COUNT" --max-attempts "$MAX_ATTEMPTS" \
     --receipt-timeout "$RECEIPT_TIMEOUT" --block-timeout "$BLOCK_TIMEOUT" \
     --poll-interval "$POLL_INTERVAL" --output "$OUTPUT_DIR/block_samples.csv" \

@@ -74,6 +74,14 @@ class EmptyBlockExperimentTests(unittest.TestCase):
 
         self.assertEqual(args.workload, "uber_v2")
 
+    def test_contract_gas_limit_defaults_and_requires_positive_value(self):
+        args = run_experiment.create_parser().parse_args(["--counts", "0"])
+        self.assertEqual(args.contract_gas_limit, 250_000)
+
+        args = run_experiment.create_parser().parse_args(["--counts", "0", "--contract-gas-limit", "0"])
+        with self.assertRaisesRegex(ValueError, "--contract-gas-limit must be positive"):
+            run_experiment.validate_options(args, "")
+
     def test_contract_workload_requires_a_valid_key(self):
         args = run_experiment.create_parser().parse_args(["--counts", "0", "--workload", "counter"])
         with patch.object(run_experiment.shutil, "which", return_value="cast"):
@@ -201,7 +209,7 @@ class EmptyBlockExperimentTests(unittest.TestCase):
             submitted = transaction_submission.submit_burst(
                 "cast", "network", "image", "http://localhost:8545", "0xsender", "0xkey", 7,
                 1, 30, "2500000000", to_address="0xcontract", function_signature="update()",
-                include_timestamps=True,
+                include_timestamps=True, contract_gas_limit=420_000,
             )
 
         self.assertEqual(submitted, [{
@@ -211,6 +219,9 @@ class EmptyBlockExperimentTests(unittest.TestCase):
         arguments = cast.call_args.args[1]
         self.assertEqual(arguments[:3], ["send", "0xcontract", "update()"])
         self.assertNotIn("--value", arguments)
+        self.assertIn("--gas-limit", arguments)
+        gas_limit_index = arguments.index("--gas-limit")
+        self.assertEqual(arguments[gas_limit_index + 1], "420000")
 
     def test_contract_deployment_precedes_calls_and_is_recorded_separately(self):
         sender = "0x" + "1" * 40

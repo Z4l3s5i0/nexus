@@ -21,7 +21,7 @@ from block_collection import (
     wait_for_next_block,
     wait_for_receipts,
 )
-from transaction_submission import run_cast, submit_burst, submit_contract_deployment
+from transaction_submission import CONTRACT_CALL_GAS_LIMIT, run_cast, submit_burst, submit_contract_deployment
 
 
 DEFAULT_COUNTS = (0, 1, 5, 10, 20, 50, 100)
@@ -80,6 +80,12 @@ def create_parser():
     parser.add_argument("--client-variant", default="unknown")
     parser.add_argument("--node-id", default="el-node-0")
     parser.add_argument("--workload", choices=("none", *WORKLOAD_CALLS), default="none")
+    parser.add_argument(
+        "--contract-gas-limit",
+        type=int,
+        default=CONTRACT_CALL_GAS_LIMIT,
+        help="gas limit used for contract calls, avoiding Cast's per-transaction gas estimation",
+    )
     parser.add_argument("--output", type=Path, default=Path("block_samples.csv"))
     parser.add_argument("--inclusion-output", type=Path, default=None)
     parser.add_argument("--allow-remote", action="store_true")
@@ -102,6 +108,8 @@ def validate_options(args, private_key):
         raise ValueError("Foundry Cast is unavailable; install cast or Docker")
     if args.chain_id < 1:
         raise ValueError("--chain-id must be positive")
+    if args.contract_gas_limit < 1:
+        raise ValueError("--contract-gas-limit must be positive")
 
 
 def write_sample(writer, output_file, args, target, sample, attempt, number, actual, timestamp, hashes, submitted_hashes):
@@ -348,6 +356,7 @@ def run(args):
                         to_address=contract_address,
                         function_signature=WORKLOAD_CALLS.get(args.workload),
                         include_timestamps=True,
+                        contract_gas_limit=args.contract_gas_limit,
                     )
                     submitted_hashes = [item["hash"] for item in submitted]
                     receipts, observed_times = wait_for_receipts(

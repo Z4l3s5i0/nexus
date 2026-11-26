@@ -6,6 +6,7 @@ import time
 
 
 TX_HASH = re.compile(r"0x[0-9a-fA-F]{64}")
+CONTRACT_CALL_GAS_LIMIT = 250_000
 
 
 def transaction_hash(output):
@@ -72,12 +73,13 @@ def submit_burst(
     to_address=None,
     function_signature=None,
     include_timestamps=False,
+    contract_gas_limit=CONTRACT_CALL_GAS_LIMIT,
 ):
     def arguments(nonce):
         destination = to_address or sender
         command = ["send", destination]
         if function_signature:
-            command.append(function_signature)
+            command.extend([function_signature, "--gas-limit", str(contract_gas_limit)])
         else:
             command.extend(["--value", "0", "--gas-limit", "21000"])
         command.extend(
