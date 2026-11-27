@@ -90,7 +90,12 @@ def wait_for_receipts(
                 continue
             if receipt is not None:
                 if receipt.get("status") not in (None, "0x1") and not allow_failed_receipts:
-                    raise RuntimeError(f"transaction {tx_hash} failed")
+                    details = ", ".join(
+                        f"{field}={receipt[field]}"
+                        for field in ("status", "blockNumber", "gasUsed", "effectiveGasPrice")
+                        if receipt.get(field) is not None
+                    )
+                    raise RuntimeError(f"transaction {tx_hash} failed ({details})")
                 receipts[tx_hash] = receipt
                 observed_times[tx_hash] = {"monotonic": time.monotonic(), "epoch": time.time()}
         if len(receipts) < len(tx_hashes):

@@ -97,6 +97,17 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertLess(deployment, workload_loop)
         self.assertLess(workload_loop, workload_launch)
 
+    def test_runtime_failure_cleanup_captures_client_logs_before_teardown(self):
+        runtime_runner = (ROOT / "experiments" / "runtime" / "run.sh").read_text(encoding="utf-8")
+        cleanup = runtime_runner.split("cleanup() {", 1)[1].split("\n}", 1)[0]
+
+        capture = cleanup.index('bash "$SCRIPT_DIR/capture_logs.sh"')
+        teardown = cleanup.index('bash "$NETWORK_SCRIPT" stop')
+
+        self.assertIn('if [[ "$status" -ne 0', cleanup)
+        self.assertIn("CLIENT_LOGS_CAPTURED=false", runtime_runner)
+        self.assertLess(capture, teardown)
+
     def run_with_stubs(
         self, selection, fail_module=None, config_answers=None, fail_setup_status=None,
         runner_args=None, private_key="0" * 64, fail_empty_block_count=None,

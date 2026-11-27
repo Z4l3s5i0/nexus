@@ -97,6 +97,8 @@ if ! mkdir "$OUTPUT_DIR" 2>/dev/null; then
     exit 1
 fi
 mkdir -p "$OUTPUT_DIR/logs" "$OUTPUT_DIR/workloads"
+NODE_COUNT=$((LINUX_NODES + WASIX_NODES + GETH_NODES + RETH_NODES))
+CLIENT_LOGS_CAPTURED=false
 
 cleanup() {
     local status=$?
@@ -109,6 +111,13 @@ cleanup() {
         kill "$SYSTEM_COLLECTOR_PID" 2>/dev/null || true
         wait "$SYSTEM_COLLECTOR_PID" 2>/dev/null || true
         runtime_progress "System metrics collection stopped."
+    fi
+    if [[ "$status" -ne 0 && "$NETWORK_STARTED" == true && "$CLIENT_LOGS_CAPTURED" != true && "$NODE_COUNT" -gt 0 ]]; then
+        runtime_progress "Capturing client logs after the failed runtime run."
+        if ! bash "$SCRIPT_DIR/capture_logs.sh" --output-dir "$OUTPUT_DIR/logs" --nodes "$NODE_COUNT"; then
+            runtime_progress "Client log capture after failure could not be completed."
+        fi
+        CLIENT_LOGS_CAPTURED=true
     fi
     if [[ "$NETWORK_STARTED" == true ]]; then
         runtime_progress "Tearing down the runtime network."
@@ -129,7 +138,6 @@ runtime_progress "Starting the runtime network."
 bash "$NETWORK_SCRIPT" start
 runtime_progress "Runtime network started; waiting for nodes and metrics to become ready."
 
-NODE_COUNT=$((LINUX_NODES + WASIX_NODES + GETH_NODES + RETH_NODES))
 READY=false
 for attempt in $(seq 1 90); do
     if curl -fsS --max-time 2 http://127.0.0.1:9100/health >/dev/null; then
@@ -269,6 +277,7 @@ fi
 
 runtime_progress "Collecting execution, consensus, and validation client logs and node metrics."
 bash "$SCRIPT_DIR/capture_logs.sh" --output-dir "$OUTPUT_DIR/logs" --nodes "$NODE_COUNT"
+CLIENT_LOGS_CAPTURED=true
 python3 "$SCRIPT_DIR/collect_logs.py" \
     --metadata "$OUTPUT_DIR/metadata.json" --logs-dir "$OUTPUT_DIR/logs" \
     --workload-windows "$OUTPUT_DIR/workload_windows" \

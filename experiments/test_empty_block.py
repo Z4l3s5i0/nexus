@@ -314,6 +314,16 @@ class EmptyBlockExperimentTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "invalid params"):
                 block_collection.wait_for_receipts("http://localhost", ["0xhash"], 5, 0.1)
 
+    def test_receipt_polling_reports_failed_receipt_details(self):
+        tx_hash = "0x" + "a" * 64
+        receipt = {"status": "0x0", "blockNumber": "0x2", "gasUsed": "0x5208"}
+        with patch.object(block_collection, "rpc_call", return_value=receipt):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"transaction .* failed \(status=0x0, blockNumber=0x2, gasUsed=0x5208\)",
+            ):
+                block_collection.wait_for_receipts("http://localhost", [tx_hash], 5, 0.1)
+
     def test_receipt_polling_can_record_reverted_transaction_inclusion(self):
         tx_hash = "0x" + "a" * 64
         receipt = {"status": "0x0", "blockNumber": "0x2"}
