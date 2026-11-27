@@ -267,6 +267,8 @@ for i in $(seq 0 $((NODES - 1))); do
       - --http.port=$ETH_PORT
       - --http.api=eth,net,web3
       - '--http.vhosts=*'
+      - --rpc.gascap=0
+      - --rpc.txfeecap=0
       - --authrpc.addr=0.0.0.0
       - --authrpc.port=$AUTH_PORT
       - '--authrpc.vhosts=*'

@@ -175,6 +175,15 @@ class NetworkSupportTests(unittest.TestCase):
             launcher,
         )
 
+    def test_geth_rpc_gas_and_transaction_fee_caps_are_disabled(self):
+        launcher = (NETWORK_SUPPORT / "start.sh").read_text(encoding="utf-8")
+        geth_config = launcher.split('if [ "$TYPE" = "geth" ]; then', 1)[1].split(
+            'elif [ "$TYPE" = "reth" ]; then', 1
+        )[0]
+
+        self.assertIn("- --rpc.gascap=0", geth_config)
+        self.assertIn("- --rpc.txfeecap=0", geth_config)
+
     def test_reth_registration_exposes_admin_rpc_and_reads_node_id(self):
         launcher = (NETWORK_SUPPORT / "start.sh").read_text(encoding="utf-8")
         reth_config = launcher.split('elif [ "$TYPE" = "reth" ]; then', 1)[1].split(
