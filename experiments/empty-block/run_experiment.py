@@ -27,7 +27,7 @@ from transaction_submission import CONTRACT_CALL_GAS_LIMIT, run_cast, submit_bur
 
 DEFAULT_COUNTS = (0, 1, 5, 10, 20, 50, 100)
 CAST_IMAGE = "ghcr.io/foundry-rs/foundry:v1.7.1"
-LATENCY_BASIS = "Cast send completion to first receipt observation"
+LATENCY_BASIS = "committing block timestamp minus Cast send completion"
 BYTECODE_FILE = Path(__file__).resolve().parents[2] / "diablo_workloads" / "bytecode.csv"
 WORKLOAD_CALLS = {
     "counter": "Add()",
@@ -172,22 +172,57 @@ def load_workload_bytecode(workload):
     return bytecode
 
 
+def receipt_block_timestamp(receipt, tx_hash, args, block_timestamp_cache):
+    if not isinstance(tx_hash, str):
+        return None
+    try:
+        number = block_number(receipt["blockNumber"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if number not in block_timestamp_cache:
+        try:
+            block = rpc_call(args.rpc_url, "eth_getBlockByNumber", [receipt["blockNumber"], False], 15)
+            timestamp = int(block["timestamp"], 16)
+            transactions = block["transactions"]
+            if not isinstance(transactions, list):
+                raise ValueError("block transactions were unavailable")
+            transaction_hashes = set()
+            for transaction in transactions:
+                included_hash = transaction if isinstance(transaction, str) else (
+                    transaction.get("hash") if isinstance(transaction, dict) else None
+                )
+                if isinstance(included_hash, str):
+                    transaction_hashes.add(included_hash.lower())
+            block_timestamp_cache[number] = (timestamp, transaction_hashes)
+        except (OSError, RuntimeError, TimeoutError, KeyError, TypeError, ValueError):
+            block_timestamp_cache[number] = None
+    block_data = block_timestamp_cache[number]
+    if not isinstance(block_data, tuple) or len(block_data) != 2:
+        return None
+    timestamp, transaction_hashes = block_data
+    if tx_hash.lower() not in transaction_hashes:
+        return None
+    try:
+        return float(timestamp)
+    except (TypeError, ValueError):
+        return None
+
+
 def write_inclusion_sample(writer, output_file, args, transaction_type, tx_hash, receipt, submitted_at,
                            observed_at, sender, to_address, target, attempt, block_timestamp_cache=None):
     block_number_value = receipt.get("blockNumber")
     block_number_int = block_number(block_number_value) if block_number_value else None
-    block_timestamp = ""
-    if block_number_int is not None:
-        if block_timestamp_cache is None:
-            block_timestamp_cache = {}
-        if block_number_int not in block_timestamp_cache:
-            try:
-                block = rpc_call(args.rpc_url, "eth_getBlockByNumber", [block_number_value, False], 15)
-                block_timestamp_cache[block_number_int] = int(block["timestamp"], 16) if block else ""
-            except (OSError, RuntimeError, TimeoutError, KeyError, TypeError, ValueError):
-                block_timestamp_cache[block_number_int] = ""
-        block_timestamp = block_timestamp_cache[block_number_int]
-    latency_ms = max(0.0, (observed_at["monotonic"] - submitted_at["monotonic"]) * 1000)
+    if block_timestamp_cache is None:
+        block_timestamp_cache = {}
+    block_timestamp = receipt_block_timestamp(receipt, tx_hash, args, block_timestamp_cache)
+    latency_ms = (
+        max(0.0, (block_timestamp - submitted_at["epoch"]) * 1000)
+        if block_timestamp is not None else None
+    )
+    included_at_utc = (
+        datetime.fromtimestamp(block_timestamp, timezone.utc).isoformat()
+        if block_timestamp is not None else ""
+    )
     writer.writerow(
         {
             "experiment_id": args.experiment_id,
@@ -202,11 +237,11 @@ def write_inclusion_sample(writer, output_file, args, transaction_type, tx_hash,
             "sender": sender,
             "to_address": to_address or "",
             "submitted_at_utc": datetime.fromtimestamp(submitted_at["epoch"], timezone.utc).isoformat(),
-            "included_at_utc": datetime.fromtimestamp(observed_at["epoch"], timezone.utc).isoformat(),
-            "inclusion_latency_ms": f"{latency_ms:.3f}",
+            "included_at_utc": included_at_utc,
+            "inclusion_latency_ms": f"{latency_ms:.3f}" if latency_ms is not None else "",
             "latency_basis": LATENCY_BASIS,
             "block_number": block_number_int if block_number_int is not None else "",
-            "block_timestamp": block_timestamp,
+            "block_timestamp": block_timestamp if block_timestamp is not None else "",
             "gas_used": int(receipt.get("gasUsed", "0x0"), 16),
             "status": receipt.get("status", ""),
         }
@@ -216,27 +251,30 @@ def write_inclusion_sample(writer, output_file, args, transaction_type, tx_hash,
 
 
 def write_burst_sample(writer, output_file, args, transaction_type, target, attempt, sample,
-                       submitted, receipts, observed_times):
+                       submitted, receipts, observed_times, block_timestamp_cache):
     submitted_by_hash = {item["hash"]: item for item in submitted}
     included_hashes = [tx_hash for tx_hash in submitted_by_hash if tx_hash in receipts]
     grouped_receipts = receipts_by_block({tx_hash: receipts[tx_hash] for tx_hash in included_hashes})
     block_distribution = ";".join(
         f"{number}:{len(hashes)}" for number, hashes in sorted(grouped_receipts.items())
     )
-    observed_for_included = [observed_times[tx_hash] for tx_hash in included_hashes if tx_hash in observed_times]
     transaction_latencies = [
-        max(0.0, (observed_times[tx_hash]["monotonic"] - submitted_by_hash[tx_hash]["submitted_at"]["monotonic"]) * 1000)
+        max(0.0, (block_timestamp - submitted_by_hash[tx_hash]["submitted_at"]["epoch"]) * 1000)
         for tx_hash in included_hashes
-        if tx_hash in observed_times
+        if (block_timestamp := receipt_block_timestamp(receipts[tx_hash], tx_hash, args, block_timestamp_cache)) is not None
     ]
     completed = bool(submitted_by_hash) and len(included_hashes) == len(submitted_by_hash)
     completion_latency = ""
     completed_at_utc = ""
-    if completed and observed_for_included:
-        first_submission = min(item["submitted_at"]["monotonic"] for item in submitted_by_hash.values())
-        latest_observation = max(observed_for_included, key=lambda item: item["monotonic"])
-        completion_latency = f"{max(0.0, (latest_observation['monotonic'] - first_submission) * 1000):.3f}"
-        completed_at_utc = datetime.fromtimestamp(latest_observation["epoch"], timezone.utc).isoformat()
+    committed_timestamps = [
+        timestamp for tx_hash in included_hashes
+        if (timestamp := receipt_block_timestamp(receipts[tx_hash], tx_hash, args, block_timestamp_cache)) is not None
+    ]
+    if completed and len(committed_timestamps) == len(included_hashes):
+        first_submission = min(item["submitted_at"]["epoch"] for item in submitted_by_hash.values())
+        latest_commit = max(committed_timestamps)
+        completion_latency = f"{max(0.0, (latest_commit - first_submission) * 1000):.3f}"
+        completed_at_utc = datetime.fromtimestamp(latest_commit, timezone.utc).isoformat()
     reverted = sum(
         str(receipts[tx_hash].get("status") or "").lower() in ("0x0", "0")
         for tx_hash in included_hashes
@@ -307,6 +345,7 @@ def write_observed_burst(
         submitted,
         receipts,
         observed_times,
+        block_timestamp_cache,
     )
     hashes_by_block = receipts_by_block(receipts)
     actual_counts = {}
@@ -436,7 +475,7 @@ def run(args):
                 "contract_address": contract_address,
                 "transaction_hash": deployment_hash,
                 "block_number": block_number(deployment_receipt["blockNumber"]),
-                "inclusion_latency_ms": round(deployment_latency, 3),
+                "inclusion_latency_ms": round(deployment_latency, 3) if deployment_latency is not None else None,
                 "latency_basis": LATENCY_BASIS,
                 "confirmed": True,
             }

@@ -70,6 +70,25 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertIn('value = "1"', scenario)
         self.assertIn('gas_limit = 21000', scenario)
 
+    def test_runtime_contender_setup_waits_before_spam(self):
+        workload_script = (ROOT / "experiments" / "runtime" / "workload.sh").read_text(encoding="utf-8")
+        setup = workload_script.index('"$CONTENDER_IMAGE" setup "$SCENARIO_REF"')
+        delay_message = workload_script.index("Contender setup completed; waiting 30 seconds", setup)
+        delay = workload_script.index("sleep 30", delay_message)
+        workload_start = workload_script.index("WORKLOAD_START_MS=", delay)
+        spam = workload_script.index('"$CONTENDER_IMAGE" spam "$SCENARIO_REF"', workload_start)
+        spam_end = workload_script.index("; then", spam)
+
+        self.assertLess(setup, delay_message)
+        self.assertLess(delay_message, delay)
+        self.assertLess(delay, workload_start)
+        self.assertLess(workload_start, spam)
+        self.assertIn('-v "$STATE_DIR:/root/.local/state/contender"', workload_script)
+        for command in (workload_script[setup:delay_message], workload_script[spam:spam_end]):
+            self.assertIn('-r "$RPC_URL"', command)
+            self.assertIn('-p "$PRIVATE_KEY" -a "$ACCOUNTS"', command)
+            self.assertIn('--seed "$SEED"', command)
+
     def run_with_stubs(
         self, selection, fail_module=None, config_answers=None, fail_setup_status=None,
         runner_args=None, private_key="0" * 64, fail_empty_block_count=None,

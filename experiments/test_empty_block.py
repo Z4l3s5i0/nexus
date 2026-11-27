@@ -194,23 +194,119 @@ class EmptyBlockExperimentTests(unittest.TestCase):
         with patch.object(
             block_collection,
             "rpc_call",
-            return_value={"transactions": [included_hash], "timestamp": "0x10"},
+            return_value={"transactions": [included_hash], "timestamp": "0x69"},
         ):
-            completed, actual_counts, hashes_by_block = run_experiment.write_observed_burst(
-                args, "value_transfer", 2, 1, 1, submitted, receipts, observed,
-                "0xsender", None, inclusion_writer, inclusion_file, burst_writer,
-                burst_file, block_writer, output_file, {},
-            )
+            with patch.object(
+                run_experiment,
+                "rpc_call",
+                return_value={"timestamp": "0x69", "transactions": [included_hash]},
+            ):
+                completed, actual_counts, hashes_by_block = run_experiment.write_observed_burst(
+                    args, "value_transfer", 2, 1, 1, submitted, receipts, observed,
+                    "0xsender", None, inclusion_writer, inclusion_file, burst_writer,
+                    burst_file, block_writer, output_file, {},
+                )
 
         self.assertFalse(completed)
         self.assertEqual(actual_counts, {2: 1})
         self.assertEqual(hashes_by_block, {2: [included_hash]})
         self.assertEqual(len(inclusion_writer.rows), 1)
         self.assertEqual(inclusion_writer.rows[0]["tx_hash"], included_hash)
+        self.assertEqual(inclusion_writer.rows[0]["inclusion_latency_ms"], "5000.000")
+        self.assertIn("00:01:45", inclusion_writer.rows[0]["included_at_utc"])
         self.assertEqual(inclusion_writer.rows[0]["latency_basis"], run_experiment.LATENCY_BASIS)
         self.assertEqual(burst_writer.rows[0]["included_tx_count"], 1)
         self.assertEqual(burst_writer.rows[0]["completed"], "false")
         self.assertEqual(block_writer.rows[0]["block_number"], 2)
+
+    def test_inclusion_latency_is_blank_when_block_timestamp_is_unavailable(self):
+        args = run_experiment.create_parser().parse_args(["--experiment-id", "run-1"])
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=run_experiment.INCLUSION_COLUMNS)
+        writer.writeheader()
+
+        with patch.object(run_experiment, "rpc_call", side_effect=RuntimeError("block unavailable")):
+            latency = run_experiment.write_inclusion_sample(
+                writer,
+                output,
+                args,
+                "value_transfer",
+                "0x" + "a" * 64,
+                {"status": "0x1", "blockNumber": "0x2", "gasUsed": "0x5208"},
+                {"monotonic": 1.0, "epoch": 100.0},
+                {"monotonic": 2.0, "epoch": 101.0},
+                "0xsender",
+                None,
+                1,
+                1,
+            )
+
+        row = next(csv.DictReader(io.StringIO(output.getvalue())))
+        self.assertIsNone(latency)
+        self.assertEqual(row["inclusion_latency_ms"], "")
+        self.assertEqual(row["included_at_utc"], "")
+
+    def test_inclusion_latency_is_blank_when_transaction_is_not_in_timestamp_block(self):
+        args = run_experiment.create_parser().parse_args(["--experiment-id", "run-1"])
+        tx_hash = "0x" + "a" * 64
+        receipt = {"status": "0x1", "blockNumber": "0x2", "gasUsed": "0x5208"}
+        block_timestamp_cache = {}
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=run_experiment.INCLUSION_COLUMNS)
+        writer.writeheader()
+
+        with patch.object(
+            run_experiment,
+            "rpc_call",
+            return_value={"timestamp": "0x69", "transactions": ["0x" + "b" * 64]},
+        ) as block_rpc:
+            latency = run_experiment.write_inclusion_sample(
+                writer,
+                output,
+                args,
+                "value_transfer",
+                tx_hash,
+                receipt,
+                {"monotonic": 1.0, "epoch": 100.0},
+                {"monotonic": 2.0, "epoch": 101.0},
+                "0xsender",
+                None,
+                1,
+                1,
+                block_timestamp_cache,
+            )
+
+        class RowWriter:
+            def __init__(self):
+                self.rows = []
+
+            def writerow(self, row):
+                self.rows.append(row)
+
+        burst_writer = RowWriter()
+        run_experiment.write_burst_sample(
+            burst_writer,
+            io.StringIO(),
+            args,
+            "value_transfer",
+            1,
+            1,
+            1,
+            [{"hash": tx_hash, "submitted_at": {"epoch": 100.0}}],
+            {tx_hash: receipt},
+            {},
+            block_timestamp_cache,
+        )
+
+        row = next(csv.DictReader(io.StringIO(output.getvalue())))
+        self.assertIsNone(latency)
+        self.assertEqual(row["inclusion_latency_ms"], "")
+        self.assertEqual(row["included_at_utc"], "")
+        self.assertEqual(row["block_timestamp"], "")
+        self.assertEqual(burst_writer.rows[0]["burst_completion_latency_ms"], "")
+        self.assertEqual(burst_writer.rows[0]["mean_transaction_inclusion_latency_ms"], "")
+        self.assertEqual(burst_writer.rows[0]["max_transaction_inclusion_latency_ms"], "")
+        block_rpc.assert_called_once_with(args.rpc_url, "eth_getBlockByNumber", ["0x2", False], 15)
 
     def test_receipt_polling_propagates_other_rpc_errors(self):
         error = RuntimeError("RPC eth_getTransactionReceipt failed: invalid params")
@@ -500,13 +596,13 @@ class EmptyBlockExperimentTests(unittest.TestCase):
                     return "0x3"
                 if method == "eth_getBlockByNumber":
                     number = int(params[0], 16)
-                    included_hash = hashes[number - 2]
-                    return {"timestamp": "0x64", "transactions": [included_hash]}
+                    included_hash = {2: hashes[0], 7: hashes[1]}[number]
+                    return {"timestamp": hex(99 + number), "transactions": [included_hash]}
                 raise AssertionError(method)
 
             receipts = {
                 hashes[0]: {"status": "0x1", "blockNumber": "0x2", "gasUsed": "0x5208"},
-                hashes[1]: {"status": "0x1", "blockNumber": "0x3", "gasUsed": "0x5208"},
+                hashes[1]: {"status": "0x1", "blockNumber": "0x7", "gasUsed": "0x5208"},
             }
             observed = {tx_hash: observed_at[tx_hash] for tx_hash in hashes}
 
@@ -521,6 +617,8 @@ class EmptyBlockExperimentTests(unittest.TestCase):
             self.assertTrue(burst_output.is_file())
             with burst_output.open(newline="", encoding="utf-8") as source:
                 burst_rows = list(csv.DictReader(source))
+            with inclusion_output.open(newline="", encoding="utf-8") as source:
+                inclusion_rows = list(csv.DictReader(source))
             with output.open(newline="", encoding="utf-8") as source:
                 block_rows = list(csv.DictReader(source))
 
@@ -528,8 +626,9 @@ class EmptyBlockExperimentTests(unittest.TestCase):
         self.assertEqual(len(burst_rows), 1)
         self.assertEqual(burst_rows[0]["completed"], "true")
         self.assertEqual(burst_rows[0]["blocks_spanned"], "2")
-        self.assertEqual(burst_rows[0]["block_distribution"], "2:1;3:1")
-        self.assertAlmostEqual(float(burst_rows[0]["burst_completion_latency_ms"]), 1500.0)
+        self.assertEqual(burst_rows[0]["block_distribution"], "2:1;7:1")
+        self.assertAlmostEqual(float(burst_rows[0]["burst_completion_latency_ms"]), 6000.0)
+        self.assertEqual([row["inclusion_latency_ms"] for row in inclusion_rows], ["1000.000", "5900.000"])
         self.assertEqual(len(block_rows), 2)
         self.assertTrue(all(row["matched"] == "false" for row in block_rows))
 

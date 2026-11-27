@@ -72,6 +72,8 @@ fi
 docker run -i "${CONTAINER_OPTIONS[@]}" "$CONTENDER_IMAGE" setup "$SCENARIO_REF" \
     -r "$RPC_URL" -p "$PRIVATE_KEY" -a "$ACCOUNTS" --seed "$SEED" \
     --env GAS_LIMIT=1eth --min-balance 100eth
+echo "Contender setup completed; waiting 30 seconds before starting transaction spam."
+sleep 30
 WORKLOAD_START_MS="$(python3 -c 'import time; print(time.time_ns() // 1_000_000)')"
 SPAM_STATUS=0
 if docker run -i "${CONTAINER_OPTIONS[@]}" "$CONTENDER_IMAGE" spam "$SCENARIO_REF" \

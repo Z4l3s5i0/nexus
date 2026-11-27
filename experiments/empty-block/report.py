@@ -267,8 +267,8 @@ def build_report(output_dir):
         "notes": [
             "Block transaction counts and timestamps come from JSON-RPC block responses.",
             "Positive transaction-count samples are completed submitted bursts; bursts may span multiple blocks, which remain individually recorded.",
-            "Current inclusion-latency rows record Cast send completion through first receipt observation; the exact per-row basis is included in each sample and legacy rows without it remain unknown.",
-            "Current burst-completion rows record the first Cast send completion through the final receipt observation; partial receipt observations are retained even when the wait times out.",
+            "Current inclusion latency is the committing block timestamp minus Cast send completion; block timestamp granularity and clock skew can affect the result, while receipt-polling delay is excluded.",
+            "Current burst-completion latency is the latest committing block timestamp minus the first Cast send completion; partial receipt observations are retained even when the wait times out.",
             "Older result directories without transaction_burst_samples.csv cannot provide completed-burst or cross-block grouping statistics.",
             "Execution duration, transaction gas/sender, and peer/download events are included only when structured client logs provide them.",
             "Raw Prometheus names are preserved; semantic equivalence is not inferred.",
@@ -329,8 +329,8 @@ def build_report(output_dir):
                 f"basis `{', '.join(summary['latency_basis']) or 'unknown'}`."
             )
         lines.append(
-            "This is a send-acknowledgment-to-first-receipt-observation proxy, not the exact consensus inclusion instant; "
-            "receipt polling interval and RPC response time contribute observation delay."
+            "This is computed from the committing block timestamp rather than receipt observation time; "
+            "block timestamp granularity and clock skew can still affect the measurement."
         )
     else:
         lines.append("- No transaction inclusion latency observations were recorded.")
