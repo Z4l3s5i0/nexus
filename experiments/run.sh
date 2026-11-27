@@ -338,7 +338,7 @@ configure_module() {
                     return 2
                 fi
                 while true; do
-                    prompt_value workload_type 'Contender workload scenarios (comma-separated)' 'exp/counter,exp/dota,exp/uber,exp/uber_v2,exp/value-transfer' text || return $?
+                    prompt_value workload_type 'Cast runtime scenarios (comma-separated)' 'exp/counter,exp/dota,exp/uber,exp/uber_v2,exp/value-transfer' text || return $?
                     if validate_workload_types "$workload_type"; then break; fi
                     echo 'Use unique scenario paths with letters, numbers, dots, underscores, slashes, or hyphens.' >&2
                 done

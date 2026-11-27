@@ -399,6 +399,82 @@ class EmptyBlockExperimentTests(unittest.TestCase):
         self.assertIn("--legacy", docker_run.call_args.kwargs["input"])
         self.assertIn("--gas-price 2500000000", docker_run.call_args.kwargs["input"])
 
+    def test_cast_batch_runs_multiple_wallet_commands_in_one_container(self):
+        outputs = ["0x" + "1" * 64, "0x" + "2" * 40]
+        result = subprocess.CompletedProcess(
+            [],
+            0,
+            stdout=(
+                "__CAST_RESULT_0_START__\n" + outputs[0] + "\n__CAST_RESULT_0_END__\n"
+                "__CAST_RESULT_1_START__\n" + outputs[1] + "\n__CAST_RESULT_1_END__\n"
+            ),
+            stderr="",
+        )
+        with patch.object(transaction_submission.shutil, "which", return_value="docker"):
+            with patch.object(transaction_submission.subprocess, "run", return_value=result) as docker_run:
+                actual = transaction_submission.run_cast_batch(
+                    None,
+                    "suite-net",
+                    "foundry:test",
+                    [["wallet", "private-key", "test phrase", "1"], ["wallet", "address"]],
+                    30,
+                )
+
+        self.assertEqual(actual, outputs)
+        self.assertEqual(docker_run.call_count, 1)
+        self.assertIn("wallet private-key", docker_run.call_args.kwargs["input"])
+
+    def test_runtime_cast_transactions_and_one_wei_value_transfer(self):
+        transactions = [
+            {
+                "private_key": "0x" + "1" * 64,
+                "to_address": "0x" + "2" * 40,
+                "value": "1",
+                "gas_limit": 21000,
+                "gas_price": 2500000000,
+                "nonce": 7,
+            }
+        ]
+        tx_hash = "0x" + "a" * 64
+        with patch.object(transaction_submission, "run_cast", return_value=f"sent {tx_hash}") as cast:
+            submitted = transaction_submission.submit_transactions(
+                "cast", "suite-net", "foundry:test", "http://localhost:8545", transactions, 30
+            )
+
+        self.assertEqual(submitted, [tx_hash])
+        arguments = cast.call_args.args[1]
+        self.assertEqual(arguments[arguments.index("--value") + 1], "1")
+        self.assertEqual(arguments[arguments.index("--nonce") + 1], "7")
+        self.assertEqual(arguments[arguments.index("--gas-limit") + 1], "21000")
+
+    def test_cast_runtime_schedule_is_rate_paced_and_hash_checked(self):
+        hashes = ["0x" + format(index, "064x") for index in range(4)]
+        result = subprocess.CompletedProcess([], 0, stdout="\n".join(hashes), stderr="")
+        transactions = [
+            {
+                "private_key": "0x" + "1" * 64,
+                "to_address": "0x" + "2" * 40,
+                "value": "1",
+                "gas_limit": 21000,
+                "gas_price": 2500000000,
+                "nonce": index,
+            }
+            for index in range(4)
+        ]
+        with patch.object(transaction_submission.shutil, "which", return_value="docker"):
+            with patch.object(transaction_submission.subprocess, "run", return_value=result) as docker_run:
+                actual = transaction_submission.submit_transaction_schedule(
+                    "suite-net", "foundry:test", "http://el-node-0:8545", transactions, 2, 2, 30
+                )
+
+        self.assertEqual(actual, hashes)
+        self.assertEqual(docker_run.call_count, 1)
+        script = docker_run.call_args.kwargs["input"]
+        self.assertEqual(script.count("cast send"), 4)
+        self.assertIn("start_ns=$(date +%s%N)", script)
+        self.assertIn("target_ns=$((start_ns + 2000000000))", script)
+        self.assertIn("--async", script)
+
     def test_docker_cast_streams_large_deployment_bytecode_over_stdin(self):
         bytecode = "0x" + "ab" * 70_000
         tx_hash = "0x" + "a" * 64

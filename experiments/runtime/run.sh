@@ -37,7 +37,7 @@ Options:
   --reth-nodes N         Reth nodes (default: $RETH_NODES)
   --duration SECONDS     Workload duration (default: $DURATION)
   --wait-duration SECS   Post-workload collection wait (default: $WAIT_DURATION)
-  --workload-type NAME   Contender scenario (default: $WORKLOAD_TYPE)
+  --workload-type NAME   Cast runtime scenario (default: $WORKLOAD_TYPE)
   --tps N                Target TPS per workload node (default: $TPS)
   --accounts N           Accounts per workload (default: $ACCOUNTS)
   --reset-network        Allow the local launcher to clear existing generated node data
@@ -96,7 +96,7 @@ if ! mkdir "$OUTPUT_DIR" 2>/dev/null; then
     echo "Error: output directory already exists: $OUTPUT_DIR" >&2
     exit 1
 fi
-mkdir -p "$OUTPUT_DIR/logs" "$OUTPUT_DIR/workloads" "$OUTPUT_DIR/contender_state"
+mkdir -p "$OUTPUT_DIR/logs" "$OUTPUT_DIR/workloads"
 
 cleanup() {
     local status=$?
@@ -196,7 +196,7 @@ runtime_progress "Workload $WORKLOAD_TYPE spam starting on $NODE_COUNT nodes ($D
 for ((index = 0; index < NODE_COUNT; index++)); do
     bash "$SCRIPT_DIR/workload.sh" \
         --node-index "$index" --chain-id "$CHAIN_ID" --network "$NETWORK_NAME" \
-        --run-id "$RUN_ID" --state-dir "$OUTPUT_DIR/contender_state/node_$index" \
+        --run-id "$RUN_ID" \
         --window-file "$OUTPUT_DIR/workload_windows/node_$index.json" \
         --scenario "$WORKLOAD_TYPE" --tps "$TPS" --duration "$DURATION" --accounts "$ACCOUNTS" \
         > "$OUTPUT_DIR/workloads/node_$index.log" 2>&1 &

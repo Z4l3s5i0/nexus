@@ -80,6 +80,159 @@ def run_cast(cast_bin, arguments, timeout, cast_network, cast_image, capture_tim
     return output
 
 
+def run_cast_batch(cast_bin, cast_network, cast_image, argument_batches, timeout):
+    if not argument_batches:
+        return []
+    if cast_bin:
+        return [
+            run_cast(cast_bin, arguments, timeout, cast_network, cast_image)
+            for arguments in argument_batches
+        ]
+    if not shutil.which("docker"):
+        raise RuntimeError("cast is unavailable and Docker is not installed")
+    if not cast_network:
+        raise RuntimeError("a Docker network is required to run the bundled cast client")
+
+    markers = [
+        (f"__CAST_RESULT_{index}_START__", f"__CAST_RESULT_{index}_END__")
+        for index in range(len(argument_batches))
+    ]
+    script_lines = ["set -e"]
+    for arguments, (start_marker, end_marker) in zip(argument_batches, markers):
+        script_lines.extend(
+            [
+                f"printf '%s\\n' {shlex.quote(start_marker)}",
+                shlex.join(["cast", *arguments]),
+                f"printf '%s\\n' {shlex.quote(end_marker)}",
+            ]
+        )
+    result = subprocess.run(
+        docker_shell_command(cast_network, cast_image),
+        input="\n".join(script_lines),
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+    )
+    if result.returncode:
+        message = result.stderr.strip() or result.stdout.strip() or "unknown cast error"
+        for arguments in argument_batches:
+            for index, value in enumerate(arguments[:-1]):
+                if value in ("--private-key", "--pk"):
+                    message = message.replace(arguments[index + 1], "[redacted]")
+            if len(arguments) > 2 and arguments[:2] == ["wallet", "private-key"]:
+                message = message.replace(arguments[2], "[redacted]")
+        raise RuntimeError(f"cast batch failed: {message}")
+
+    outputs = []
+    output_lines = result.stdout.splitlines()
+    for start_marker, end_marker in markers:
+        try:
+            start = output_lines.index(start_marker) + 1
+            end = output_lines.index(end_marker, start)
+        except ValueError as exc:
+            raise RuntimeError("cast batch returned incomplete command output") from exc
+        outputs.append("\n".join(output_lines[start:end]).strip())
+    return outputs
+
+
+def cast_send_arguments(transaction, rpc_url):
+    arguments = ["send", transaction["to_address"]]
+    signature = transaction.get("function_signature")
+    if signature:
+        arguments.extend([signature, "--gas-limit", str(transaction["gas_limit"])])
+    else:
+        arguments.extend(
+            ["--value", str(transaction.get("value", "1")), "--gas-limit", str(transaction.get("gas_limit", 21000))]
+        )
+    arguments.extend(
+        [
+            "--legacy",
+            "--gas-price",
+            str(transaction["gas_price"]),
+            "--nonce",
+            str(transaction["nonce"]),
+            "--async",
+            "--rpc-url",
+            rpc_url,
+            "--private-key",
+            transaction["private_key"],
+        ]
+    )
+    return arguments
+
+
+def submit_transactions(cast_bin, cast_network, cast_image, rpc_url, transactions, timeout):
+    if not transactions:
+        return []
+    outputs = run_cast_batch(
+        cast_bin,
+        cast_network,
+        cast_image,
+        [cast_send_arguments(transaction, rpc_url) for transaction in transactions],
+        timeout,
+    )
+    if len(outputs) != len(transactions):
+        raise RuntimeError(f"cast returned {len(outputs)} result(s), expected {len(transactions)}")
+    return [transaction_hash(output) for output in outputs]
+
+
+def submit_transaction_schedule(cast_network, cast_image, rpc_url, transactions, tps, duration, timeout):
+    if not transactions:
+        return []
+    expected_count = tps * duration
+    if tps < 1 or duration < 1 or len(transactions) != expected_count:
+        raise ValueError("transaction schedule must contain exactly TPS multiplied by duration transactions")
+    if not shutil.which("docker"):
+        raise RuntimeError("cast is unavailable and Docker is not installed")
+    if not cast_network:
+        raise RuntimeError("a Docker network is required to run the bundled cast client")
+
+    script_lines = ["set -e", "start_ns=$(date +%s%N)"]
+    for index, transaction in enumerate(transactions, start=1):
+        script_lines.append(shlex.join(["cast", *cast_send_arguments(transaction, rpc_url)]))
+        if index % tps == 0:
+            batch_number = index // tps
+            script_lines.extend(
+                [
+                    f"target_ns=$((start_ns + {batch_number}000000000))",
+                    "now_ns=$(date +%s%N)",
+                    "remaining_ns=$((target_ns - now_ns))",
+                    'if [ "$remaining_ns" -gt 0 ]; then '
+                    'sleep "$(printf \'%d.%09d\' "$((remaining_ns / 1000000000))" '
+                    '"$((remaining_ns % 1000000000))")"; fi',
+                ]
+            )
+
+    script_lines.extend(
+        [
+            f"target_ns=$((start_ns + {duration}000000000))",
+            "now_ns=$(date +%s%N)",
+            "remaining_ns=$((target_ns - now_ns))",
+            'if [ "$remaining_ns" -gt 0 ]; then '
+            'sleep "$(printf \'%d.%09d\' "$((remaining_ns / 1000000000))" '
+            '"$((remaining_ns % 1000000000))")"; fi',
+        ]
+    )
+    result = subprocess.run(
+        docker_shell_command(cast_network, cast_image),
+        input="\n".join(script_lines),
+        text=True,
+        capture_output=True,
+        timeout=max(timeout, duration + 30),
+        check=False,
+    )
+    if result.returncode:
+        message = result.stderr.strip() or result.stdout.strip() or "unknown cast error"
+        for transaction in transactions:
+            message = message.replace(transaction["private_key"], "[redacted]")
+        raise RuntimeError(f"cast workload failed: {message}")
+    hashes = TX_HASH.findall(result.stdout)
+    if len(hashes) != expected_count:
+        raise RuntimeError(f"cast returned {len(hashes)} transaction hash(es), expected {expected_count}")
+    return hashes
+
+
 def submit_burst(
     cast_bin,
     cast_network,

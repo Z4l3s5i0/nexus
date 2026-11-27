@@ -249,7 +249,6 @@ if [[ "$needs_chain_images" == true ]]; then
         ghcr.io/google/cadvisor:0.61.0 \
         grafana/grafana:11.1.0 \
         prom/prometheus:v2.53.1 \
-        docker.io/z4l3s5i0/contender:latest \
         ghcr.io/foundry-rs/foundry:v1.7.1 \
         ethereum/client-go@sha256:798b7eb1bcef6d4be7576232beea63bf291450f48b025dc8fb5c6e37840e4364 \
         ghcr.io/paradigmxyz/reth@sha256:68e76b32ad9ac1a3de54984d6f15bbce2047a92a771ff4efbcd08ee8f9dbd4d1; do

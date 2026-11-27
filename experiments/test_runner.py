@@ -57,37 +57,33 @@ class ExperimentRunnerTests(unittest.TestCase):
                     result.stderr.decode("utf-8", errors="replace"),
                 )
 
-    def test_runtime_value_transfer_uses_local_contender_scenario(self):
+    def test_runtime_value_transfer_uses_cast_workload(self):
         workload_script = (ROOT / "experiments" / "runtime" / "workload.sh").read_text(encoding="utf-8")
-        scenario = (ROOT / "experiments" / "runtime" / "value-transfer.toml").read_text(encoding="utf-8")
+        cast_workload = (ROOT / "experiments" / "runtime" / "cast_workload.py").read_text(encoding="utf-8")
 
-        self.assertIn('if [[ "$SCENARIO" == "exp/value-transfer" ]]; then', workload_script)
-        self.assertIn('SCENARIO_VOLUME="$SCRIPT_DIR/value-transfer.toml:$SCENARIO_REF:ro"', workload_script)
-        self.assertIn('CONTAINER_OPTIONS+=( -v "$SCENARIO_VOLUME" )', workload_script)
-        self.assertIn('setup "$SCENARIO_REF"', workload_script)
-        self.assertIn('spam "$SCENARIO_REF"', workload_script)
-        self.assertIn('[spam.tx]', scenario)
-        self.assertIn('value = "1"', scenario)
-        self.assertIn('gas_limit = 21000', scenario)
+        self.assertIn('python3 "$SCRIPT_DIR/cast_workload.py"', workload_script)
+        self.assertIn('export EXPERIMENT_WALLET_MNEMONIC="$MNEMONIC"', workload_script)
+        self.assertIn('if scenario == "value-transfer":', cast_workload)
+        self.assertIn('destination = VALUE_TRANSFER_TO', cast_workload)
+        self.assertIn('value = "1"', cast_workload)
+        self.assertIn('gas_limit = 21_000', cast_workload)
 
-    def test_runtime_contender_setup_waits_before_spam(self):
+    def test_runtime_cast_setup_waits_before_spam(self):
         workload_script = (ROOT / "experiments" / "runtime" / "workload.sh").read_text(encoding="utf-8")
-        setup = workload_script.index('"$CONTENDER_IMAGE" setup "$SCENARIO_REF"')
-        delay_message = workload_script.index("Contender setup completed; waiting 30 seconds", setup)
-        delay = workload_script.index("sleep 30", delay_message)
-        workload_start = workload_script.index("WORKLOAD_START_MS=", delay)
-        spam = workload_script.index('"$CONTENDER_IMAGE" spam "$SCENARIO_REF"', workload_start)
-        spam_end = workload_script.index("; then", spam)
+        cast_workload = (ROOT / "experiments" / "runtime" / "cast_workload.py").read_text(encoding="utf-8")
+        setup = cast_workload.index("accounts, contract_address = prepare_accounts(")
+        delay = cast_workload.index("time.sleep(args.start_delay)", setup)
+        workload_start = cast_workload.index("start_ms = time.time_ns()", delay)
+        spam = cast_workload.index("submit_transaction_schedule(", workload_start)
+        window = cast_workload.index("write_workload_window(args, start_ms, end_ms, exit_code)", spam)
 
-        self.assertLess(setup, delay_message)
-        self.assertLess(delay_message, delay)
+        self.assertIn('cast wallet private-key', workload_script)
+        self.assertLess(setup, delay)
         self.assertLess(delay, workload_start)
         self.assertLess(workload_start, spam)
-        self.assertIn('-v "$STATE_DIR:/root/.local/state/contender"', workload_script)
-        for command in (workload_script[setup:delay_message], workload_script[spam:spam_end]):
-            self.assertIn('-r "$RPC_URL"', command)
-            self.assertIn('-p "$PRIVATE_KEY" -a "$ACCOUNTS"', command)
-            self.assertIn('--seed "$SEED"', command)
+        self.assertLess(spam, window)
+        self.assertIn("wait_for_receipts(rpc_url, funding_hashes", cast_workload)
+        self.assertIn("submit_contract_deployment(", cast_workload)
 
     def run_with_stubs(
         self, selection, fail_module=None, config_answers=None, fail_setup_status=None,
