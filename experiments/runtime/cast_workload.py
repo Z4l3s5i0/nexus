@@ -16,6 +16,7 @@ sys.path.insert(0, str(EMPTY_BLOCK_DIR))
 from block_collection import rpc_call, wait_for_receipts
 from run_experiment import WORKLOAD_CALLS, load_workload_bytecode
 from transaction_submission import (
+    CONTRACT_DEPLOYMENT_GAS_LIMIT,
     run_cast,
     run_cast_batch,
     submit_contract_deployment,
@@ -123,11 +124,14 @@ def deploy_workload_contract(args, rpc_url, cast_rpc_url, scenario):
     nonce = rpc_quantity(rpc_url, "eth_getTransactionCount", [sender, "pending"])
     gas_price = rpc_quantity(rpc_url, "eth_gasPrice", [])
     bytecode = load_workload_bytecode(scenario)
-    deployment_gas_limit = rpc_quantity(
-        rpc_url,
-        "eth_estimateGas",
-        [{"from": sender, "data": "0x" + bytecode.removeprefix("0x")}],
-    )
+    if scenario == "uber_v2":
+        deployment_gas_limit = CONTRACT_DEPLOYMENT_GAS_LIMIT
+    else:
+        deployment_gas_limit = rpc_quantity(
+            rpc_url,
+            "eth_estimateGas",
+            [{"from": sender, "data": "0x" + bytecode.removeprefix("0x")}],
+        )
     if deployment_gas_limit < 1:
         raise RuntimeError("RPC eth_estimateGas returned an invalid deployment gas estimate")
     deployment_hash, _ = submit_contract_deployment(

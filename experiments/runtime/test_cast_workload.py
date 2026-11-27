@@ -132,6 +132,42 @@ class CastRuntimeWorkloadTests(unittest.TestCase):
         )
         self.assertEqual(deploy.call_args.args[-1], 420_000)
 
+    def test_uber_v2_deployment_uses_large_gas_limit_instead_of_rpc_estimate(self):
+        args = SimpleNamespace(
+            node_index=0,
+            chain_id=12345,
+            network="suite-net",
+            cast_image="foundry:test",
+            private_key="a" * 64,
+        )
+        sender = "0x" + "1" * 40
+        contract_address = "0x" + "3" * 40
+        with patch.object(cast_workload, "cast_sender", return_value=sender):
+            with patch.object(
+                cast_workload,
+                "rpc_quantity",
+                side_effect=[12345, 99, 950_000_000, 30_000_000],
+            ) as rpc:
+                with patch.object(
+                    cast_workload,
+                    "wait_for_receipts",
+                    return_value={"deploy-hash": {"contractAddress": contract_address}},
+                ):
+                    with patch.object(cast_workload, "load_workload_bytecode", return_value="6000"):
+                        with patch.object(cast_workload, "rpc_call", return_value="0x6000"):
+                            with patch.object(
+                                cast_workload,
+                                "submit_contract_deployment",
+                                return_value=("deploy-hash", None),
+                            ) as deploy:
+                                result = cast_workload.deploy_workload_contract(
+                                    args, "host-rpc", "container-rpc", "uber_v2"
+                                )
+
+        self.assertEqual(result, contract_address)
+        self.assertNotIn("eth_estimateGas", [call.args[1] for call in rpc.call_args_list])
+        self.assertEqual(deploy.call_args.args[-1], 600_000_000)
+
     def test_contract_workload_reuses_address_without_deploying(self):
         args = SimpleNamespace(
             node_index=1,
