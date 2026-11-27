@@ -85,6 +85,18 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertIn("wait_for_receipts(rpc_url, funding_hashes", cast_workload)
         self.assertIn("submit_contract_deployment(", cast_workload)
 
+    def test_runtime_deploys_one_shared_contract_before_node_workloads(self):
+        runtime_runner = (ROOT / "experiments" / "runtime" / "run.sh").read_text(encoding="utf-8")
+
+        deployment = runtime_runner.index("--deploy-contract --contract-address-file")
+        workload_loop = runtime_runner.index("for ((index = 0; index < NODE_COUNT; index++)); do", deployment)
+        workload_launch = runtime_runner.index('WORKLOAD_ARGS+=(--contract-address "$CONTRACT_ADDRESS")', workload_loop)
+
+        self.assertEqual(runtime_runner.count("--deploy-contract"), 1)
+        self.assertIn('if [[ "$WORKLOAD_TYPE" != "value-transfer" ]]; then', runtime_runner)
+        self.assertLess(deployment, workload_loop)
+        self.assertLess(workload_loop, workload_launch)
+
     def run_with_stubs(
         self, selection, fail_module=None, config_answers=None, fail_setup_status=None,
         runner_args=None, private_key="0" * 64, fail_empty_block_count=None,

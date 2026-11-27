@@ -191,15 +191,40 @@ if [[ -z "$NETWORK_NAME" ]]; then
     exit 1
 fi
 
+CONTRACT_ADDRESS=""
+if [[ "$WORKLOAD_TYPE" != "value-transfer" ]]; then
+    CONTRACT_ADDRESS_FILE="$OUTPUT_DIR/workloads/contract_address.txt"
+    runtime_progress "Deploying the shared $WORKLOAD_TYPE contract before starting node workloads."
+    if ! bash "$SCRIPT_DIR/workload.sh" \
+        --node-index 0 --chain-id "$CHAIN_ID" --network "$NETWORK_NAME" \
+        --scenario "$WORKLOAD_TYPE" --accounts "$ACCOUNTS" \
+        --deploy-contract --contract-address-file "$CONTRACT_ADDRESS_FILE" \
+        > "$OUTPUT_DIR/workloads/contract_setup.log" 2>&1; then
+        cat "$OUTPUT_DIR/workloads/contract_setup.log" >&2
+        exit 1
+    fi
+    CONTRACT_ADDRESS="$(<"$CONTRACT_ADDRESS_FILE")"
+    if [[ ! "$CONTRACT_ADDRESS" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+        echo "Error: shared contract setup did not produce a valid address." >&2
+        exit 1
+    fi
+    runtime_progress "Shared contract deployed at $CONTRACT_ADDRESS."
+fi
+
 WORKLOAD_PIDS=()
 runtime_progress "Workload $WORKLOAD_TYPE spam starting on $NODE_COUNT nodes ($DURATION seconds at $TPS TPS per node)."
 for ((index = 0; index < NODE_COUNT; index++)); do
-    bash "$SCRIPT_DIR/workload.sh" \
+    WORKLOAD_ARGS=(
+        bash "$SCRIPT_DIR/workload.sh"
         --node-index "$index" --chain-id "$CHAIN_ID" --network "$NETWORK_NAME" \
         --run-id "$RUN_ID" \
         --window-file "$OUTPUT_DIR/workload_windows/node_$index.json" \
-        --scenario "$WORKLOAD_TYPE" --tps "$TPS" --duration "$DURATION" --accounts "$ACCOUNTS" \
-        > "$OUTPUT_DIR/workloads/node_$index.log" 2>&1 &
+        --scenario "$WORKLOAD_TYPE" --tps "$TPS" --duration "$DURATION" --accounts "$ACCOUNTS"
+    )
+    if [[ -n "$CONTRACT_ADDRESS" ]]; then
+        WORKLOAD_ARGS+=(--contract-address "$CONTRACT_ADDRESS")
+    fi
+    "${WORKLOAD_ARGS[@]}" > "$OUTPUT_DIR/workloads/node_$index.log" 2>&1 &
     WORKLOAD_PIDS+=("$!")
 done
 
@@ -242,7 +267,7 @@ if [[ -n "$SYSTEM_COLLECTOR_PID" ]]; then
     fi
 fi
 
-runtime_progress "Collecting execution logs and node metrics."
+runtime_progress "Collecting execution, consensus, and validation client logs and node metrics."
 bash "$SCRIPT_DIR/capture_logs.sh" --output-dir "$OUTPUT_DIR/logs" --nodes "$NODE_COUNT"
 python3 "$SCRIPT_DIR/collect_logs.py" \
     --metadata "$OUTPUT_DIR/metadata.json" --logs-dir "$OUTPUT_DIR/logs" \
@@ -251,7 +276,7 @@ python3 "$SCRIPT_DIR/collect_logs.py" \
 python3 "$SCRIPT_DIR/collect_node_metrics.py" \
     --metadata "$OUTPUT_DIR/metadata.json" \
     --output "$OUTPUT_DIR/node_metric_coverage.json" --experiment-id "$RUN_ID"
-runtime_progress "Execution logs and node metrics collected."
+runtime_progress "Client logs and node metrics collected."
 
 runtime_progress "Archiving runtime metrics data."
 bash "$NETWORK_SCRIPT" stop-metrics

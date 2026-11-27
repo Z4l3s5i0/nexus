@@ -102,6 +102,72 @@ class NetworkSupportTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Usage:", result.stdout)
 
+    def test_log_capture_scripts_include_consensus_and_validator_services(self):
+        runtime_capture = (ROOT / "experiments" / "runtime" / "capture_logs.sh").read_text(encoding="utf-8")
+        empty_block_capture = (ROOT / "experiments" / "empty-block" / "capture_logs.sh").read_text(encoding="utf-8")
+
+        self.assertIn("cl-node-$index", runtime_capture)
+        self.assertIn("vc-node-$index", runtime_capture)
+        self.assertIn("cl-node-0", empty_block_capture)
+        self.assertIn("vc-node-0", empty_block_capture)
+
+    @unittest.skipIf(os.name == "nt", "Docker log capture integration requires Bash")
+    def test_experiment_log_capture_includes_consensus_and_available_validator_clients(self):
+        with tempfile.TemporaryDirectory(prefix="capture-client-logs-test-") as temp:
+            temp_root = pathlib.Path(temp)
+            bin_dir = temp_root / "bin"
+            bin_dir.mkdir()
+            fake_docker = bin_dir / "docker"
+            fake_docker.write_text(
+                "#!/usr/bin/env bash\n"
+                'if [[ "$1" == "compose" && "$2" == "version" ]]; then exit 0; fi\n'
+                'if [[ "$1" == "compose" && "$*" == *" ps "* ]]; then\n'
+                '  [[ "$*" == *" --all --quiet "* ]] || exit 98\n'
+                '  service="${!#}"\n'
+                '  case "$service" in\n'
+                '    el-node-0) printf "container-el-0\\n" ;;\n'
+                '    el-node-1) printf "container-el-1\\n" ;;\n'
+                '    cl-node-0) printf "container-cl-0\\n" ;;\n'
+                '    cl-node-1) printf "container-cl-1\\n" ;;\n'
+                '    vc-node-0) printf "container-vc-0\\n" ;;\n'
+                '  esac\n'
+                '  exit 0\n'
+                'fi\n'
+                'if [[ "$1" == "logs" ]]; then printf "captured:%s\\n" "${!#}"; exit 0; fi\n'
+                'exit 99\n',
+                encoding="utf-8",
+            )
+            fake_docker.chmod(0o755)
+
+            env = os.environ.copy()
+            env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
+            capture_scripts = (
+                ("runtime", ROOT / "experiments" / "runtime" / "capture_logs.sh", ["--output-dir", "{output}", "--nodes", "2"]),
+                ("empty-block", ROOT / "experiments" / "empty-block" / "capture_logs.sh", ["{output}"]),
+            )
+            for module, script, arguments in capture_scripts:
+                with self.subTest(module=module):
+                    output_dir = temp_root / module
+                    normalized_script = temp_root / f"{module}-capture_logs.sh"
+                    normalized_script.write_text(script.read_text(encoding="utf-8"), encoding="utf-8")
+                    command = [
+                        "bash",
+                        str(normalized_script),
+                        *(str(output_dir) if argument == "{output}" else argument for argument in arguments),
+                    ]
+                    result = subprocess.run(command, env=env, text=True, capture_output=True, check=False)
+
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    expected_services = ["el-node-0", "cl-node-0", "vc-node-0"]
+                    if module == "runtime":
+                        expected_services.extend(["el-node-1", "cl-node-1"])
+                    for service in expected_services:
+                        self.assertEqual(
+                            (output_dir / f"{service}.log").read_text(encoding="utf-8").strip(),
+                            f"captured:container-{service.replace('-node-', '-')}",
+                        )
+                    self.assertFalse((output_dir / "vc-node-1.log").exists())
+
     def test_config_generator_mounts_canonical_output_directory(self):
         script = (NETWORK_SUPPORT / "config_gen.sh").read_text(encoding="utf-8")
 

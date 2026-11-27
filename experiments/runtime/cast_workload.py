@@ -38,15 +38,18 @@ def create_parser():
     parser.add_argument("--node-index", type=int, required=True)
     parser.add_argument("--chain-id", type=int, required=True)
     parser.add_argument("--network", required=True, help="Docker network for the bundled Cast client")
-    parser.add_argument("--run-id", required=True)
-    parser.add_argument("--window-file", type=Path, required=True)
-    parser.add_argument("--scenario", required=True)
-    parser.add_argument("--tps", type=int, required=True)
-    parser.add_argument("--duration", type=int, required=True)
-    parser.add_argument("--accounts", type=int, required=True)
+    parser.add_argument("--run-id")
+    parser.add_argument("--window-file", type=Path)
+    parser.add_argument("--scenario", default="exp/uber")
+    parser.add_argument("--tps", type=int, default=4)
+    parser.add_argument("--duration", type=int, default=300)
+    parser.add_argument("--accounts", type=int, default=4)
     parser.add_argument("--private-key", required=True)
     parser.add_argument("--cast-image", default=CAST_IMAGE)
     parser.add_argument("--start-delay", type=int, default=START_DELAY_SECONDS)
+    parser.add_argument("--deploy-contract", action="store_true")
+    parser.add_argument("--contract-address")
+    parser.add_argument("--contract-address-file", type=Path)
     return parser
 
 
@@ -108,7 +111,51 @@ def cast_sender(private_key, network, cast_image, rpc_url):
     return wallet_address(output)
 
 
-def prepare_accounts(args, rpc_url, cast_rpc_url, mnemonic, scenario):
+def deploy_workload_contract(args, rpc_url, cast_rpc_url, scenario):
+    if scenario == "value-transfer":
+        raise ValueError("value-transfer workloads do not use a contract")
+
+    sender = cast_sender(args.private_key, args.network, args.cast_image, cast_rpc_url)
+    chain_id = rpc_quantity(rpc_url, "eth_chainId", [])
+    if chain_id != args.chain_id:
+        raise RuntimeError(f"RPC chain ID {chain_id} does not match configured chain ID {args.chain_id}")
+
+    nonce = rpc_quantity(rpc_url, "eth_getTransactionCount", [sender, "pending"])
+    gas_price = rpc_quantity(rpc_url, "eth_gasPrice", [])
+    bytecode = load_workload_bytecode(scenario)
+    deployment_gas_limit = rpc_quantity(
+        rpc_url,
+        "eth_estimateGas",
+        [{"from": sender, "data": "0x" + bytecode.removeprefix("0x")}],
+    )
+    if deployment_gas_limit < 1:
+        raise RuntimeError("RPC eth_estimateGas returned an invalid deployment gas estimate")
+    deployment_hash, _ = submit_contract_deployment(
+        None,
+        args.network,
+        args.cast_image,
+        cast_rpc_url,
+        args.private_key,
+        nonce,
+        bytecode,
+        FUNDING_RECEIPT_TIMEOUT,
+        gas_price,
+        deployment_gas_limit,
+    )
+    deployment_receipt = wait_for_receipts(
+        rpc_url, [deployment_hash], FUNDING_RECEIPT_TIMEOUT, 0.25
+    )[deployment_hash]
+    contract_address = deployment_receipt.get("contractAddress")
+    if not isinstance(contract_address, str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", contract_address):
+        raise RuntimeError(f"Cast contract deployment {deployment_hash} did not return a valid address")
+    deployed_code = rpc_call(rpc_url, "eth_getCode", [contract_address, "latest"], 30)
+    if not deployed_code or deployed_code == "0x":
+        raise RuntimeError(f"contract deployment at {contract_address} was not confirmed by eth_getCode")
+    print(f"Cast deployed {scenario} contract at {contract_address}.", flush=True)
+    return contract_address
+
+
+def prepare_accounts(args, rpc_url, cast_rpc_url, mnemonic, scenario, contract_address=None):
     sender = cast_sender(args.private_key, args.network, args.cast_image, cast_rpc_url)
     accounts = derive_accounts(args.node_index, args.accounts, mnemonic, args.network, args.cast_image)
     if any(address.lower() == sender.lower() for _, address in accounts):
@@ -117,6 +164,16 @@ def prepare_accounts(args, rpc_url, cast_rpc_url, mnemonic, scenario):
     chain_id = rpc_quantity(rpc_url, "eth_chainId", [])
     if chain_id != args.chain_id:
         raise RuntimeError(f"RPC chain ID {chain_id} does not match configured chain ID {args.chain_id}")
+
+    if scenario == "value-transfer":
+        if contract_address is not None:
+            raise RuntimeError("value-transfer workloads must not receive a contract address")
+    else:
+        if not isinstance(contract_address, str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", contract_address):
+            raise RuntimeError("a valid shared contract address is required for contract workloads")
+        deployed_code = rpc_call(rpc_url, "eth_getCode", [contract_address, "latest"], 30)
+        if not deployed_code or deployed_code == "0x":
+            raise RuntimeError(f"shared contract at {contract_address} is not available on this node")
 
     gas_price = rpc_quantity(rpc_url, "eth_gasPrice", [])
     funding_nonce = rpc_quantity(rpc_url, "eth_getTransactionCount", [sender, "pending"])
@@ -137,32 +194,6 @@ def prepare_accounts(args, rpc_url, cast_rpc_url, mnemonic, scenario):
     )
     wait_for_receipts(rpc_url, funding_hashes, FUNDING_RECEIPT_TIMEOUT, 0.25)
     print(f"Cast funded {len(accounts)} workload account(s).", flush=True)
-
-    contract_address = None
-    if scenario != "value-transfer":
-        nonce = rpc_quantity(rpc_url, "eth_getTransactionCount", [sender, "pending"])
-        bytecode = load_workload_bytecode(scenario)
-        deployment_hash, _ = submit_contract_deployment(
-            None,
-            args.network,
-            args.cast_image,
-            cast_rpc_url,
-            args.private_key,
-            nonce,
-            bytecode,
-            FUNDING_RECEIPT_TIMEOUT,
-            gas_price,
-        )
-        deployment_receipt = wait_for_receipts(
-            rpc_url, [deployment_hash], FUNDING_RECEIPT_TIMEOUT, 0.25
-        )[deployment_hash]
-        contract_address = deployment_receipt.get("contractAddress")
-        if not isinstance(contract_address, str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", contract_address):
-            raise RuntimeError(f"Cast contract deployment {deployment_hash} did not return a valid address")
-        deployed_code = rpc_call(rpc_url, "eth_getCode", [contract_address, "latest"], 30)
-        if not deployed_code or deployed_code == "0x":
-            raise RuntimeError(f"contract deployment at {contract_address} was not confirmed by eth_getCode")
-        print(f"Cast deployed {scenario} contract at {contract_address}.", flush=True)
 
     return accounts, contract_address
 
@@ -228,8 +259,18 @@ def run(args):
     scenario = scenario_name(args.scenario)
     host_rpc_url = f"http://127.0.0.1:{8545 + args.node_index}"
     cast_rpc_url = f"http://el-node-{args.node_index}:{8545 + args.node_index}"
+    if args.deploy_contract:
+        if args.contract_address_file is None:
+            raise ValueError("--contract-address-file is required when deploying the shared contract")
+        contract_address = deploy_workload_contract(args, host_rpc_url, cast_rpc_url, scenario)
+        args.contract_address_file.parent.mkdir(parents=True, exist_ok=True)
+        args.contract_address_file.write_text(contract_address + "\n", encoding="utf-8")
+        return 0
+    if not args.run_id or args.window_file is None:
+        raise ValueError("--run-id and --window-file are required for a workload")
+
     accounts, contract_address = prepare_accounts(
-        args, host_rpc_url, cast_rpc_url, mnemonic, scenario
+        args, host_rpc_url, cast_rpc_url, mnemonic, scenario, args.contract_address
     )
     print(f"Cast setup complete; waiting {args.start_delay} seconds before transaction spam.", flush=True)
     time.sleep(args.start_delay)

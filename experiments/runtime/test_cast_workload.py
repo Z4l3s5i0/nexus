@@ -1,5 +1,6 @@
 import pathlib
 import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -90,6 +91,112 @@ class CastRuntimeWorkloadTests(unittest.TestCase):
         self.assertEqual([transaction["nonce"] for transaction in transactions], [5, 6])
         self.assertTrue(all(transaction["value"] == "100ether" for transaction in transactions))
         receipts.assert_called_once()
+
+    def test_shared_contract_deployment_uses_rpc_estimated_gas(self):
+        args = SimpleNamespace(
+            node_index=0,
+            chain_id=12345,
+            network="suite-net",
+            cast_image="foundry:test",
+            private_key="a" * 64,
+        )
+        sender = "0x" + "1" * 40
+        account = ("key-one", "0x" + "2" * 40)
+        contract_address = "0x" + "3" * 40
+        with patch.object(cast_workload, "cast_sender", return_value=sender):
+            with patch.object(
+                cast_workload,
+                "rpc_quantity",
+                side_effect=[12345, 99, 2_500_000_000, 420_000],
+            ) as rpc:
+                with patch.object(
+                    cast_workload,
+                    "wait_for_receipts",
+                    return_value={"deploy-hash": {"contractAddress": contract_address}},
+                ):
+                    with patch.object(cast_workload, "load_workload_bytecode", return_value="6000"):
+                        with patch.object(cast_workload, "rpc_call", return_value="0x6000"):
+                            with patch.object(
+                                cast_workload,
+                                "submit_contract_deployment",
+                                return_value=("deploy-hash", None),
+                            ) as deploy:
+                                result = cast_workload.deploy_workload_contract(
+                                    args, "host-rpc", "container-rpc", "counter"
+                                )
+
+        self.assertEqual(result, contract_address)
+        self.assertEqual(
+            rpc.call_args_list[-1].args,
+            ("host-rpc", "eth_estimateGas", [{"from": sender, "data": "0x6000"}]),
+        )
+        self.assertEqual(deploy.call_args.args[-1], 420_000)
+
+    def test_contract_workload_reuses_address_without_deploying(self):
+        args = SimpleNamespace(
+            node_index=1,
+            accounts=1,
+            chain_id=12345,
+            network="suite-net",
+            cast_image="foundry:test",
+            private_key="a" * 64,
+        )
+        sender = "0x" + "1" * 40
+        account = ("key-one", "0x" + "2" * 40)
+        contract_address = "0x" + "3" * 40
+        with patch.object(cast_workload, "cast_sender", return_value=sender):
+            with patch.object(cast_workload, "derive_accounts", return_value=[account]):
+                with patch.object(cast_workload, "rpc_quantity", side_effect=[12345, 2_500_000_000, 5]):
+                    with patch.object(cast_workload, "rpc_call", return_value="0x6000") as rpc:
+                        with patch.object(cast_workload, "submit_transactions", return_value=["funding-hash"]) as submit:
+                            with patch.object(cast_workload, "wait_for_receipts") as receipts:
+                                with patch.object(cast_workload, "deploy_workload_contract") as deploy:
+                                    actual_accounts, actual_contract = cast_workload.prepare_accounts(
+                                        args,
+                                        "host-rpc",
+                                        "container-rpc",
+                                        "seed",
+                                        "counter",
+                                        contract_address,
+                                    )
+
+        self.assertEqual(actual_accounts, [account])
+        self.assertEqual(actual_contract, contract_address)
+        rpc.assert_called_once_with("host-rpc", "eth_getCode", [contract_address, "latest"], 30)
+        self.assertEqual(
+            [transaction["to_address"] for transaction in submit.call_args.args[4]],
+            [account[1]],
+        )
+        receipts.assert_called_once()
+        deploy.assert_not_called()
+
+    def test_deploy_only_writes_shared_contract_address(self):
+        args = SimpleNamespace(
+            node_index=0,
+            chain_id=12345,
+            network="suite-net",
+            cast_image="foundry:test",
+            private_key="a" * 64,
+            tps=4,
+            duration=300,
+            accounts=4,
+            start_delay=30,
+            scenario="counter",
+            deploy_contract=True,
+            contract_address_file=None,
+            contract_address=None,
+            run_id=None,
+            window_file=None,
+        )
+        contract_address = "0x" + "3" * 40
+        with tempfile.TemporaryDirectory() as temp_dir:
+            args.contract_address_file = pathlib.Path(temp_dir) / "contract_address.txt"
+            with patch.dict("os.environ", {"EXPERIMENT_WALLET_MNEMONIC": "seed phrase"}):
+                with patch.object(cast_workload, "deploy_workload_contract", return_value=contract_address) as deploy:
+                    self.assertEqual(cast_workload.run(args), 0)
+
+            self.assertEqual(args.contract_address_file.read_text(encoding="utf-8"), contract_address + "\n")
+            deploy.assert_called_once()
 
 
 if __name__ == "__main__":
