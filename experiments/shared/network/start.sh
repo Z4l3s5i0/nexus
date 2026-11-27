@@ -253,10 +253,14 @@ for i in $(seq 0 $((NODES - 1))); do
 
     # Append Execution Client
     FLAGS="--data-dir /app/data --genesis-path /app/startup/genesis.json --verbose 2 --peer-name $PEER_NAME --eth-rpc-port $ETH_PORT --auth-rpc-port $AUTH_PORT --p2p-port $P2P_PORT --discovery-port $DISC_PORT --metrics-port $METRICS_PORT --auth-rpc-jwt-path /app/startup/jwt_$i.hex --bootstrap-registry http://metrics-server:9100 --ext-ip $EXT_IP"
+    ENVIRONMENT_STR=""
     
     if [ "$TYPE" = "geth" ]; then
         IMAGE_STR="image: $GETH_IMAGE"
         BUILD_STR="# Pinned upstream Geth image"
+        ENVIRONMENT_STR="environment:
+      GETH_RPC_GASCAP: \"0\"
+      GETH_RPC_TXFEECAP: \"0\""
         ENTRYPOINT_STR="# Geth uses the pinned image entrypoint"
         COMMAND_STR="command:
       - --datadir=/app/data
@@ -354,6 +358,7 @@ for i in $(seq 0 $((NODES - 1))); do
   el-node-$i:
     $IMAGE_STR
     $BUILD_STR
+    $ENVIRONMENT_STR
     labels:
       experiment_node_index: "$i"
       experiment_client: "$NODE_CLIENT_LABEL"

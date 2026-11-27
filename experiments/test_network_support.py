@@ -183,6 +183,8 @@ class NetworkSupportTests(unittest.TestCase):
 
         self.assertIn("- --rpc.gascap=0", geth_config)
         self.assertIn("- --rpc.txfeecap=0", geth_config)
+        self.assertIn(r'GETH_RPC_GASCAP: \"0\"', geth_config)
+        self.assertIn(r'GETH_RPC_TXFEECAP: \"0\"', geth_config)
 
     def test_reth_registration_exposes_admin_rpc_and_reads_node_id(self):
         launcher = (NETWORK_SUPPORT / "start.sh").read_text(encoding="utf-8")
