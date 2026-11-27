@@ -15,7 +15,7 @@ The project includes a comprehensive experimentation pipeline for benchmarking N
 
 ## Primary workflow: modular suite
 
-The supported entry point is now [`experiments/run.sh`](../experiments/run.sh). It prompts for one or more experiments, preserves the selected order, offers module-specific run settings with defaults that can be accepted by pressing Enter, runs [`experiments/setup.sh`](../experiments/setup.sh) once, and stops dispatching if a module fails. Choose `6` to run runtime, empty-block, startup, Hive compliance, and size comparison in that order. Choose `7` to reevaluate saved reports without setup or workload execution. See [`experiments/README.md`](../experiments/README.md) for all prompts and defaults.
+The supported entry point is now [`experiments/run.sh`](../experiments/run.sh). It prompts for one or more experiments, preserves the selected order, offers module-specific run settings with defaults that can be accepted by pressing Enter, runs [`experiments/setup.sh`](../experiments/setup.sh) once, and stops dispatching if a module fails. Choose `6` to run runtime, empty-block, startup, Hive compliance, and size comparison in that order; choose `8` (or enter `test`) for one quick pass through the experiment variants, designed to finish in under an hour when dependencies and images are ready. Choose `7` to reevaluate saved reports without setup or workload execution. See [`experiments/README.md`](../experiments/README.md) for the test preset and all prompts/defaults.
 
 ```bash
 bash experiments/run.sh

@@ -402,6 +402,60 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertIn("compliance", calls)
         self.assertIn("size", calls)
 
+    def test_test_preset_runs_each_experiment_variant_once_with_short_defaults(self):
+        for selection in ("test", "8"):
+            with self.subTest(selection=selection):
+                result, calls = self.run_with_stubs(selection)
+
+                self.assertEqual(result.returncode, 0, f"{result.stderr}\n{result.stdout}")
+                self.assertEqual(calls[0], "setup:runtime,empty-block,startup,compliance,size")
+                runtime_args = [call for call in calls if call.startswith("args:runtime:")]
+                self.assertEqual(len(runtime_args), 5)
+                runtime_workloads = {
+                    "counter": "--accounts 17 --tps 1 --duration 10 --wait-duration 5 --chain-id 12345",
+                    "dota": "--accounts 66 --tps 1 --duration 10 --wait-duration 5 --chain-id 12345",
+                    "uber": "--accounts 4 --tps 1 --duration 10 --wait-duration 5 --chain-id 12345",
+                    "uber_v2": "--accounts 4 --tps 1 --duration 10 --wait-duration 5 --chain-id 12345",
+                    "value-transfer": "--accounts 10 --tps 1 --duration 10 --wait-duration 5 --chain-id 12345",
+                }
+                for call in runtime_args:
+                    workload = call.rsplit("--workload-type exp/", 1)[1]
+                    self.assertIn(runtime_workloads[workload], call)
+                    self.assertIn(
+                        "--reset-network --linux-nodes 1 --wasix-nodes 1 --geth-nodes 1 --reth-nodes 1",
+                        call,
+                    )
+                self.assertEqual(
+                    {call.rsplit("--workload-type exp/", 1)[1] for call in runtime_args},
+                    set(runtime_workloads),
+                )
+
+                empty_args = [call for call in calls if call.startswith("args:empty-block:")]
+                self.assertEqual(len(empty_args), 20)
+                self.assertEqual(
+                    {re.search(r"--client ([^ ]+)", call).group(1) for call in empty_args},
+                    {"native", "wasix", "geth", "reth"},
+                )
+                self.assertEqual(
+                    {re.search(r"--workload ([^ ]+)", call).group(1) for call in empty_args if "--workload " in call},
+                    {"counter", "dota", "uber", "uber_v2"},
+                )
+                self.assertTrue(all("--counts 1" in call for call in empty_args))
+                self.assertTrue(all("--blocks-per-count 1 --max-attempts 1 --receipt-timeout 60 --block-timeout 30" in call for call in empty_args))
+                self.assertEqual(sum("--workload " not in call for call in empty_args), 4)
+
+                self.assertIn(
+                    "args:startup:--configs geth,reth,nexus-linux,nexus-wasix-docker,nexus-wasmer --iterations 1 --timeout 60",
+                    calls,
+                )
+                self.assertIn(
+                    "args:compliance:--clients go-ethereum_v1.15.11,reth_v2.5.2 --parallelism 5 --timeout 600",
+                    calls,
+                )
+                rows = list(csv.DictReader(io.StringIO(self.last_logs["overview.csv"])))
+                self.assertEqual(len(rows), 29)
+                self.assertTrue(all(row["status"] == "passed" for row in rows))
+
     def test_single_experiment_runtime_defaults_match_all_experiment_defaults(self):
         runtime_result, runtime_calls = self.run_with_stubs("1", config_answers="n\n")
 

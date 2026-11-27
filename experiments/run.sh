@@ -14,8 +14,9 @@ usage() {
 Usage: bash experiments/run.sh [--detach] [--reset-network] [--verbosity info|debug]
 
 Choose experiments by entering their numbers separated by commas, in the order
-they should run. Enter 6 to run the full suite in standard order, or 7 to
-reevaluate reports from saved results without rerunning experiments.
+they should run. Enter 6 to run the full suite in standard order, 8 (or test)
+to run one quick pass through the experiment variants, or 7 to reevaluate
+reports from saved results without rerunning experiments.
 
   1) Runtime
   2) Empty block
@@ -24,9 +25,11 @@ reevaluate reports from saved results without rerunning experiments.
   5) Size comparison
   6) All experiments
   7) Evaluate saved results
+  8) Test preset (one pass per variant)
 
-For each selected run, press Enter to use the module's defaults or choose
-custom values before the shared setup starts.
+For regular selections, press Enter to use the module's defaults or choose
+custom values before the shared setup starts. The test preset uses short,
+fixed settings and does not prompt for customization.
 
   --detach                 Continue the selected suite in a persistent session
   --reset-network          Allow runtime, empty-block, and startup runs to clear generated network data
@@ -285,6 +288,42 @@ configure_module() {
     local has_nonzero_count=false eb_clients eb_clients_normalized eb_client eb_workload eb_reset_network startup_configs_default startup_wasix_eth_root startup_wasix_wasm_default compliance_clients_default
     local -n module_args="${experiment//-/_}_args"
     module_args=()
+
+    if [[ "$TEST_PRESET" == true ]]; then
+        case "$experiment" in
+            runtime)
+                runtime_profiles=()
+                add_runtime_profile 'test-all-clients' 1 1 1 1
+                runtime_workloads=(exp/counter exp/dota exp/uber exp/uber_v2 exp/value-transfer)
+                runtime_iterations=1
+                runtime_args=(--chain-id 12345)
+                echo 'Test preset runtime: five workloads, one node per client, one run each.'
+                ;;
+            empty-block)
+                source "$REPO_ROOT/experiments/empty-block/defaults.sh"
+                empty_block_clients=(native wasix geth reth)
+                empty_block_workloads=(none counter dota uber uber_v2)
+                empty_block_counts=(1)
+                has_nonzero_count=true
+                empty_block_args=(--chain-id 23456 --blocks-per-count 1 --max-attempts 1
+                    --receipt-timeout 60 --block-timeout 30 --poll-interval 1 --reset-network)
+                if [[ -z "${EB_PRIVATE_KEY:-}" ]]; then EB_PRIVATE_KEY="$EMPTY_BLOCK_DEFAULT_PRIVATE_KEY"; fi
+                echo 'Test preset empty-block: all client/workload combinations, one transaction sample each.'
+                ;;
+            startup)
+                startup_args=(--configs geth,reth,nexus-linux,nexus-wasix-docker,nexus-wasmer --iterations 1 --timeout 60)
+                echo 'Test preset startup: all five configurations, one run each.'
+                ;;
+            compliance)
+                compliance_args=(--clients go-ethereum_v1.15.11,reth_v2.5.2 --parallelism 5 --timeout 600)
+                echo 'Test preset compliance: both default Hive clients, one run each, 600-second per-client timeout.'
+                ;;
+            size)
+                echo 'Test preset size: one source and binary size comparison.'
+                ;;
+        esac
+        return 0
+    fi
 
     case "$experiment" in
         runtime)
@@ -579,6 +618,7 @@ declare -a runtime_workloads=(exp/uber exp/uber_v2)
 declare -a runtime_profiles=()
 FULL_RUNTIME_DEFAULTS=false
 FULL_EMPTY_BLOCK_DEFAULTS=false
+TEST_PRESET=false
 declare -a empty_block_clients=(native wasix geth reth)
 declare -a empty_block_workloads=(none)
 declare -a empty_block_counts=()
@@ -650,6 +690,11 @@ while true; do
         ALL_EXPERIMENTS_SELECTED=true
         break
     fi
+    if [[ "$mode" == run && ( "$selection" == "8" || "${selection,,}" == "test" ) ]]; then
+        selected=("${labels[@]}")
+        TEST_PRESET=true
+        break
+    fi
 
     IFS=',' read -r -a choices <<< "$selection"
     declare -A seen=()
@@ -657,7 +702,7 @@ while true; do
     selected=()
     for choice in "${choices[@]}"; do
         if [[ ! "$choice" =~ ^[1-5]$ ]]; then
-            echo "Invalid selection '$choice'; use numbers 1-5, a comma-separated list, or 6 for all." >&2
+            echo "Invalid selection '$choice'; use numbers 1-5, a comma-separated list, 6 for all, or 8/test for the test preset." >&2
             valid=false
             break
         fi
@@ -789,6 +834,7 @@ if [[ -z "$RESUME_SESSION" ]]; then
                 printf 'ALL_EXPERIMENTS_SELECTED=%q\n' "$ALL_EXPERIMENTS_SELECTED"
                 printf 'FULL_RUNTIME_DEFAULTS=%q\n' "$FULL_RUNTIME_DEFAULTS"
                 printf 'FULL_EMPTY_BLOCK_DEFAULTS=%q\n' "$FULL_EMPTY_BLOCK_DEFAULTS"
+                printf 'TEST_PRESET=%q\n' "$TEST_PRESET"
                 printf 'mode=%q\n' "$mode"
                 printf 'VERBOSITY=%q\n' "$VERBOSITY"
                 printf 'EXPERIMENTS_SELECTED=%q\n' "$EXPERIMENTS_SELECTED"
@@ -855,9 +901,9 @@ for experiment in "${selected[@]}"; do
     if [[ "$experiment" == empty-block ]]; then
         client_count="${#empty_block_clients[@]}"
         workload_count="${#empty_block_workloads[@]}"
-        if [[ "$ALL_EXPERIMENTS_SELECTED" == true || "$FULL_EMPTY_BLOCK_DEFAULTS" == true ]]; then
+        if [[ "$ALL_EXPERIMENTS_SELECTED" == true || "$FULL_EMPTY_BLOCK_DEFAULTS" == true || "$TEST_PRESET" == true ]]; then
             count_count="${#empty_block_counts[@]}"
-            iterations=3
+            [[ "$TEST_PRESET" == true ]] || iterations=3
         fi
     fi
     for ((iteration = 1; iteration <= iterations; iteration++)); do
@@ -888,6 +934,14 @@ for experiment in "${selected[@]}"; do
                                 value-transfer) runtime_workload_args=(--accounts 10 --tps 200 --duration 10 --wait-duration 900 --chain-id 12345) ;;
                             esac
                             runtime_workload_args+=(--reset-network)
+                        elif [[ "$TEST_PRESET" == true ]]; then
+                            case "$workload_slug" in
+                                counter) runtime_workload_args=(--accounts 17 --tps 1 --duration 10 --wait-duration 5 --chain-id 12345) ;;
+                                dota) runtime_workload_args=(--accounts 66 --tps 1 --duration 10 --wait-duration 5 --chain-id 12345) ;;
+                                uber|uber_v2) runtime_workload_args=(--accounts 4 --tps 1 --duration 10 --wait-duration 5 --chain-id 12345) ;;
+                                value-transfer) runtime_workload_args=(--accounts 10 --tps 1 --duration 10 --wait-duration 5 --chain-id 12345) ;;
+                            esac
+                            runtime_workload_args+=(--reset-network)
                         fi
                         task_name="runtime/$workload_slug"
                         if [[ -n "$profile_name" ]]; then
@@ -901,13 +955,13 @@ for experiment in "${selected[@]}"; do
                     elif [[ "$experiment" == empty-block ]]; then
                         empty_block_client="${empty_block_clients[$((client_index - 1))]}"
                         empty_block_workload="${empty_block_workloads[$((workload_index - 1))]}"
-                        if [[ "$ALL_EXPERIMENTS_SELECTED" == true || "$FULL_EMPTY_BLOCK_DEFAULTS" == true ]]; then
+                        if [[ "$ALL_EXPERIMENTS_SELECTED" == true || "$FULL_EMPTY_BLOCK_DEFAULTS" == true || "$TEST_PRESET" == true ]]; then
                             burst_count="${empty_block_counts[$((count_index - 1))]}"
                         else
                             burst_count=''
                         fi
                         count_progress=''
-                        if [[ "$ALL_EXPERIMENTS_SELECTED" == true || "$FULL_EMPTY_BLOCK_DEFAULTS" == true ]]; then
+                        if [[ "$ALL_EXPERIMENTS_SELECTED" == true || "$FULL_EMPTY_BLOCK_DEFAULTS" == true || "$TEST_PRESET" == true ]]; then
                             if (( 10#$burst_count == 0 )); then
                                 count_progress="; step $count_index of $count_count: empty-block baseline (0 transactions)"
                             else
@@ -921,7 +975,7 @@ for experiment in "${selected[@]}"; do
                         if (( workload_count > 1 )); then
                             EXPERIMENT_RUN_ID+="-${workload_slug}"
                         fi
-                        if [[ "$ALL_EXPERIMENTS_SELECTED" == true || "$FULL_EMPTY_BLOCK_DEFAULTS" == true ]]; then
+                        if [[ "$ALL_EXPERIMENTS_SELECTED" == true || "$FULL_EMPTY_BLOCK_DEFAULTS" == true || "$TEST_PRESET" == true ]]; then
                             task_name+="/count-$burst_count"
                             EXPERIMENT_RUN_ID+="-count-$burst_count"
                             task_name+="/repeat-$iteration"
@@ -929,7 +983,7 @@ for experiment in "${selected[@]}"; do
                         fi
                         module_command=(bash "$module_script" --client "$empty_block_client" "${module_args[@]}")
                         [[ "$empty_block_workload" == none ]] || module_command+=(--workload "$empty_block_workload")
-                        if [[ "$ALL_EXPERIMENTS_SELECTED" == true || "$FULL_EMPTY_BLOCK_DEFAULTS" == true ]]; then
+                        if [[ "$ALL_EXPERIMENTS_SELECTED" == true || "$FULL_EMPTY_BLOCK_DEFAULTS" == true || "$TEST_PRESET" == true ]]; then
                             module_command+=(--counts "$burst_count")
                         fi
                         echo "--- Empty-block run (client: $empty_block_client; workload: $workload_slug${count_progress}) (repeat $iteration of $iterations; client $client_index of $client_count; workload $workload_index of $workload_count) ---"
