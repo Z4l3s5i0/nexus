@@ -9,8 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-DEFAULT_CLIENTS = ("go-ethereum_v1.15.11", "reth_v2.5.2")
-CLIENTS = DEFAULT_CLIENTS + ("wasix-r-eth", "wasix-w-eth")
+DEFAULT_CLIENTS = ("wasix-w-eth", "wasix-r-eth", "go-ethereum_v1.15.11", "reth_v2.5.2")
+CLIENTS = DEFAULT_CLIENTS
 
 
 def container_name(run_id, client):
@@ -121,7 +121,7 @@ def main():
     parser.add_argument("--results", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--parallelism", type=int, default=20)
-    parser.add_argument("--timeout", type=int, default=3600)
+    parser.add_argument("--timeout", type=int, default=1800)
     args = parser.parse_args()
     clients = [client for client in args.clients.split(",") if client]
     if not clients or any(client not in CLIENTS for client in clients):

@@ -468,7 +468,7 @@ class ExperimentRunnerTests(unittest.TestCase):
                     calls,
                 )
                 self.assertIn(
-                    "args:compliance:--clients go-ethereum_v1.15.11,reth_v2.5.2 --parallelism 5 --timeout 600",
+                    "args:compliance:--clients wasix-w-eth --parallelism 5 --timeout 1800",
                     calls,
                 )
                 rows = list(csv.DictReader(io.StringIO(self.last_logs["overview.csv"])))
@@ -692,7 +692,7 @@ class ExperimentRunnerTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
-            "args:compliance:--clients go-ethereum_v1.15.11,reth_v2.5.2 --parallelism 5 --timeout 3600",
+            "args:compliance:--clients wasix-w-eth,wasix-r-eth,go-ethereum_v1.15.11,reth_v2.5.2 --parallelism 5 --timeout 3600",
             calls,
         )
 

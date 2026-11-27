@@ -315,8 +315,8 @@ configure_module() {
                 echo 'Test preset startup: all five configurations, one run each.'
                 ;;
             compliance)
-                compliance_args=(--clients go-ethereum_v1.15.11,reth_v2.5.2 --parallelism 5 --timeout 600)
-                echo 'Test preset compliance: both default Hive clients, one run each, 600-second per-client timeout.'
+                compliance_args=(--clients wasix-w-eth --parallelism 5 --timeout 1800)
+                echo 'Test preset compliance: WASIX Ethereum only, one run, 1800-second per-client timeout.'
                 ;;
             size)
                 echo 'Test preset size: one source and binary size comparison.'
@@ -479,8 +479,8 @@ configure_module() {
             ;;
         compliance)
             compliance_parallelism_default=5
-            compliance_clients_default='go-ethereum_v1.15.11,reth_v2.5.2'
-            if prompt_customize compliance "Geth v1.15.11 and Reth v2.5.2; hive-custom:latest; parallelism $compliance_parallelism_default; timeout 3600 seconds; build images"; then
+            compliance_clients_default='wasix-w-eth,wasix-r-eth,go-ethereum_v1.15.11,reth_v2.5.2'
+            if prompt_customize compliance "WASIX, native, Geth v1.15.11, and Reth v2.5.2; hive-custom:latest; parallelism $compliance_parallelism_default; timeout 3600 seconds per client; build images"; then
                 while true; do
                     prompt_value hive_clients 'Hive clients (comma-separated)' "$compliance_clients_default" text || return $?
                     if validate_csv_choices "$hive_clients" 'go-ethereum_v1.15.11,reth_v2.5.2,wasix-r-eth,wasix-w-eth'; then break; fi

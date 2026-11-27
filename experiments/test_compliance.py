@@ -28,9 +28,29 @@ compliance_report = load_report_module()
 
 
 class ComplianceExperimentTests(unittest.TestCase):
-    def test_pinned_upstream_client_selectors_match_other_experiment_versions(self):
-        self.assertEqual(run_suite.DEFAULT_CLIENTS, ("go-ethereum_v1.15.11", "reth_v2.5.2"))
-        self.assertEqual(run_suite.CLIENTS[2:], ("wasix-r-eth", "wasix-w-eth"))
+    def test_default_timeout_is_1800_seconds_per_client(self):
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "run_suite.py",
+                "--workspace-root", "/tmp/workspace",
+                "--logs-dir", "/tmp/logs",
+                "--results", "/tmp/results.jsonl",
+                "--run-id", "run-1",
+            ],
+        ):
+            with patch.object(run_suite, "run_clients", return_value=[]) as run_clients:
+                self.assertEqual(run_suite.main(), 0)
+
+        self.assertEqual(run_clients.call_args.args[-1], 1800)
+
+    def test_default_hive_clients_cover_all_clients_in_requested_order(self):
+        self.assertEqual(
+            run_suite.DEFAULT_CLIENTS,
+            ("wasix-w-eth", "wasix-r-eth", "go-ethereum_v1.15.11", "reth_v2.5.2"),
+        )
+        self.assertEqual(run_suite.CLIENTS, run_suite.DEFAULT_CLIENTS)
 
         for client in run_suite.DEFAULT_CLIENTS:
             command = run_suite.build_hive_command(

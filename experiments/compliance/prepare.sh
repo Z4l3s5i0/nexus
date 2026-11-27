@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-CLIENTS="go-ethereum_v1.15.11,reth_v2.5.2"
+CLIENTS="wasix-w-eth,wasix-r-eth,go-ethereum_v1.15.11,reth_v2.5.2"
 HIVE_IMAGE="hive-custom:latest"
 BASE_REGISTRY="docker.io/z4l3s5i0"
 OUTPUT_DIR=""
