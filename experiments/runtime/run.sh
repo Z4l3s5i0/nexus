@@ -162,6 +162,8 @@ for ((index = 0; index < NODE_COUNT; index++)); do
     fi
 done
 runtime_progress "Runtime network and execution nodes are ready."
+runtime_progress "Waiting 60 seconds for execution nodes to settle before starting workloads."
+sleep 60
 
 python3 "$SCRIPT_DIR/capture_metadata.py" \
     --output "$OUTPUT_DIR/metadata.json" \
