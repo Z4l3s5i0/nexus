@@ -85,8 +85,10 @@ if [ "$CLEANUP" = true ]; then
         $COMPOSE_CMD -f "$COMPOSE_FILE" down --volumes --remove-orphans || true
     fi
 
-    # Use sudo to force-remove files owned by root
-    sudo rm -rf startup_v2 data_v2
+    # Remove as the current user when possible; never wait for an interactive sudo prompt.
+    if ! rm -rf startup_v2 data_v2; then
+        sudo -n rm -rf startup_v2 data_v2
+    fi
 fi
 
 # Ensure startup_v2 directory exists

@@ -9,7 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-CLIENTS = ("wasix-r-eth", "wasix-w-eth")
+DEFAULT_CLIENTS = ("go-ethereum_v1.15.11", "reth_v2.5.2")
+CLIENTS = DEFAULT_CLIENTS + ("wasix-r-eth", "wasix-w-eth")
 
 
 def container_name(run_id, client):
@@ -112,8 +113,8 @@ def run_clients(clients, image, workspace_root, logs_dir, results_path, run_id, 
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run the custom clients against Hive ethereum/engine.")
-    parser.add_argument("--clients", default=",".join(CLIENTS))
+    parser = argparse.ArgumentParser(description="Run selected clients against Hive ethereum/engine.")
+    parser.add_argument("--clients", default=",".join(DEFAULT_CLIENTS))
     parser.add_argument("--image", default="hive-custom:latest")
     parser.add_argument("--workspace-root", required=True)
     parser.add_argument("--logs-dir", required=True)

@@ -60,10 +60,8 @@ stop() {
     fi
     compose down --remove-orphans
     if [[ "${EXPERIMENT_NETWORK_CLEAN_DATA:-false}" == true ]]; then
-        if [[ "$EUID" -eq 0 ]]; then
-            rm -rf "$REPO_ROOT/startup_v2" "$REPO_ROOT/data_v2"
-        else
-            sudo rm -rf "$REPO_ROOT/startup_v2" "$REPO_ROOT/data_v2"
+        if ! rm -rf "$REPO_ROOT/startup_v2" "$REPO_ROOT/data_v2"; then
+            sudo -n rm -rf "$REPO_ROOT/startup_v2" "$REPO_ROOT/data_v2"
         fi
     fi
 }

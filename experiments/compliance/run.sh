@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RUN_ID="${EXPERIMENT_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 OUTPUT_ROOT="${EXPERIMENTS_OUTPUT_ROOT:-$REPO_ROOT/experiment-results}/compliance"
-CLIENTS="wasix-r-eth,wasix-w-eth"
+CLIENTS="go-ethereum_v1.15.11,reth_v2.5.2"
 HIVE_IMAGE="hive-custom:latest"
 PARALLELISM=20
 TIMEOUT=3600
@@ -22,7 +22,7 @@ usage() {
 Usage: bash experiments/compliance/run.sh [options]
 
 Options:
-  --clients LIST       Comma-separated custom Hive clients (default: $CLIENTS)
+  --clients LIST       Comma-separated Hive client selectors (default: $CLIENTS)
   --hive-image IMAGE   Hive runner image (default: $HIVE_IMAGE)
   --parallelism N      Hive simulation parallelism (default: $PARALLELISM)
   --timeout SECONDS   Per-client suite timeout (default: $TIMEOUT)
@@ -60,8 +60,8 @@ if (( ${#SELECTED_CLIENTS[@]} == 0 )); then
 fi
 for client in "${SELECTED_CLIENTS[@]}"; do
     case "$client" in
-        wasix-r-eth|wasix-w-eth) ;;
-        *) echo "Error: unsupported custom Hive client '$client'." >&2; exit 2 ;;
+        go-ethereum_v1.15.11|reth_v2.5.2|wasix-r-eth|wasix-w-eth) ;;
+        *) echo "Error: unsupported Hive client '$client'." >&2; exit 2 ;;
     esac
 done
 

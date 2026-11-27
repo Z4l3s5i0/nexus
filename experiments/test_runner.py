@@ -234,15 +234,20 @@ class ExperimentRunnerTests(unittest.TestCase):
             return result, calls
 
     def test_selected_experiments_run_in_entered_order_after_one_setup(self):
-        result, calls = self.run_with_stubs("3,1,5")
+        answers = "n\ny\n2\n2\n0\n0\nexp/uber,exp/uber_v2\n4\n4\n300\n1800\n12345\n1\nn\nn\n"
+        result, calls = self.run_with_stubs("3,1,5", config_answers=answers)
 
         self.assertEqual(result.returncode, 0, f"{result.stderr}\n{result.stdout}")
         self.assertEqual(
             calls,
             [
-                "setup:startup,runtime,size", "startup", "runtime",
-                "args:runtime:--workload-type exp/uber", "run-id:test-run-runtime-1-1",
-                "runtime", "args:runtime:--workload-type exp/uber_v2", "run-id:test-run-runtime-1-2", "size",
+                "setup:startup,runtime,size", "startup",
+                "args:startup:--configs geth,reth,nexus-linux,nexus-wasix-docker,nexus-wasmer --iterations 5",
+                "runtime",
+                "args:runtime:--linux-nodes 2 --wasix-nodes 2 --geth-nodes 0 --reth-nodes 0 --accounts 4 --tps 4 --duration 300 --wait-duration 1800 --chain-id 12345 --workload-type exp/uber",
+                "run-id:test-run-runtime-1-1", "runtime",
+                "args:runtime:--linux-nodes 2 --wasix-nodes 2 --geth-nodes 0 --reth-nodes 0 --accounts 4 --tps 4 --duration 300 --wait-duration 1800 --chain-id 12345 --workload-type exp/uber_v2",
+                "run-id:test-run-runtime-1-2", "size",
             ],
         )
         self.assertIn("runner.log", self.last_logs, self.last_logs)
@@ -258,7 +263,8 @@ class ExperimentRunnerTests(unittest.TestCase):
         )
 
     def test_info_verbosity_keeps_child_output_in_logs_only(self):
-        result, calls = self.run_with_stubs("1")
+        runtime_answers = "y\n2\n2\n0\n0\nexp/uber\n4\n4\n300\n1800\n12345\n1\nn\n"
+        result, calls = self.run_with_stubs("1", config_answers=runtime_answers)
 
         self.assertEqual(result.returncode, 0, f"{result.stderr}\n{result.stdout}")
         console = result.stdout + result.stderr
@@ -271,7 +277,8 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertIn("=== Starting runtime experiment ===", self.last_logs["runner.log"])
 
     def test_progress_is_visible_without_child_diagnostics_at_info_verbosity(self):
-        result, calls = self.run_with_stubs("1,3,4,5")
+        answers = "y\n2\n2\n0\n0\nexp/uber\n4\n4\n300\n1800\n12345\n1\nn\nn\nn\nn\n"
+        result, calls = self.run_with_stubs("1,3,4,5", config_answers=answers)
 
         self.assertEqual(result.returncode, 0, f"{result.stderr}\n{result.stdout}")
         console = result.stdout + result.stderr
@@ -286,7 +293,8 @@ class ExperimentRunnerTests(unittest.TestCase):
             self.assertNotIn(diagnostic, console)
 
     def test_progress_filter_preserves_child_failure_status(self):
-        result, calls = self.run_with_stubs("1", fail_module="runtime")
+        runtime_answers = "y\n2\n2\n0\n0\nexp/uber\n4\n4\n300\n1800\n12345\n1\nn\n"
+        result, calls = self.run_with_stubs("1", fail_module="runtime", config_answers=runtime_answers)
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Runtime progress: Workload exp/uber spam starting.", result.stdout)
@@ -294,7 +302,10 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertEqual(rows[-1]["status"], "failed")
 
     def test_debug_verbosity_streams_child_output_and_keeps_logs(self):
-        result, calls = self.run_with_stubs("1", runner_args=["--verbosity", "debug"])
+        runtime_answers = "y\n2\n2\n0\n0\nexp/uber\n4\n4\n300\n1800\n12345\n1\nn\n"
+        result, calls = self.run_with_stubs(
+            "1", config_answers=runtime_answers, runner_args=["--verbosity", "debug"]
+        )
 
         self.assertEqual(result.returncode, 0, f"{result.stderr}\n{result.stdout}")
         console = result.stdout + result.stderr
@@ -320,15 +331,16 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(calls[0], "setup:runtime,empty-block,startup,compliance,size")
         self.assertEqual(calls.count("runtime"), 250)
-        self.assertEqual(calls.count("empty-block"), 1000)
+        self.assertEqual(calls.count("empty-block"), 720)
         runtime_args = [call for call in calls if call.startswith("args:runtime:")]
         self.assertEqual(len(runtime_args), 250)
+        self.assertTrue(all("--reset-network" in call for call in runtime_args))
         runtime_workloads = {
             "counter": "--accounts 17 --tps 17 --duration 180 --wait-duration 900 --chain-id 12345",
             "dota": "--accounts 66 --tps 66 --duration 280 --wait-duration 900 --chain-id 12345",
             "uber": "--accounts 4 --tps 4 --duration 120 --wait-duration 900 --chain-id 12345",
             "uber_v2": "--accounts 4 --tps 4 --duration 120 --wait-duration 900 --chain-id 12345",
-            "value-transfer": "--accounts 10 --tps 100 --duration 10 --wait-duration 900 --chain-id 12345",
+            "value-transfer": "--accounts 10 --tps 200 --duration 10 --wait-duration 900 --chain-id 12345",
         }
         for workload, args in runtime_workloads.items():
             matching_runs = [
@@ -355,32 +367,32 @@ class ExperimentRunnerTests(unittest.TestCase):
             for call in runtime_args
         ))
         empty_args = [call for call in calls if call.startswith("args:empty-block:")]
-        self.assertEqual(len(empty_args), 1000)
+        self.assertEqual(len(empty_args), 720)
         self.assertEqual(
             {re.search(r"--counts (\d+)", call).group(1) for call in empty_args},
-            {"0", "1", "5", "10", "20", "50", "100", "200", "500", "1000"},
+            {"0", "1", "5", "10", "20", "50", "100", "200", "500", "1000", "5000", "10000"},
         )
         submitted_counts = [re.search(r"--counts (\d+)", call).group(1) for call in empty_args]
-        self.assertTrue(all(submitted_counts.count(count) == 100 for count in (
-            "0", "1", "5", "10", "20", "50", "100", "200", "500", "1000",
+        self.assertTrue(all(submitted_counts.count(count) == 60 for count in (
+            "0", "1", "5", "10", "20", "50", "100", "200", "500", "1000", "5000", "10000",
         )))
         self.assertTrue(all("--receipt-timeout 300 --block-timeout 120" in call for call in empty_args))
-        self.assertEqual(sum("--workload " not in call for call in empty_args), 200)
+        self.assertEqual(sum("--workload " not in call for call in empty_args), 144)
         self.assertTrue(any("--parallelism 5" in call for call in calls if call.startswith("args:compliance:")))
         self.assertIn(
             "args:startup:--configs geth,reth,nexus-linux,nexus-wasix-docker,nexus-wasmer --iterations 5",
             calls,
         )
         self.assertIn("5 iterations", result.stdout)
-        self.assertIn("step 4 of 10: transaction spam (10 transactions)", result.stdout)
+        self.assertIn("step 4 of 12: transaction spam (10 transactions)", result.stdout)
         rows = list(csv.DictReader(io.StringIO(self.last_logs["overview.csv"])))
-        self.assertEqual(len(rows), 1254)
+        self.assertEqual(len(rows), 974)
         runtime_rows = [row for row in rows if row["experiment"].startswith("runtime/")]
         self.assertEqual(len(runtime_rows), 250)
         empty_rows = [row for row in rows if row["experiment"].startswith("empty-block/")]
-        self.assertEqual(len(empty_rows), 1000)
-        for count in ("0", "1", "5", "10", "20", "50", "100", "200", "500", "1000"):
-            for repeat in range(1, 6):
+        self.assertEqual(len(empty_rows), 720)
+        for count in ("0", "1", "5", "10", "20", "50", "100", "200", "500", "1000", "5000", "10000"):
+            for repeat in range(1, 4):
                 suffix = f"-count-{count}-repeat-{repeat}"
                 self.assertEqual(sum(row["run_id"].endswith(suffix) for row in empty_rows), 20)
         self.assertTrue(all(row["status"] == "passed" for row in rows))
@@ -390,23 +402,37 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertIn("compliance", calls)
         self.assertIn("size", calls)
 
+    def test_single_experiment_runtime_defaults_match_all_experiment_defaults(self):
+        runtime_result, runtime_calls = self.run_with_stubs("1", config_answers="n\n")
+
+        self.assertEqual(runtime_result.returncode, 0, runtime_result.stderr)
+        runtime_args = [call for call in runtime_calls if call.startswith("args:runtime:")]
+        self.assertEqual(len(runtime_args), 250)
+        self.assertEqual(
+            {call.rsplit("--workload-type exp/", 1)[1] for call in runtime_args},
+            {"counter", "dota", "uber", "uber_v2", "value-transfer"},
+        )
+        self.assertEqual(sum(call.startswith("run-id:test-run-runtime-") for call in runtime_calls), 250)
+        self.assertTrue(all("--reset-network" in call for call in runtime_args))
+
     def test_empty_block_defaults_run_every_client_with_distinct_run_ids(self):
         result, calls = self.run_with_stubs("2", config_answers="n\n")
 
         self.assertEqual(result.returncode, 0, result.stderr)
+        empty_args = [call for call in calls if call.startswith("args:empty-block:")]
+        self.assertEqual(len(empty_args), 720)
         self.assertEqual(
-            [call for call in calls if call.startswith("args:empty-block:")],
-            [
-                "args:empty-block:--client native",
-                "args:empty-block:--client wasix",
-                "args:empty-block:--client geth",
-                "args:empty-block:--client reth",
-            ],
+            {re.search(r"--counts (\d+)", call).group(1) for call in empty_args},
+            {"0", "1", "5", "10", "20", "50", "100", "200", "500", "1000", "5000", "10000"},
         )
-        for client in ("native", "wasix", "geth", "reth"):
-            self.assertIn(f"empty-block/run-test-run-empty-block-{client}.log", self.last_logs)
+        self.assertTrue(all("--blocks-per-count 1 --max-attempts 2 --receipt-timeout 300" in call for call in empty_args))
+        self.assertEqual(sum("--workload " not in call for call in empty_args), 144)
         self.assertIn(
-            "Empty-block run (client: native; workload: value-transfer) (repeat 1 of 1; client 1 of 4; workload 1 of 1) ---",
+            "empty-block/run-test-run-empty-block-native-value-transfer-count-0-repeat-1.log",
+            self.last_logs,
+        )
+        self.assertIn(
+            "Empty-block run (client: native; workload: value-transfer; step 1 of 12: empty-block baseline (0 transactions)) (repeat 1 of 3; client 1 of 4; workload 1 of 5) ---",
             result.stdout,
         )
         self.assertIn(
@@ -442,23 +468,22 @@ class ExperimentRunnerTests(unittest.TestCase):
         )
 
     def test_reset_network_option_is_forwarded_to_runtime_defaults(self):
-        result, calls = self.run_with_stubs("1", runner_args=["--reset-network"])
+        answers = "y\n2\n2\n0\n0\nexp/uber,exp/uber_v2\n4\n4\n300\n1800\n12345\n1\n"
+        result, calls = self.run_with_stubs("1", config_answers=answers, runner_args=["--reset-network"])
 
         self.assertEqual(result.returncode, 0, f"{result.stderr}\n{result.stdout}")
-        self.assertIn("args:runtime:--reset-network --workload-type exp/uber", calls)
-        self.assertIn("args:runtime:--reset-network --workload-type exp/uber_v2", calls)
+        self.assertIn("--reset-network --workload-type exp/uber", "\n".join(calls))
+        self.assertIn("--reset-network --workload-type exp/uber_v2", "\n".join(calls))
 
     def test_reset_network_option_is_forwarded_to_empty_block_defaults(self):
-        result, calls = self.run_with_stubs("2", runner_args=["--reset-network"])
+        answers = "y\nnative\n23456\n1\n1\n2\n30\n20\n1\nnone\n"
+        result, calls = self.run_with_stubs("2", config_answers=answers, runner_args=["--reset-network"])
 
         self.assertEqual(result.returncode, 0, f"{result.stderr}\n{result.stdout}")
         self.assertEqual(
             [call for call in calls if call.startswith("args:empty-block:")],
             [
-                "args:empty-block:--client native --reset-network",
-                "args:empty-block:--client wasix --reset-network",
-                "args:empty-block:--client geth --reset-network",
-                "args:empty-block:--client reth --reset-network",
+                "args:empty-block:--client native --chain-id 23456 --counts 1 --blocks-per-count 1 --max-attempts 2 --receipt-timeout 30 --block-timeout 20 --poll-interval 1 --reset-network",
             ],
         )
 
@@ -466,32 +491,29 @@ class ExperimentRunnerTests(unittest.TestCase):
         result, calls = self.run_with_stubs("3", runner_args=["--reset-network"])
 
         self.assertEqual(result.returncode, 0, f"{result.stderr}\n{result.stdout}")
-        self.assertIn("args:startup:--reset-network", calls)
+        self.assertTrue(any(call.startswith("args:startup:") and "--reset-network" in call for call in calls))
 
     def test_invalid_and_duplicate_selections_are_rejected_then_reprompted(self):
-        result, calls = self.run_with_stubs("0\n1,1\n2\n")
+        answers = "y\nnative\n23456\n0\n1\n1\n30\n20\n1\nn\nnone\n"
+        result, calls = self.run_with_stubs("0\n1,1\n2\n", config_answers=answers)
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(calls[0], "setup:empty-block")
-        self.assertEqual(calls.count("empty-block"), 4)
+        self.assertEqual(calls.count("empty-block"), 1)
         self.assertEqual(
             [call for call in calls if call.startswith("args:empty-block:")],
-            [
-                "args:empty-block:--client native",
-                "args:empty-block:--client wasix",
-                "args:empty-block:--client geth",
-                "args:empty-block:--client reth",
-            ],
+            ["args:empty-block:--client native --chain-id 23456 --counts 0 --blocks-per-count 1 --max-attempts 1 --receipt-timeout 30 --block-timeout 20 --poll-interval 1"],
         )
         self.assertIn("Invalid selection", result.stderr)
         self.assertIn("selected more than once", result.stderr)
 
     def test_module_failures_are_recorded_and_later_experiments_continue(self):
-        result, calls = self.run_with_stubs("1,2,3", fail_module="empty-block")
+        answers = "y\n2\n2\n0\n0\nexp/uber\n4\n4\n300\n1800\n12345\n1\nn\ny\nnative\n23456\n1\n1\n1\n30\n20\n1\nn\nnone\nn\n"
+        result, calls = self.run_with_stubs("1,2,3", fail_module="empty-block", config_answers=answers)
 
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(calls[0], "setup:runtime,empty-block,startup")
-        self.assertEqual(calls.count("empty-block"), 4)
+        self.assertEqual(calls.count("empty-block"), 1)
         self.assertIn("startup", calls)
         self.assertIn("continuing with the remaining experiments", result.stderr)
         empty_block_log = self.last_logs["empty-block/run-test-run-empty-block-native.log"]
@@ -499,7 +521,7 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertIn("Exit status: 1", empty_block_log)
         rows = list(csv.DictReader(io.StringIO(self.last_logs["overview.csv"])))
         failed = [row for row in rows if row["status"] == "failed"]
-        self.assertEqual(len(failed), 4)
+        self.assertEqual(len(failed), 1)
         self.assertTrue(all("stubbed failure of empty-block" in row["problem"] for row in failed))
         self.assertTrue(any(row["experiment"] == "startup" and row["status"] == "passed" for row in rows))
 
@@ -508,15 +530,15 @@ class ExperimentRunnerTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         empty_block_args = [call for call in calls if call.startswith("args:empty-block:")]
-        self.assertEqual(len(empty_block_args), 900)
-        self.assertIn("--counts 1000", empty_block_args[-1])
+        self.assertEqual(len(empty_block_args), 720)
+        self.assertIn("--counts 10000", empty_block_args[-1])
         self.assertIn("startup", calls)
         self.assertIn("compliance", calls)
         rows = list(csv.DictReader(io.StringIO(self.last_logs["overview.csv"])))
         failed = [row for row in rows if row["status"] == "failed"]
-        self.assertEqual(len(failed), 100)
+        self.assertEqual(len(failed), 60)
         self.assertTrue(all("/count-5/repeat-" in row["experiment"] for row in failed))
-        self.assertTrue(any("/count-1000/repeat-" in row["experiment"] for row in rows))
+        self.assertTrue(any("/count-10000/repeat-" in row["experiment"] for row in rows))
 
     def test_custom_runtime_configuration_is_forwarded_and_repeats_get_unique_run_ids(self):
         answers = "y\n1\n0\n1\n0\nexp/uber,exp/dota\n3\n8\n45\n0\n99\n2\nn\n"
@@ -562,7 +584,8 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertTrue(any(call.startswith("args:empty-block:--client geth --chain-id 23456 --counts 0,1,5") for call in calls))
 
     def test_empty_block_defaults_to_prefunded_anvil_key_without_prompting(self):
-        result, calls = self.run_with_stubs("2", config_answers="n\n", private_key="")
+        answers = "y\nnative\n23456\n1\n1\n2\n30\n20\n1\nn\nnone\n"
+        result, calls = self.run_with_stubs("2", config_answers=answers, private_key="")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("private-key-default", calls)
@@ -579,12 +602,25 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertTrue(any("--wasmer-bin wasmer-test" in call for call in calls))
 
     def test_startup_defaults_include_geth_and_host_wasix(self):
-        result, _ = self.run_with_stubs("3", config_answers="n\n")
+        result, calls = self.run_with_stubs("3", config_answers="n\n")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
             "Default startup configuration: geth,reth,nexus-linux,nexus-wasix-docker,nexus-wasmer;",
             result.stdout,
+        )
+        self.assertIn(
+            "args:startup:--configs geth,reth,nexus-linux,nexus-wasix-docker,nexus-wasmer --iterations 5",
+            calls,
+        )
+
+    def test_single_compliance_defaults_match_all_experiment_defaults(self):
+        result, calls = self.run_with_stubs("4", config_answers="n\n")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "args:compliance:--clients go-ethereum_v1.15.11,reth_v2.5.2 --parallelism 5 --timeout 3600",
+            calls,
         )
 
     def test_custom_compliance_configuration_forwards_options(self):

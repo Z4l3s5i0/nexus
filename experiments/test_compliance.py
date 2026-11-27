@@ -28,6 +28,16 @@ compliance_report = load_report_module()
 
 
 class ComplianceExperimentTests(unittest.TestCase):
+    def test_pinned_upstream_client_selectors_match_other_experiment_versions(self):
+        self.assertEqual(run_suite.DEFAULT_CLIENTS, ("go-ethereum_v1.15.11", "reth_v2.5.2"))
+        self.assertEqual(run_suite.CLIENTS[2:], ("wasix-r-eth", "wasix-w-eth"))
+
+        for client in run_suite.DEFAULT_CLIENTS:
+            command = run_suite.build_hive_command(
+                client, "hive-custom:latest", "/tmp/workspace", 5, "hive-run-1"
+            )
+            self.assertEqual(command[command.index("--client") + 1], client)
+
     def test_hive_command_matches_documented_suite_and_client_flags(self):
         command = run_suite.build_hive_command(
             "wasix-r-eth", "hive-custom:latest", "/tmp/workspace", 20, "hive-run-1"
@@ -125,6 +135,28 @@ class ComplianceExperimentTests(unittest.TestCase):
 
         self.assertFalse(image["available"])
         self.assertIsNone(image["image_id"])
+
+    def test_image_metadata_includes_pinned_upstream_client_images(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_path = pathlib.Path(temp) / "metadata.json"
+            with patch.object(
+                sys,
+                "argv",
+                ["capture_images.py", "--output", str(output_path), "--clients", "go-ethereum_v1.15.11,reth_v2.5.2"],
+            ):
+                with patch.object(
+                    capture_images.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0, stdout="sha256:test\n", stderr=""),
+                ) as inspect_image:
+                    capture_images.main()
+            metadata = json.loads(output_path.read_text(encoding="utf-8"))
+
+        references = [call.args[0][-1] for call in inspect_image.call_args_list]
+        self.assertIn("ethereum/client-go:v1.15.11", references)
+        self.assertIn("ghcr.io/paradigmxyz/reth:v2.5.2", references)
+        self.assertIn("go-ethereum_v1.15.11-base", metadata["images"])
+        self.assertIn("reth_v2.5.2-base", metadata["images"])
 
 
 if __name__ == "__main__":

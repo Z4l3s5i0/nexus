@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-CLIENTS="wasix-r-eth,wasix-w-eth"
+CLIENTS="go-ethereum_v1.15.11,reth_v2.5.2"
 HIVE_IMAGE="hive-custom:latest"
 BASE_REGISTRY="docker.io/z4l3s5i0"
 OUTPUT_DIR=""
@@ -36,6 +36,7 @@ for client in "${clients[@]}"; do
     case "$client" in
         wasix-r-eth) has_native=true ;;
         wasix-w-eth) has_wasix=true ;;
+        go-ethereum_v1.15.11|reth_v2.5.2) ;;
         *) echo "Error: unsupported Hive client '$client'." >&2; exit 2 ;;
     esac
 done

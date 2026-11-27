@@ -16,7 +16,7 @@ def image_info(reference):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Capture local custom and Hive image identities.")
+    parser = argparse.ArgumentParser(description="Capture selected Hive client and runner image identities.")
     parser.add_argument("--output", required=True)
     parser.add_argument("--clients", required=True)
     parser.add_argument("--hive-image", default="hive-custom:latest")
@@ -24,6 +24,10 @@ def main():
     args = parser.parse_args()
     clients = [client for client in args.clients.split(",") if client]
     images = {"hive": image_info(args.hive_image)}
+    if "go-ethereum_v1.15.11" in clients:
+        images["go-ethereum_v1.15.11-base"] = image_info("ethereum/client-go:v1.15.11")
+    if "reth_v2.5.2" in clients:
+        images["reth_v2.5.2-base"] = image_info("ghcr.io/paradigmxyz/reth:v2.5.2")
     if "wasix-r-eth" in clients:
         images["wasix-r-eth-base"] = image_info(f"{args.registry}/wasix-eth-linux:latest")
     if "wasix-w-eth" in clients:

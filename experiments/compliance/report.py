@@ -38,8 +38,8 @@ def build_report(output_dir, run_id):
         "passed": sum(result.get("exit_code") == 0 for result in results),
         "failed": sum(result.get("exit_code") != 0 for result in results),
         "notes": [
-            "Hive ran the existing ethereum/engine simulation against the selected custom clients.",
-            "The runner used --docker.pull=false so locally built client images were used.",
+            "Hive ran the existing ethereum/engine simulation against the selected client versions or custom clients.",
+            "The runner used --docker.pull=false; selected client image identities are recorded where available.",
             "Per-client stdout/stderr logs and Hive workspaces are retained under this output directory.",
         ],
     }

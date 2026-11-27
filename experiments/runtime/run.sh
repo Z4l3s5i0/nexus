@@ -85,7 +85,7 @@ export METRICS_INGEST_TOKEN EXPERIMENT_RUN_ID="$RUN_ID"
 METRICS_SERVER_BIND=127.0.0.1
 export METRICS_SERVER_BIND
 export RESET_NETWORK
-EXPERIMENT_NETWORK_CLEAN_DATA=false
+EXPERIMENT_NETWORK_CLEAN_DATA=true
 export EXPERIMENT_NETWORK_CLEAN_DATA
 export CHAIN_ID LINUX_NODES WASIX_NODES GETH_NODES RETH_NODES
 
@@ -264,8 +264,6 @@ runtime_progress "Runtime metrics data archived."
 runtime_progress "Generating the runtime report."
 python3 "$SCRIPT_DIR/report.py" --output-dir "$OUTPUT_DIR"
 runtime_progress "Runtime report generated."
-EXPERIMENT_NETWORK_CLEAN_DATA=true
-export EXPERIMENT_NETWORK_CLEAN_DATA
 runtime_progress "Tearing down the runtime network."
 bash "$NETWORK_SCRIPT" stop
 NETWORK_STARTED=false
