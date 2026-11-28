@@ -8,6 +8,7 @@ import re
 import sys
 import time
 from pathlib import Path
+from urllib.error import URLError
 
 
 EMPTY_BLOCK_DIR = Path(__file__).resolve().parents[1] / "empty-block"
@@ -33,6 +34,8 @@ CAST_IMAGE = "ghcr.io/foundry-rs/foundry:v1.7.1"
 START_DELAY_SECONDS = 30
 FUNDING_AMOUNT = "100ether"
 FUNDING_RECEIPT_TIMEOUT = 180
+RPC_TIMEOUT_SECONDS = 30
+DEPLOYMENT_ESTIMATE_TIMEOUT_SECONDS = 120
 CONTRACT_CALL_GAS_LIMIT = 250_000
 VALUE_TRANSFER_TO = "0x000000000000000000000000000000000000dead"
 MNEMONIC_KEY_INDEX_OFFSET = 10_000
@@ -99,8 +102,23 @@ def derive_accounts(node_index, count, mnemonic, network, cast_image):
     return list(zip(private_keys, addresses))
 
 
-def rpc_quantity(rpc_url, method, params):
-    value = rpc_call(rpc_url, method, params, 30)
+def rpc_call_with_context(rpc_url, method, params, timeout):
+    try:
+        return rpc_call(rpc_url, method, params, timeout)
+    except TimeoutError as exc:
+        raise TimeoutError(
+            f"RPC {method} request to {rpc_url} timed out after {timeout} seconds"
+        ) from exc
+    except URLError as exc:
+        if not isinstance(exc.reason, TimeoutError):
+            raise
+        raise TimeoutError(
+            f"RPC {method} request to {rpc_url} timed out after {timeout} seconds"
+        ) from exc
+
+
+def rpc_quantity(rpc_url, method, params, timeout=RPC_TIMEOUT_SECONDS):
+    value = rpc_call_with_context(rpc_url, method, params, timeout)
     try:
         return int(value, 16)
     except (TypeError, ValueError) as exc:
@@ -137,6 +155,7 @@ def deploy_workload_contract(args, rpc_url, cast_rpc_url, scenario):
             rpc_url,
             "eth_estimateGas",
             [{"from": sender, "data": "0x" + bytecode.removeprefix("0x")}],
+            timeout=DEPLOYMENT_ESTIMATE_TIMEOUT_SECONDS,
         )
     if deployment_gas_limit < 1:
         raise RuntimeError("RPC eth_estimateGas returned an invalid deployment gas estimate")
@@ -158,7 +177,9 @@ def deploy_workload_contract(args, rpc_url, cast_rpc_url, scenario):
     contract_address = deployment_receipt.get("contractAddress")
     if not isinstance(contract_address, str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", contract_address):
         raise RuntimeError(f"Cast contract deployment {deployment_hash} did not return a valid address")
-    deployed_code = rpc_call(rpc_url, "eth_getCode", [contract_address, "latest"], 30)
+    deployed_code = rpc_call_with_context(
+        rpc_url, "eth_getCode", [contract_address, "latest"], RPC_TIMEOUT_SECONDS
+    )
     if not deployed_code or deployed_code == "0x":
         raise RuntimeError(f"contract deployment at {contract_address} was not confirmed by eth_getCode")
     print(f"Cast deployed {scenario} contract at {contract_address}.", flush=True)

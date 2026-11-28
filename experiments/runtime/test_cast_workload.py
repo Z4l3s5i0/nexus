@@ -34,6 +34,15 @@ class CastRuntimeWorkloadTests(unittest.TestCase):
         self.assertEqual(cast_workload.wallet_private_key(f"Private key: 0x{private_key}"), private_key)
         self.assertEqual(cast_workload.wallet_address(f"Address: {address}"), address)
 
+    def test_rpc_quantity_adds_context_when_a_request_times_out(self):
+        with patch.object(cast_workload, "rpc_call", side_effect=TimeoutError("timed out")) as rpc:
+            with self.assertRaisesRegex(TimeoutError, "eth_estimateGas.*120 seconds"):
+                cast_workload.rpc_quantity(
+                    "http://node", "eth_estimateGas", [], timeout=120
+                )
+
+        rpc.assert_called_once_with("http://node", "eth_estimateGas", [], 120)
+
     def test_account_derivation_uses_nonoverlapping_node_ranges(self):
         keys = ["0x" + format(index, "064x") for index in (1, 2)]
         addresses = ["0x" + format(index, "040x") for index in (3, 4)]
@@ -136,6 +145,10 @@ class CastRuntimeWorkloadTests(unittest.TestCase):
         self.assertEqual(
             rpc.call_args_list[-1].args,
             ("host-rpc", "eth_estimateGas", [{"from": sender, "data": "0x6000"}]),
+        )
+        self.assertEqual(
+            rpc.call_args_list[-1].kwargs,
+            {"timeout": cast_workload.DEPLOYMENT_ESTIMATE_TIMEOUT_SECONDS},
         )
         self.assertEqual(deploy.call_args.args[-1], 420_000)
 
