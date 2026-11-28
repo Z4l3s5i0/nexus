@@ -15,6 +15,8 @@ FOUNDRY_IMAGE="ghcr.io/foundry-rs/foundry:v1.7.1"
 DEPLOY_CONTRACT=false
 CONTRACT_ADDRESS=""
 CONTRACT_ADDRESS_FILE=""
+DEPLOYMENT_INFO_FILE=""
+SUBMISSION_MANIFEST_FILE=""
 
 usage() {
     echo "Usage: bash workload.sh --node-index N --chain-id ID --network NAME --run-id ID --window-file FILE [options]" >&2
@@ -35,6 +37,8 @@ while [[ "$#" -gt 0 ]]; do
         --deploy-contract) DEPLOY_CONTRACT=true; shift ;;
         --contract-address) CONTRACT_ADDRESS="$2"; shift 2 ;;
         --contract-address-file) CONTRACT_ADDRESS_FILE="$2"; shift 2 ;;
+        --deployment-info-file) DEPLOYMENT_INFO_FILE="$2"; shift 2 ;;
+        --submission-manifest-file) SUBMISSION_MANIFEST_FILE="$2"; shift 2 ;;
         *) usage ;;
     esac
 done
@@ -64,8 +68,14 @@ CAST_ARGS=(
 )
 if [[ "$DEPLOY_CONTRACT" == true ]]; then
     CAST_ARGS+=(--deploy-contract --contract-address-file "$CONTRACT_ADDRESS_FILE")
+    if [[ -n "$DEPLOYMENT_INFO_FILE" ]]; then
+        CAST_ARGS+=(--deployment-info-file "$DEPLOYMENT_INFO_FILE")
+    fi
 else
     CAST_ARGS+=(--run-id "$RUN_ID" --window-file "$WORKLOAD_WINDOW_FILE")
+    if [[ -n "$SUBMISSION_MANIFEST_FILE" ]]; then
+        CAST_ARGS+=(--submission-manifest-file "$SUBMISSION_MANIFEST_FILE")
+    fi
     if [[ -n "$CONTRACT_ADDRESS" ]]; then
         CAST_ARGS+=(--contract-address "$CONTRACT_ADDRESS")
     fi

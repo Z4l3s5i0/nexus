@@ -23,6 +23,10 @@ from transaction_submission import (
     submit_transaction_schedule,
     submit_transactions,
 )
+try:
+    from .contract_readiness import has_contract_code
+except ImportError:
+    from contract_readiness import has_contract_code
 
 
 CAST_IMAGE = "ghcr.io/foundry-rs/foundry:v1.7.1"
@@ -51,6 +55,8 @@ def create_parser():
     parser.add_argument("--deploy-contract", action="store_true")
     parser.add_argument("--contract-address")
     parser.add_argument("--contract-address-file", type=Path)
+    parser.add_argument("--deployment-info-file", type=Path)
+    parser.add_argument("--submission-manifest-file", type=Path)
     return parser
 
 
@@ -156,7 +162,11 @@ def deploy_workload_contract(args, rpc_url, cast_rpc_url, scenario):
     if not deployed_code or deployed_code == "0x":
         raise RuntimeError(f"contract deployment at {contract_address} was not confirmed by eth_getCode")
     print(f"Cast deployed {scenario} contract at {contract_address}.", flush=True)
-    return contract_address
+    try:
+        deployment_block = int(deployment_receipt["blockNumber"], 16)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"Cast contract deployment {deployment_hash} did not return a valid block number") from exc
+    return contract_address, deployment_block
 
 
 def prepare_accounts(args, rpc_url, cast_rpc_url, mnemonic, scenario, contract_address=None):
@@ -175,8 +185,7 @@ def prepare_accounts(args, rpc_url, cast_rpc_url, mnemonic, scenario, contract_a
     else:
         if not isinstance(contract_address, str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", contract_address):
             raise RuntimeError("a valid shared contract address is required for contract workloads")
-        deployed_code = rpc_call(rpc_url, "eth_getCode", [contract_address, "latest"], 30)
-        if not deployed_code or deployed_code == "0x":
+        if not has_contract_code(rpc_url, contract_address):
             raise RuntimeError(f"shared contract at {contract_address} is not available on this node")
 
     gas_price = rpc_quantity(rpc_url, "eth_gasPrice", [])
@@ -266,9 +275,22 @@ def run(args):
     if args.deploy_contract:
         if args.contract_address_file is None:
             raise ValueError("--contract-address-file is required when deploying the shared contract")
-        contract_address = deploy_workload_contract(args, host_rpc_url, cast_rpc_url, scenario)
+        contract_address, deployment_block = deploy_workload_contract(
+            args, host_rpc_url, cast_rpc_url, scenario
+        )
         args.contract_address_file.parent.mkdir(parents=True, exist_ok=True)
         args.contract_address_file.write_text(contract_address + "\n", encoding="utf-8")
+        deployment_info_file = getattr(args, "deployment_info_file", None)
+        if deployment_info_file is not None:
+            deployment_info_file.parent.mkdir(parents=True, exist_ok=True)
+            deployment_info_file.write_text(
+                json.dumps(
+                    {"contract_address": contract_address, "blockNumber": deployment_block},
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
         return 0
     if not args.run_id or args.window_file is None:
         raise ValueError("--run-id and --window-file are required for a workload")
@@ -279,15 +301,17 @@ def run(args):
     print(f"Cast setup complete; waiting {args.start_delay} seconds before transaction spam.", flush=True)
     time.sleep(args.start_delay)
 
-    start_ms = time.time_ns() // 1_000_000
+    start_ms = None
     exit_code = 0
+    submitted_transactions = []
     try:
         transactions = runtime_transactions(args, scenario, accounts, contract_address, host_rpc_url)
         print(
             f"Cast spam starting: {len(transactions)} transactions at {args.tps} TPS for {args.duration} seconds.",
             flush=True,
         )
-        hashes = submit_transaction_schedule(
+        start_ms = time.time_ns() // 1_000_000
+        submitted_transactions = submit_transaction_schedule(
             args.network,
             args.cast_image,
             cast_rpc_url,
@@ -295,12 +319,33 @@ def run(args):
             args.tps,
             args.duration,
             args.duration + 180,
+            include_timestamps=True,
         )
-        print(f"Cast spam submitted {len(hashes)} transaction(s).", flush=True)
+        print(
+            f"Cast spam accepted {len(submitted_transactions)} of {len(transactions)} transaction(s) for submission.",
+            flush=True,
+        )
     except Exception as exc:
         print(f"Cast workload failed: {exc}", file=sys.stderr, flush=True)
         exit_code = 1
-    end_ms = time.time_ns() // 1_000_000
+    now_ms = time.time_ns() // 1_000_000
+    if start_ms is None:
+        start_ms = now_ms
+    end_ms = min(now_ms, start_ms + args.duration * 1000)
+    if args.submission_manifest_file is not None:
+        args.submission_manifest_file.parent.mkdir(parents=True, exist_ok=True)
+        args.submission_manifest_file.write_text(
+            json.dumps(
+                {
+                    "node_index": args.node_index,
+                    "planned_transactions": args.tps * args.duration,
+                    "submitted_transactions": submitted_transactions,
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     write_workload_window(args, start_ms, end_ms, exit_code)
     return exit_code
 

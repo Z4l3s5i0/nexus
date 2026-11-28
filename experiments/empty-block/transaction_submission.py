@@ -2,13 +2,16 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 
 
 TX_HASH = re.compile(r"0x[0-9a-fA-F]{64}")
+SUBMITTED_TRANSACTION = re.compile(r"^SUBMITTED_TX (0x[0-9a-fA-F]{64}) ([0-9]+\.[0-9]+)$", re.MULTILINE)
 CONTRACT_CALL_GAS_LIMIT = 250_000
 CONTRACT_DEPLOYMENT_GAS_LIMIT = 600_000_000
 MAX_BURST_TIMEOUT_SECONDS = 300
+SCHEDULED_SEND_RPC_TIMEOUT_SECONDS = 10
 
 
 def docker_shell_command(cast_network, cast_image):
@@ -177,7 +180,9 @@ def submit_transactions(cast_bin, cast_network, cast_image, rpc_url, transaction
     return [transaction_hash(output) for output in outputs]
 
 
-def submit_transaction_schedule(cast_network, cast_image, rpc_url, transactions, tps, duration, timeout):
+def submit_transaction_schedule(
+    cast_network, cast_image, rpc_url, transactions, tps, duration, timeout, include_timestamps=False
+):
     if not transactions:
         return []
     expected_count = tps * duration
@@ -188,21 +193,25 @@ def submit_transaction_schedule(cast_network, cast_image, rpc_url, transactions,
     if not cast_network:
         raise RuntimeError("a Docker network is required to run the bundled cast client")
 
-    script_lines = ["set -e", "start_ns=$(date +%s%N)"]
+    script_lines = ["set +e", 'result_dir=$(mktemp -d)', "start_ns=$(date +%s%N)"]
     for index, transaction in enumerate(transactions, start=1):
-        script_lines.append(shlex.join(["cast", *cast_send_arguments(transaction, rpc_url)]))
-        if index % tps == 0:
-            batch_number = index // tps
-            script_lines.extend(
-                [
-                    f"target_ns=$((start_ns + {batch_number}000000000))",
-                    "now_ns=$(date +%s%N)",
-                    "remaining_ns=$((target_ns - now_ns))",
-                    'if [ "$remaining_ns" -gt 0 ]; then '
-                    'sleep "$(printf \'%d.%09d\' "$((remaining_ns / 1000000000))" '
-                    '"$((remaining_ns % 1000000000))")"; fi',
-                ]
-            )
+        send_arguments = cast_send_arguments(transaction, rpc_url)
+        send_arguments.extend(["--rpc-timeout", str(SCHEDULED_SEND_RPC_TIMEOUT_SECONDS)])
+        script_lines.extend(
+            [
+                f"target_ns=$((start_ns + (({index - 1} * 1000000000) / {tps})))",
+                "now_ns=$(date +%s%N)",
+                "remaining_ns=$((target_ns - now_ns))",
+                'if [ "$remaining_ns" -gt 0 ]; then '
+                'sleep "$(printf \'%d.%09d\' "$((remaining_ns / 1000000000))" '
+                '"$((remaining_ns % 1000000000))")"; fi',
+                f"(started_at=$(date +%s.%N); printf '%s\\n' \"$started_at\" >\"$result_dir/{index}.started_at\"; "
+                f"if {shlex.join(['cast', *send_arguments])} "
+                f'>"$result_dir/{index}.out" 2>"$result_dir/{index}.err"; then '
+                f"printf ok >\"$result_dir/{index}.status\"; else "
+                f"printf failed >\"$result_dir/{index}.status\"; fi) &",
+            ]
+        )
 
     script_lines.extend(
         [
@@ -212,8 +221,26 @@ def submit_transaction_schedule(cast_network, cast_image, rpc_url, transactions,
             'if [ "$remaining_ns" -gt 0 ]; then '
             'sleep "$(printf \'%d.%09d\' "$((remaining_ns / 1000000000))" '
             '"$((remaining_ns % 1000000000))")"; fi',
+            "wait",
         ]
     )
+    for index in range(1, expected_count + 1):
+        script_lines.extend(
+            [
+                f'if [ "$(cat "$result_dir/{index}.status")" = ok ]; then',
+                f'    tx_hash=$(grep -oE \'0x[0-9a-fA-F]{{64}}\' "$result_dir/{index}.out" | tail -n 1)',
+                '    if [ -n "$tx_hash" ]; then',
+                f'        printf \'SUBMITTED_TX %s %s\\n\' "$tx_hash" "$(cat "$result_dir/{index}.started_at")"',
+                "    else",
+                f'        printf \'Cast returned no transaction hash for transaction {index}\\n\' >&2',
+                "    fi",
+                "else",
+                f'    printf \'Cast submission failed for transaction {index}: \' >&2',
+                f'    cat "$result_dir/{index}.err" >&2',
+                "fi",
+            ]
+        )
+    script_lines.append('rm -rf "$result_dir"')
     result = subprocess.run(
         docker_shell_command(cast_network, cast_image),
         input="\n".join(script_lines),
@@ -227,9 +254,17 @@ def submit_transaction_schedule(cast_network, cast_image, rpc_url, transactions,
         for transaction in transactions:
             message = message.replace(transaction["private_key"], "[redacted]")
         raise RuntimeError(f"cast workload failed: {message}")
+    if result.stderr.strip():
+        message = result.stderr.strip()
+        for transaction in transactions:
+            message = message.replace(transaction["private_key"], "[redacted]")
+        print(message, file=sys.stderr, flush=True)
     hashes = TX_HASH.findall(result.stdout)
-    if len(hashes) != expected_count:
-        raise RuntimeError(f"cast returned {len(hashes)} transaction hash(es), expected {expected_count}")
+    if include_timestamps:
+        return [
+            {"hash": tx_hash, "submitted_at_epoch": float(timestamp)}
+            for tx_hash, timestamp in SUBMITTED_TRANSACTION.findall(result.stdout)
+        ]
     return hashes
 
 

@@ -1,3 +1,4 @@
+import json
 import pathlib
 import sys
 import tempfile
@@ -20,6 +21,12 @@ class CastRuntimeWorkloadTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "unsupported Cast runtime scenario"):
             cast_workload.scenario_name("exp/unknown")
+
+    def test_runtime_runner_normalizes_prefixed_value_transfer_before_contract_setup(self):
+        runner = pathlib.Path(__file__).with_name("run.sh").read_text(encoding="utf-8")
+
+        self.assertIn('WORKLOAD_SCENARIO="${WORKLOAD_TYPE#exp/}"', runner)
+        self.assertIn('if [[ "$WORKLOAD_SCENARIO" != "value-transfer" ]]', runner)
 
     def test_wallet_output_parsing(self):
         private_key = "a" * 64
@@ -112,7 +119,7 @@ class CastRuntimeWorkloadTests(unittest.TestCase):
                 with patch.object(
                     cast_workload,
                     "wait_for_receipts",
-                    return_value={"deploy-hash": {"contractAddress": contract_address}},
+                    return_value={"deploy-hash": {"contractAddress": contract_address, "blockNumber": "0x64"}},
                 ):
                     with patch.object(cast_workload, "load_workload_bytecode", return_value="6000"):
                         with patch.object(cast_workload, "rpc_call", return_value="0x6000"):
@@ -125,7 +132,7 @@ class CastRuntimeWorkloadTests(unittest.TestCase):
                                     args, "host-rpc", "container-rpc", "counter"
                                 )
 
-        self.assertEqual(result, contract_address)
+        self.assertEqual(result, (contract_address, 100))
         self.assertEqual(
             rpc.call_args_list[-1].args,
             ("host-rpc", "eth_estimateGas", [{"from": sender, "data": "0x6000"}]),
@@ -151,7 +158,7 @@ class CastRuntimeWorkloadTests(unittest.TestCase):
                 with patch.object(
                     cast_workload,
                     "wait_for_receipts",
-                    return_value={"deploy-hash": {"contractAddress": contract_address}},
+                    return_value={"deploy-hash": {"contractAddress": contract_address, "blockNumber": "0x64"}},
                 ):
                     with patch.object(cast_workload, "load_workload_bytecode", return_value="6000"):
                         with patch.object(cast_workload, "rpc_call", return_value="0x6000"):
@@ -164,7 +171,7 @@ class CastRuntimeWorkloadTests(unittest.TestCase):
                                     args, "host-rpc", "container-rpc", "uber_v2"
                                 )
 
-        self.assertEqual(result, contract_address)
+        self.assertEqual(result, (contract_address, 100))
         self.assertNotIn("eth_estimateGas", [call.args[1] for call in rpc.call_args_list])
         self.assertEqual(deploy.call_args.args[-1], 600_000_000)
 
@@ -183,7 +190,7 @@ class CastRuntimeWorkloadTests(unittest.TestCase):
         with patch.object(cast_workload, "cast_sender", return_value=sender):
             with patch.object(cast_workload, "derive_accounts", return_value=[account]):
                 with patch.object(cast_workload, "rpc_quantity", side_effect=[12345, 2_500_000_000, 5]):
-                    with patch.object(cast_workload, "rpc_call", return_value="0x6000") as rpc:
+                    with patch.object(cast_workload, "has_contract_code", return_value=True) as has_code:
                         with patch.object(cast_workload, "submit_transactions", return_value=["funding-hash"]) as submit:
                             with patch.object(cast_workload, "wait_for_receipts") as receipts:
                                 with patch.object(cast_workload, "deploy_workload_contract") as deploy:
@@ -198,7 +205,7 @@ class CastRuntimeWorkloadTests(unittest.TestCase):
 
         self.assertEqual(actual_accounts, [account])
         self.assertEqual(actual_contract, contract_address)
-        rpc.assert_called_once_with("host-rpc", "eth_getCode", [contract_address, "latest"], 30)
+        has_code.assert_called_once_with("host-rpc", contract_address)
         self.assertEqual(
             [transaction["to_address"] for transaction in submit.call_args.args[4]],
             [account[1]],
@@ -227,11 +234,20 @@ class CastRuntimeWorkloadTests(unittest.TestCase):
         contract_address = "0x" + "3" * 40
         with tempfile.TemporaryDirectory() as temp_dir:
             args.contract_address_file = pathlib.Path(temp_dir) / "contract_address.txt"
+            args.deployment_info_file = pathlib.Path(temp_dir) / "deployment.json"
             with patch.dict("os.environ", {"EXPERIMENT_WALLET_MNEMONIC": "seed phrase"}):
-                with patch.object(cast_workload, "deploy_workload_contract", return_value=contract_address) as deploy:
+                with patch.object(
+                    cast_workload,
+                    "deploy_workload_contract",
+                    return_value=(contract_address, 100),
+                ) as deploy:
                     self.assertEqual(cast_workload.run(args), 0)
 
             self.assertEqual(args.contract_address_file.read_text(encoding="utf-8"), contract_address + "\n")
+            self.assertEqual(
+                json.loads(args.deployment_info_file.read_text(encoding="utf-8")),
+                {"contract_address": contract_address, "blockNumber": 100},
+            )
             deploy.assert_called_once()
 
 

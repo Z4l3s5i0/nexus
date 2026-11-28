@@ -485,6 +485,40 @@ class EmptyBlockExperimentTests(unittest.TestCase):
         self.assertIn("target_ns=$((start_ns + 2000000000))", script)
         self.assertIn("--async", script)
 
+    def test_cast_runtime_schedule_keeps_successful_hashes_when_sends_fail(self):
+        tx_hash = "0x" + "a" * 64
+        result = subprocess.CompletedProcess(
+            [],
+            0,
+            stdout=f"SUBMITTED_TX {tx_hash} 12345.500000000\n",
+            stderr="Cast submission failed for transaction 2: RPC unavailable\n",
+        )
+        transactions = [
+            {
+                "private_key": "0x" + "1" * 64,
+                "to_address": "0x" + "2" * 40,
+                "value": "1",
+                "gas_limit": 21000,
+                "gas_price": 2500000000,
+                "nonce": index,
+            }
+            for index in range(4)
+        ]
+        with patch.object(transaction_submission.shutil, "which", return_value="docker"):
+            with patch.object(transaction_submission.subprocess, "run", return_value=result) as docker_run:
+                actual = transaction_submission.submit_transaction_schedule(
+                    "suite-net", "foundry:test", "http://el-node-0:8545", transactions, 2, 2, 30,
+                    include_timestamps=True,
+                )
+
+        self.assertEqual(actual, [{"hash": tx_hash, "submitted_at_epoch": 12345.5}])
+        script = docker_run.call_args.kwargs["input"]
+        self.assertIn("target_ns=$((start_ns + ((1 * 1000000000) / 2)))", script)
+        self.assertIn("&", script)
+        self.assertIn("SUBMITTED_TX", script)
+        self.assertIn("--rpc-timeout 10", script)
+        self.assertNotIn("expected 4", script)
+
     def test_docker_cast_streams_large_deployment_bytecode_over_stdin(self):
         bytecode = "0x" + "ab" * 70_000
         tx_hash = "0x" + "a" * 64

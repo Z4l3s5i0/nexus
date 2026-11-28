@@ -73,7 +73,7 @@ class ExperimentRunnerTests(unittest.TestCase):
         cast_workload = (ROOT / "experiments" / "runtime" / "cast_workload.py").read_text(encoding="utf-8")
         setup = cast_workload.index("accounts, contract_address = prepare_accounts(")
         delay = cast_workload.index("time.sleep(args.start_delay)", setup)
-        workload_start = cast_workload.index("start_ms = time.time_ns()", delay)
+        workload_start = cast_workload.index("start_ms = time.time_ns() // 1_000_000", delay)
         spam = cast_workload.index("submit_transaction_schedule(", workload_start)
         window = cast_workload.index("write_workload_window(args, start_ms, end_ms, exit_code)", spam)
 
@@ -87,13 +87,16 @@ class ExperimentRunnerTests(unittest.TestCase):
 
     def test_runtime_deploys_one_shared_contract_before_node_workloads(self):
         runtime_runner = (ROOT / "experiments" / "runtime" / "run.sh").read_text(encoding="utf-8")
+        deployment_helper = (ROOT / "experiments" / "runtime" / "deploy_contract.py").read_text(encoding="utf-8")
 
-        deployment = runtime_runner.index("--deploy-contract --contract-address-file")
+        deployment = runtime_runner.index('python3 "$SCRIPT_DIR/deploy_contract.py"')
         workload_loop = runtime_runner.index("for ((index = 0; index < NODE_COUNT; index++)); do", deployment)
         workload_launch = runtime_runner.index('WORKLOAD_ARGS+=(--contract-address "$CONTRACT_ADDRESS")', workload_loop)
 
-        self.assertEqual(runtime_runner.count("--deploy-contract"), 1)
-        self.assertIn('if [[ "$WORKLOAD_TYPE" != "value-transfer" ]]; then', runtime_runner)
+        self.assertEqual(runtime_runner.count("deploy_contract.py"), 1)
+        self.assertIn('"--deploy-contract"', deployment_helper)
+        self.assertIn('WORKLOAD_SCENARIO="${WORKLOAD_TYPE#exp/}"', runtime_runner)
+        self.assertIn('if [[ "$WORKLOAD_SCENARIO" != "value-transfer" ]]', runtime_runner)
         self.assertLess(deployment, workload_loop)
         self.assertLess(workload_loop, workload_launch)
 

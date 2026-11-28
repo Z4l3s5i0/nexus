@@ -200,13 +200,19 @@ if [[ -z "$NETWORK_NAME" ]]; then
 fi
 
 CONTRACT_ADDRESS=""
-if [[ "$WORKLOAD_TYPE" != "value-transfer" ]]; then
+WORKLOAD_SCENARIO="${WORKLOAD_TYPE#exp/}"
+if [[ "$WORKLOAD_SCENARIO" != "value-transfer" ]]; then
     CONTRACT_ADDRESS_FILE="$OUTPUT_DIR/workloads/contract_address.txt"
-    runtime_progress "Deploying the shared $WORKLOAD_TYPE contract before starting node workloads."
-    if ! bash "$SCRIPT_DIR/workload.sh" \
-        --node-index 0 --chain-id "$CHAIN_ID" --network "$NETWORK_NAME" \
+    runtime_progress "Deploying the shared $WORKLOAD_TYPE contract and checking it across execution nodes."
+    if ! python3 "$SCRIPT_DIR/deploy_contract.py" \
+        --workload-script "$SCRIPT_DIR/workload.sh" \
+        --chain-id "$CHAIN_ID" --network "$NETWORK_NAME" \
         --scenario "$WORKLOAD_TYPE" --accounts "$ACCOUNTS" \
-        --deploy-contract --contract-address-file "$CONTRACT_ADDRESS_FILE" \
+        --linux-nodes "$LINUX_NODES" --geth-nodes "$GETH_NODES" \
+        --reth-nodes "$RETH_NODES" --wasix-nodes "$WASIX_NODES" \
+        --output-address "$CONTRACT_ADDRESS_FILE" \
+        --output-info "$OUTPUT_DIR/workloads/contract_deployment.json" \
+        --log-dir "$OUTPUT_DIR/workloads" \
         > "$OUTPUT_DIR/workloads/contract_setup.log" 2>&1; then
         cat "$OUTPUT_DIR/workloads/contract_setup.log" >&2
         exit 1
@@ -216,7 +222,7 @@ if [[ "$WORKLOAD_TYPE" != "value-transfer" ]]; then
         echo "Error: shared contract setup did not produce a valid address." >&2
         exit 1
     fi
-    runtime_progress "Shared contract deployed at $CONTRACT_ADDRESS."
+    runtime_progress "Shared contract deployed and verified at $CONTRACT_ADDRESS."
 fi
 
 WORKLOAD_PIDS=()
@@ -227,6 +233,7 @@ for ((index = 0; index < NODE_COUNT; index++)); do
         --node-index "$index" --chain-id "$CHAIN_ID" --network "$NETWORK_NAME" \
         --run-id "$RUN_ID" \
         --window-file "$OUTPUT_DIR/workload_windows/node_$index.json" \
+        --submission-manifest-file "$OUTPUT_DIR/workloads/node_$index.submissions.json" \
         --scenario "$WORKLOAD_TYPE" --tps "$TPS" --duration "$DURATION" --accounts "$ACCOUNTS"
     )
     if [[ -n "$CONTRACT_ADDRESS" ]]; then
@@ -251,6 +258,19 @@ if [[ "$WORKLOAD_FAILED" == true ]]; then
     exit 1
 fi
 runtime_progress "Workload $WORKLOAD_TYPE spam finished on all $NODE_COUNT nodes."
+
+RECEIPT_PIDS=()
+for ((index = 0; index < NODE_COUNT; index++)); do
+    python3 "$SCRIPT_DIR/collect_receipts.py" \
+        --rpc-url "http://127.0.0.1:$((8545 + index))" \
+        --manifest "$OUTPUT_DIR/workloads/node_$index.submissions.json" \
+        --output "$OUTPUT_DIR/workloads/node_$index.receipts.json" \
+        --timeout 120 \
+        > "$OUTPUT_DIR/workloads/node_$index.receipt_collection.log" 2>&1 &
+    RECEIPT_PIDS+=("$!")
+done
+runtime_progress "Separate receipt collection started for accepted workload transactions."
+
 if (( WAIT_DURATION > 0 )); then
     runtime_progress "Workload finished; commencing wait time of $WAIT_DURATION seconds for blocks and metrics."
     sleep "$WAIT_DURATION"
@@ -258,6 +278,16 @@ if (( WAIT_DURATION > 0 )); then
 else
     runtime_progress "No post-workload wait configured; continuing to collection."
 fi
+
+for pid in "${RECEIPT_PIDS[@]}"; do
+    if wait "$pid"; then
+        :
+    else
+        status=$?
+        echo "Warning: receipt collection process exited with status $status; the workload result is preserved." >&2
+    fi
+done
+runtime_progress "Separate receipt collection finished."
 
 if [[ -n "$SYSTEM_COLLECTOR_PID" ]]; then
     if kill -0 "$SYSTEM_COLLECTOR_PID" 2>/dev/null; then
